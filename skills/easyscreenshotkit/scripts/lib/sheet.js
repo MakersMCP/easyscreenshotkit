@@ -11,6 +11,7 @@ const { pathToFileURL } = require("url");
 const { openTab, closeTab, navigate } = require("./chrome");
 const { metrics, capture, resetPictureWait } = require("./page");
 const { pngSize } = require("./png");
+const { pathOf } = require("./pick");
 
 // A short window, so the page's height is the sheet's own.
 const SHEET = { width: 1600, height: 300, scale: 1, mobile: false, touch: false, agent: "desktop" };
@@ -35,7 +36,7 @@ function sheetHtml(manifest, dir) {
     .map((page) => {
       const picks = picksFor(page);
       const images = picks.map((shot) => `<img class="${shot.width >= shot.height ? "wide" : "tall"}" src="${src(shot.file)}">`).join("");
-      const where = new URL(page.url).pathname;
+      const where = pathOf(page.url);
       return `<figure><div class="shots">${images}</div><figcaption><b>${String(page.n).padStart(2, "0")}</b><i>${escape(page.slug)}</i><span>${escape(where)}</span></figcaption></figure>`;
     })
     .join("");

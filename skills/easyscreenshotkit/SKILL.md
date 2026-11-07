@@ -16,6 +16,7 @@ node <skill>/scripts/easyscreenshotkit.js <url> --out screenshots/<name>
 `<skill>` is this skill's folder. The script needs Node 22 or newer and Chrome, Chromium, Edge or Brave on the machine; it installs nothing and needs no API key. A run takes two or three minutes, up to five on a site with very long pages.
 
 - It takes five pages by default, the home page first. Use `--pages 3` for fewer, and `--page /pricing` (once per page) for pages that must be there.
+- A view of a web app with a `#/` route is a page of its own: give it as the address or as `--page '/app/#/plants'`. Its files are named after it (`02-app-plants-desktop.png`). With `--pages 1` the run takes the address and the `--page` ones and nothing else, for example three views of an app for store screenshots.
 - By default each page comes as the desktop's first screen at 3200x1800, the phone's at 1080x1920 and the whole desktop page. `--sizes iphone` gives 1320x2868 for App Store frames, `--sizes 1270x760@2` a Product Hunt gallery image, and `mobile-full` the whole phone page.
 - `--theme dark` (or `both`) takes the site's own dark theme, `--lang tr` its version in another language.
 - `--pwa` also saves screenshots for a web app manifest in `pwa/`: first screens at 1920x1080 and 1080x1920, checked against Chrome's rules for its richer install dialog, with `pwa/manifest-screenshots.json` listing them. `--pwa-check <manifest file, its address or the site's>` checks the screenshots a manifest already has, with no browser.
@@ -27,7 +28,7 @@ node <skill>/scripts/easyscreenshotkit.js <url> --out screenshots/<name>
 3. Use the files as they are. Do not redraw, retype or tidy up the interface, and never invent a screen the site does not have.
 4. Headings and sections come with boxes in each image's own pixels (in `manifest.json` and `SCREENSHOTS.md`). Use them to crop or zoom into one part of a page instead of guessing where it is.
 5. Whole-page images are long. To show one part, cut the section you need from it; its `sections` say where each one starts and ends.
-6. When a page you need is missing, run again with `--page <path>`. `manifest.json` lists the other pages it could have taken (`candidates`) and the ones it left out, with the reason (`skipped`).
+6. When a page you need is missing, run again with `--page <path>`, or `--page '/app/#/plants'` for a view of an app. `manifest.json` lists the other pages it could have taken (`candidates`) and the ones it left out, with the reason (`skipped`). The tour follows paths only: an app's `#/` links on the home page are in `skipped`, and a `--page` it did not take is named in `notes`.
 7. For a web app manifest, put `pwa/screenshots` next to the app's manifest and add the entries of `pwa/manifest-screenshots.json` to its `screenshots`. Each label is the main heading on that screen: read them, and change any that does not say what the screen shows. Then run `--pwa-check` on the manifest.
 
 ## Record a demo

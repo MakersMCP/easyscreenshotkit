@@ -281,33 +281,40 @@ async function closeTab(chrome, cdp) {
 
 // Opens the address and waits for its load event, at most 20 s: a page that
 // never finishes loading (a stuck tracking script) is read as it stands.
-// Returns the address the tab ended on, after any redirects, and the HTTP
-// status the page came with.
+// Another #route of the page already open loads nothing (Chrome answers
+// with no loader for it), so there is no load event to wait for. Returns
+// the address the tab ended on, after any redirects, and the HTTP status
+// the page came with.
 async function navigate(cdp, url) {
   let onLoad;
   let timer;
   const loaded = new Promise((resolve) => cdp.on("Page.loadEventFired", (onLoad = resolve)));
   try {
-    const { errorText } = await cdp.send("Page.navigate", { url });
+    const { errorText, loaderId } = await cdp.send("Page.navigate", { url });
     if (errorText) throw new Error(`Could not open ${url}: ${errorText}`);
     // The 20 s wait is cleared once the page has loaded: left running, it
     // kept the process alive that long after the last page.
-    await Promise.race([loaded, new Promise((resolve) => (timer = setTimeout(resolve, Math.max(1_000, Math.min(20_000, timeLeft() - 60_000)))))]);
+    if (loaderId) await Promise.race([loaded, new Promise((resolve) => (timer = setTimeout(resolve, Math.max(1_000, Math.min(20_000, timeLeft() - 60_000)))))]);
   } finally {
     clearTimeout(timer);
     cdp.off("Page.loadEventFired", onLoad);
   }
-  let finalUrl = url;
-  try {
-    const { currentIndex, entries } = await cdp.send("Page.getNavigationHistory");
-    finalUrl = (entries[currentIndex] || {}).url || url;
-  } catch {
-    // Keep the address asked for.
-  }
+  const finalUrl = await currentUrl(cdp, url);
   const { result } = await cdp
     .send("Runtime.evaluate", { expression: "(performance.getEntriesByType('navigation')[0] || {}).responseStatus || 0", returnByValue: true }, 5_000)
     .catch(() => ({ result: {} }));
   return { url: finalUrl, status: Number(result && result.value) || 0 };
 }
 
-module.exports = { findChrome, onPath, launch, connect, openTab, closeTab, navigate, userAgentFor };
+// The address the tab shows now: an app can move to another #route of its
+// own after the page has loaded (a sign-in check that answers late).
+async function currentUrl(cdp, fallback = "") {
+  try {
+    const { currentIndex, entries } = await cdp.send("Page.getNavigationHistory", {}, 5_000);
+    return (entries[currentIndex] || {}).url || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+module.exports = { findChrome, onPath, launch, connect, openTab, closeTab, navigate, currentUrl, userAgentFor };

@@ -11,8 +11,9 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 const test = require("node:test");
-const { takeShots } = require("../skills/easyscreenshotkit/scripts/lib/shots");
-const { findChrome } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
+const { takeShots, DEVICES } = require("../skills/easyscreenshotkit/scripts/lib/shots");
+const { findChrome, launch, openTab, closeTab, navigate } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
+const { setTimeLimit } = require("../skills/easyscreenshotkit/scripts/lib/time");
 const { pngText } = require("../skills/easyscreenshotkit/scripts/lib/png");
 const { readPng, serve, near } = require("./helpers");
 
@@ -369,6 +370,137 @@ test("--no-clean keeps the floating boxes; --hide hides more; --json prints the 
   } finally {
     server.close();
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A single page app with hash routes. Each view asks /api/<view> for its
+// data, which comes after `delay` ms, and draws "Loading…" until then: the
+// same few nodes at the same height, so only the requests tell it is not
+// done. Each view has a heading and a colour of its own. #/private sends
+// itself on to #/login. At the root, the app opens on #/dashboard when the
+// address has no route.
+const VIEWS = {
+  dashboard: ["Dashboard", [0, 120, 255]],
+  today: ["Today", [0, 160, 0]],
+  plants: ["Your plants", [200, 0, 0]],
+  "plant/Fern": ["Fern", [120, 0, 200]],
+  light: ["Light check", [255, 140, 0]],
+  login: ["Sign in", [0, 200, 200]],
+  settings: ["Settings", [250, 220, 0]],
+};
+const APP = (root) =>
+  page(
+    "App | Acme",
+    `<nav><a href="#/today">Today</a> <a href="#/plants">Plants</a> <a href="#/light">Light</a> <a href="#/settings">Settings</a></nav>
+    <main id="view"><h1>Loading…</h1><div class="band"></div></main>
+    <script>
+      ${root ? 'if (!location.hash) location.replace("#/dashboard");' : ""}
+      const view = document.getElementById("view");
+      async function go() {
+        const route = (location.hash || "#/today").slice(2);
+        if (route === "private") return location.replace("#/login");
+        view.innerHTML = '<h1>Loading…</h1><div class="band"></div>';
+        const data = await (await fetch("/api/" + route)).json();
+        if ((location.hash || "#/today").slice(2) !== route) return;
+        view.innerHTML = '<h1>' + data.title + '</h1><div class="band" style="background:' + data.color + '"></div>';
+        document.title = data.title + " | Acme";
+      }
+      addEventListener("hashchange", go);
+      go();
+    </script>`,
+    { style: "nav{height:60px;background:rgb(30,30,30)} nav a{color:#fff;margin:0 10px} h1{margin:0;height:60px} .band{height:1200px;background:rgb(240,240,240)}" },
+  );
+
+async function appFixture({ delay = 5_000 } = {}) {
+  const { server, origin } = await serve((req, res) => {
+    const url = new URL(req.url, "http://x");
+    const html = (body) => res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(body);
+    if (url.pathname === "/") return html(APP(true));
+    if (url.pathname === "/app/") return html(APP(false));
+    if (url.pathname === "/app") return res.writeHead(301, { Location: "/app/" }).end();
+    const view = url.pathname.startsWith("/api/") ? VIEWS[decodeURIComponent(url.pathname.slice(5))] : null;
+    if (view) return setTimeout(() => res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ title: view[0], color: `rgb(${view[1].join(",")})` })), delay);
+    res.writeHead(404).end("not found");
+  });
+  return { server, origin };
+}
+
+test("a #route in the address and in --page: each view opened, waited for and named after its route", { skip: noBrowser, timeout: 150_000 }, async () => {
+  const { server, origin } = await appFixture();
+  const dir = path.join(tempDir(), "shots");
+  try {
+    const { manifest } = await takeShots(`${origin}/app/#/plants`, {
+      dir,
+      pages: 1,
+      sizes: "desktop",
+      extra: ["/app/#/plant/Fern", "/app/#/plants", "/app/#/private"],
+      timeLimit: 130_000,
+    });
+    assert.equal(manifest.url, `${origin}/app/#/plants`);
+    assert.deepEqual(
+      manifest.pages.map((p) => [p.n, p.slug, p.url, p.heading, p.shots.map((s) => s.file)]),
+      [
+        [1, "app-plants", `${origin}/app/#/plants`, "Your plants", ["01-app-plants-desktop.png"]],
+        [2, "app-plant-fern", `${origin}/app/#/plant/Fern`, "Fern", ["02-app-plant-fern-desktop.png"]],
+        [3, "app-login", `${origin}/app/#/login`, "Sign in", ["03-app-login-desktop.png"]],
+      ],
+    );
+    assert.deepEqual(manifest.pages[2].notes, [`opened ${origin}/app/#/private and landed on ${origin}/app/#/login`]);
+    assert.ok(manifest.notes.includes(`${origin}/app/#/plants was asked for but not taken: the same page as app-plants.`), manifest.notes.join("\n"));
+    // Each picture shows its view, drawn once its data had come.
+    for (const [p, view] of [[0, "plants"], [1, "plant/Fern"], [2, "login"]]) {
+      const png = readPng(path.join(dir, manifest.pages[p].shots[0].file));
+      assert.ok(near(css(png, 2, 800, 400), VIEWS[view][1]), `${view}: ${css(png, 2, 800, 400)}`);
+    }
+    assert.equal(pngText(fs.readFileSync(path.join(dir, "01-app-plants-desktop.png"))).Source, `${origin}/app/#/plants`);
+    assert.match(fs.readFileSync(path.join(dir, "SCREENSHOTS.md"), "utf8"), /## 02 app-plant-fern\n\n- Address: http:\/\/127\.0\.0\.1:\d+\/app\/#\/plant\/Fern/);
+  } finally {
+    server.close();
+    fs.rmSync(path.dirname(dir), { recursive: true, force: true });
+  }
+});
+
+test("an app at the site's root: the home page is home whatever route it opens on, and the #route links are listed", { skip: noBrowser, timeout: 120_000 }, async () => {
+  const { server, origin } = await appFixture({ delay: 1_500 });
+  const dir = path.join(tempDir(), "shots");
+  try {
+    const { manifest } = await takeShots(origin, { dir, pages: 3, sizes: "desktop", extra: ["#/plants"], timeLimit: 100_000 });
+    assert.deepEqual(
+      manifest.pages.map((p) => [p.slug, p.url, p.heading, p.notes]),
+      [
+        ["home", `${origin}/#/dashboard`, "Dashboard", []],
+        ["home-plants", `${origin}/#/plants`, "Your plants", []],
+      ],
+    );
+    assert.equal(manifest.pages[0].shots[0].file, "01-home-desktop.png");
+    // The views the tour does not open, with the reason; the one taken is
+    // not among them.
+    assert.deepEqual(
+      manifest.skipped.map((s) => [s.url, s.reason]),
+      ["today", "light", "settings"].map((view) => [`${origin}/#/${view}`, "a #route, which the tour does not follow: give it with --page"]),
+    );
+  } finally {
+    server.close();
+    fs.rmSync(path.dirname(dir), { recursive: true, force: true });
+  }
+});
+
+test("opening another #route of the page already open does not wait for a load that never comes", { skip: noBrowser, timeout: 60_000 }, async () => {
+  const { server, origin } = await appFixture({ delay: 100 });
+  // Enough time left for the 20 s a load is waited for.
+  setTimeLimit(120_000);
+  const chrome = await launch();
+  try {
+    const tab = await openTab(chrome, DEVICES.desktop);
+    await navigate(tab, `${origin}/app/#/today`);
+    const started = Date.now();
+    const nav = await navigate(tab, `${origin}/app/#/plants`);
+    assert.ok(Date.now() - started < 3_000, `took ${Date.now() - started} ms`);
+    assert.equal(nav.url, `${origin}/app/#/plants`);
+    await closeTab(chrome, tab);
+  } finally {
+    await chrome.close();
+    server.close();
   }
 });
 

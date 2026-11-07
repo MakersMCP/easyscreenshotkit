@@ -218,6 +218,40 @@ function pageKey(raw) {
   return `${siteOf(url.href)}${url.pathname.replace(/\/+$/, "").toLowerCase() || "/"}`;
 }
 
+// A view of a single page app that routes by the fragment, the way hash
+// routers write it: #/plants, #/plant/Fern, #!/inbox. #/ and #! alone are
+// the app's first view, not a route, and any other fragment (#pricing) is a
+// place on the page. Returns the fragment, or "".
+function routeOf(raw) {
+  let hash;
+  try {
+    hash = new URL(raw).hash;
+  } catch {
+    return "";
+  }
+  const m = /^#(?:\/|!\/?)(.*)$/.exec(hash);
+  return m && m[1].replace(/^\/+/, "") ? hash : "";
+}
+
+// One key per view: the page's key and its #route, when it has one.
+function viewKey(raw) {
+  return `${pageKey(raw)}${routeOf(raw).replace(/\/+$/, "")}`;
+}
+
+// The address without a fragment that is no #route: an anchor on a page
+// leaves it the same page, a new route is another view.
+function viewOf(raw) {
+  const text = String(raw || "");
+  return routeOf(text) ? text : text.split("#")[0];
+}
+
+// What an address shows after its host: the path, the query and the
+// fragment.
+function pathOf(raw) {
+  const url = new URL(raw);
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
 // The address to open for a link: absolute, http(s), no hash, no query.
 function linkUrl(raw, base) {
   let url;
@@ -231,6 +265,23 @@ function linkUrl(raw, base) {
   url.search = "";
   return url;
 }
+
+// The address to open for a page asked for by name: as for a link, but
+// with its fragment, so a #route opens its view.
+function pageUrl(raw, base) {
+  let url;
+  try {
+    url = new URL(String(raw || "").trim(), base);
+  } catch {
+    return null;
+  }
+  if (!/^https?:$/.test(url.protocol)) return null;
+  url.search = "";
+  return url;
+}
+
+// Why a link to a view of a single page app is not in the tour.
+const ROUTE_LINK = "a #route, which the tour does not follow: give it with --page";
 
 function innerSegments(url) {
   const segments = segmentsOf(url.pathname);
@@ -303,21 +354,33 @@ function whyOf(where, text, url) {
 }
 
 // Ranks the home page's links and the sitemap's addresses. links:
-// [{href, text, where}] with where header, hero, body or footer. Returns
-// {candidates, skipped}: candidates best first, skipped with reasons (links
-// only: a sitemap holds every post the site has).
-function rankLinks(links, sitemap, { home, robots = null, alternates = [], exclude = [] }) {
+// [{href, text, where}] with where header, hero, body or footer. exclude:
+// the addresses of pages taken already; keys: their keys (pageKey or
+// viewKey), when known. Returns {candidates, skipped}: candidates best
+// first, skipped with reasons (links only: a sitemap holds every post the
+// site has). A link to a #route of the site is never a candidate: the tour
+// follows paths only. It is listed with the pages left out, after the
+// others, unless that view is taken already.
+function rankLinks(links, sitemap, { home, robots = null, alternates = [], exclude = [], keys = [] }) {
   const homeUrl = new URL(home);
   const homeLocale = localeOf(homeUrl.pathname);
   const site = siteOf(home);
-  const taken = new Set([pageKey(home), ...exclude.map(pageKey)]);
+  // The home page is its path whatever route it opened on.
+  const taken = new Set([pageKey(home), viewKey(home), ...exclude.map(viewKey), ...keys]);
   const otherLanguages = new Set(alternates.map((alt) => { try { return pageKey(alt); } catch { return ""; } }));
   const byKey = new Map();
   const skipped = new Map();
+  const routes = new Map();
   let order = 0;
   const consider = (raw, text, where) => {
+    const full = pageUrl(raw, home);
+    if (!full || siteOf(full.href) !== site || FILE.test(full.pathname)) return;
+    if (routeOf(full.href)) {
+      const key = viewKey(full.href);
+      if (where !== "sitemap" && !taken.has(key) && !routes.has(key)) routes.set(key, { url: full.href, reason: ROUTE_LINK });
+      return;
+    }
     const url = linkUrl(raw, home);
-    if (!url || siteOf(url.href) !== site || FILE.test(url.pathname)) return;
     const key = pageKey(url.href);
     if (taken.has(key)) return;
     order++;
@@ -347,7 +410,7 @@ function rankLinks(links, sitemap, { home, robots = null, alternates = [], exclu
       depthOf(new URL(a.url)) - depthOf(new URL(b.url)) ||
       a.order - b.order,
   );
-  return { candidates, skipped: [...skipped.values()] };
+  return { candidates, skipped: [...skipped.values(), ...routes.values()] };
 }
 
 // The order to visit candidates in: the best of each kind first (two for
@@ -506,7 +569,13 @@ module.exports = {
   KINDS,
   homeOf,
   pageKey,
+  routeOf,
+  viewKey,
+  viewOf,
+  pathOf,
   linkUrl,
+  pageUrl,
+  ROUTE_LINK,
   localeOf,
   siteOf,
   excludedBecause,

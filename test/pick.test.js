@@ -110,6 +110,54 @@ test("ranking: menu links first, a sitemap only as a fallback, reasons kept for 
   );
 });
 
+test("a #route is a view of its own; #/, #! and an anchor are not", () => {
+  assert.equal(pick.routeOf("https://acme.com/app/#/plants"), "#/plants");
+  assert.equal(pick.routeOf("https://acme.com/#/plant/Fern"), "#/plant/Fern");
+  assert.equal(pick.routeOf("https://acme.com/mail/#!/inbox"), "#!/inbox");
+  assert.equal(pick.routeOf("https://acme.com/#!inbox"), "#!inbox");
+  for (const anchor of ["https://acme.com/pricing#faq", "https://acme.com/#/", "https://acme.com/#!", "https://acme.com/#!/", "https://acme.com/#", "https://acme.com/", "not an address"]) assert.equal(pick.routeOf(anchor), "", anchor);
+  // A view's key is its page's and its route: the route keeps its case,
+  // loses a trailing slash; an anchor leaves the page what it is.
+  assert.equal(pick.viewKey("https://www.acme.com/App/#/plant/Fern/"), "acme.com/app#/plant/Fern");
+  assert.equal(pick.viewKey("https://acme.com/pricing?x=1#faq"), "acme.com/pricing");
+  assert.equal(pick.viewOf("https://acme.com/app/?tab=2#/plants"), "https://acme.com/app/?tab=2#/plants");
+  assert.equal(pick.viewOf("https://acme.com/app/?tab=2#faq"), "https://acme.com/app/?tab=2");
+  assert.equal(pick.pathOf("https://acme.com/app/?tab=2#/plants"), "/app/?tab=2#/plants");
+  // A page asked for by name keeps its fragment, not its query.
+  assert.equal(pick.pageUrl("/app/?x=1#/plants", HOME).href, "https://acme.com/app/#/plants");
+  assert.equal(pick.pageUrl("#/plants", "https://acme.com/app/").href, "https://acme.com/app/#/plants");
+  assert.equal(pick.pageUrl("mailto:hi@acme.com", HOME), null);
+});
+
+test("ranking: a #route link is listed as left out, after the others, unless that view is taken", () => {
+  const links = [
+    { href: "#/plants", text: "Plants", where: "header" },
+    { href: "/#features", text: "Features", where: "header" },
+    { href: "/app/#/light", text: "Light", where: "body" },
+    { href: "#/", text: "Home", where: "header" },
+    { href: "#!", text: "Menu", where: "header" },
+    { href: "/login", text: "Log in", where: "header" },
+    { href: "/app/#/today", text: "Today", where: "footer" },
+    { href: "/pricing", text: "Pricing", where: "header" },
+  ];
+  const { candidates, skipped } = pick.rankLinks(links, [], { home: HOME, keys: ["acme.com/app#/today"] });
+  assert.deepEqual(candidates.map((c) => new URL(c.url).pathname), ["/pricing"]);
+  assert.deepEqual(
+    skipped.map((s) => [s.url, s.reason]),
+    [
+      ["https://acme.com/login", "sign-in or sign-up page"],
+      ["https://acme.com/#/plants", "a #route, which the tour does not follow: give it with --page"],
+      ["https://acme.com/app/#/light", "a #route, which the tour does not follow: give it with --page"],
+    ],
+  );
+  // The route the home page opened on is the home page.
+  const app = pick.rankLinks([{ href: "#/dashboard", text: "Dashboard", where: "header" }, { href: "#/plants", text: "Plants", where: "header" }], [], { home: "https://acme.com/#/dashboard" });
+  assert.deepEqual(app.skipped.map((s) => s.url), ["https://acme.com/#/plants"]);
+  // A page with a route taken leaves its path to the tour.
+  const docs = pick.rankLinks([{ href: "/docs/", text: "Docs", where: "header" }], [], { home: HOME, exclude: ["https://acme.com/docs/#/intro"] });
+  assert.deepEqual(docs.candidates.map((c) => new URL(c.url).pathname), ["/docs/"]);
+});
+
 test("visit order: the best of each kind first, two product pages, then the rest", () => {
   const c = (path, kind, score) => ({ url: `https://acme.com${path}`, kind, score });
   const order = pick.visitOrder([c("/pricing", "pricing", 110), c("/plans", "pricing", 105), c("/features", "product", 100), c("/platform", "product", 100), c("/solutions", "product", 99), c("/about", "about", 30)]);

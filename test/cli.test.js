@@ -9,8 +9,9 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const test = require("node:test");
-const { parse } = require("../skills/easyscreenshotkit/scripts/easyscreenshotkit");
-const { parseSizes, normalizeUrl, prepareDir, slugOf, siteName } = require("../skills/easyscreenshotkit/scripts/lib/shots");
+const { parse, summary } = require("../skills/easyscreenshotkit/scripts/easyscreenshotkit");
+const { parseSizes, normalizeUrl, prepareDir, slugOf, identity, movedOn, pagesAsked, siteName } = require("../skills/easyscreenshotkit/scripts/lib/shots");
+const { sheetHtml } = require("../skills/easyscreenshotkit/scripts/lib/sheet");
 
 const CLI = path.resolve(__dirname, "../skills/easyscreenshotkit/scripts/easyscreenshotkit.js");
 
@@ -80,7 +81,8 @@ test("sizes: devices with their scales, whole pages on the first desktop size or
 
 test("addresses, page names and the site's name", () => {
   assert.equal(normalizeUrl("acme.com"), "https://acme.com/");
-  assert.equal(normalizeUrl("http://acme.com/pricing#plans"), "http://acme.com/pricing");
+  assert.equal(normalizeUrl("http://acme.com/pricing#plans"), "http://acme.com/pricing#plans");
+  assert.equal(normalizeUrl("acme.com/app/#/plants"), "https://acme.com/app/#/plants");
   assert.throws(() => normalizeUrl("ftp://acme.com"), /Not a web address/);
   assert.throws(() => normalizeUrl(""), /Give a website address/);
   const home = "https://acme.com/";
@@ -90,9 +92,45 @@ test("addresses, page names and the site's name", () => {
   assert.equal(slugOf("https://acme.com/tr/fiyatlar", "https://acme.com/tr/"), "fiyatlar");
   assert.equal(slugOf("https://acme.com/%C3%BCr%C3%BCnler", home), "urunler");
   assert.equal(slugOf("https://acme.com/about.html", home), "about");
+  // A view of a single page app is named after its route too; an anchor
+  // names nothing.
+  assert.equal(slugOf("https://acme.com/app/#/plants", home), "app-plants");
+  assert.equal(slugOf("https://acme.com/#/plant/Fiddle%20leaf%20fig", home), "home-plant-fiddle-leaf-fig");
+  assert.equal(slugOf("https://acme.com/mail/#!/inbox", home), "mail-inbox");
+  assert.equal(slugOf("https://acme.com/pricing#faq", home), "pricing");
+  assert.equal(slugOf("https://acme.com/app/#/%F0%9F%8C%BF", home), "app");
+  // The pages asked for with --page keep their route; a fragment alone is a
+  // view of the address given.
+  assert.deepEqual(pagesAsked(["/app/#/plants", "#/light", "/pricing?plan=pro"], "https://acme.com/app/#/today", home), ["https://acme.com/app/#/plants", "https://acme.com/app/#/light", "https://acme.com/pricing"]);
+  assert.throws(() => pagesAsked(["https://other.com/#/x"], "https://acme.com/", home), /is not a page of acme\.com/);
+  // Asked with a route, a page is the view it ended on; asked without, its
+  // page, whatever route the app went to by itself.
+  assert.deepEqual([...identity("https://acme.com/app/#/private", "https://acme.com/app/#/login").keys], ["acme.com/app#/private", "acme.com/app#/login"]);
+  assert.equal(identity("https://acme.com/app/#/private", "https://acme.com/app/#/login").named, "https://acme.com/app/#/login");
+  assert.equal(identity("https://acme.com/", "https://acme.com/#/dashboard").named, "https://acme.com/");
+  assert.ok(identity("https://acme.com/", "https://acme.com/#/dashboard").keys.has("acme.com/#/dashboard"));
+  assert.equal(movedOn("https://acme.com/", "https://acme.com/#/dashboard"), false);
+  assert.equal(movedOn("https://acme.com/app/#/private", "https://acme.com/app/#/login"), true);
   assert.equal(siteName({ siteName: "Acme Inc", title: "Home" }, home), "Acme Inc");
   assert.equal(siteName({ siteName: "", title: "Acme | Payments for teams" }, home), "Acme");
   assert.equal(siteName({ siteName: "", title: "" }, "https://www.acme.com/"), "Acme");
+});
+
+test("the summary and the sheet show a view's #route with its path", () => {
+  const shot = (file, width, height) => ({ file, size: "desktop", full: false, theme: "light", width, height });
+  const manifest = {
+    url: "https://acme.com/app/#/plants",
+    site: "Acme",
+    pages: [{ n: 1, slug: "app-plants", url: "https://acme.com/app/#/plants", why: "the address given", shots: [shot("01-app-plants-desktop.png", 3200, 1800)] }],
+    sheet: null,
+    pwa: null,
+    skipped: [{ url: "https://acme.com/app/#/light", reason: "a #route, which the tour does not follow: give it with --page" }],
+    notes: [],
+  };
+  const text = summary({ dir: "shots", manifest });
+  assert.match(text, /01 app-plants {2}\/app\/#\/plants {2}\(the address given\)/);
+  assert.match(text, /Skipped \/app\/#\/light \(a #route, which the tour does not follow: give it with --page\)/);
+  assert.match(sheetHtml(manifest, "shots"), /<span>\/app\/#\/plants<\/span>/);
 });
 
 test("never writes into a folder that holds someone else's files, and replaces an earlier run's", () => {

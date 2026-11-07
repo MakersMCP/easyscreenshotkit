@@ -102,6 +102,55 @@ async function settle(cdp, limitMs = 8_000) {
   }
 }
 
+// The requests a page has out, for a view of a single page app: it draws
+// once the data it asked for has come, and until then the two waits above
+// see a page that holds still ("Loading…" stays as long as the data takes).
+// Watched from before the page opens, with no response bodies kept. A
+// stream that never ends (an EventSource, a video or a song) is not
+// counted; a WebSocket is not a request here at all.
+const requests = new WeakMap();
+const ENDLESS = new Set(["EventSource", "Media"]);
+
+function watchRequests(cdp) {
+  if (requests.has(cdp)) return Promise.resolve();
+  const state = { out: new Set(), last: Date.now() };
+  requests.set(cdp, state);
+  cdp.on("Network.requestWillBeSent", (p) => {
+    state.last = Date.now();
+    if (!ENDLESS.has(p.type)) state.out.add(p.requestId);
+  });
+  const done = (p) => {
+    state.last = Date.now();
+    state.out.delete(p.requestId);
+  };
+  cdp.on("Network.loadingFinished", done);
+  cdp.on("Network.loadingFailed", done);
+  // A new document: what the one before had out went with it.
+  cdp.on("Page.frameNavigated", (p) => {
+    if (p.frame && !p.frame.parentId) state.out.clear();
+  });
+  return cdp.send("Network.enable", { maxTotalBufferSize: 1, maxResourceBufferSize: 1 }, 5_000).catch(() => {});
+}
+
+// Whether the page has had no request out for quietMs.
+function networkQuiet(cdp, quietMs = 500) {
+  const state = requests.get(cdp);
+  return !state || (!state.out.size && Date.now() - state.last >= quietMs);
+}
+
+// Waits until the page has had no request out for half a second, at most
+// limitMs and never into the margin the run keeps for itself. False when
+// the page still had requests going at the limit.
+async function quietNetwork(cdp, { quietMs = 500, limitMs = 10_000 } = {}) {
+  const started = Date.now();
+  for (;;) {
+    if (networkQuiet(cdp, quietMs)) return true;
+    if (Date.now() - started >= limitMs) return false;
+    if (timeLeft() <= 45_000) return true;
+    await sleep(100);
+  }
+}
+
 // Web fonts that are still on their way would be drawn in a fallback face.
 async function waitForFonts(cdp) {
   await cdp
@@ -391,6 +440,9 @@ module.exports = {
   walk,
   waitForContent,
   settle,
+  watchRequests,
+  networkQuiet,
+  quietNetwork,
   waitForFonts,
   clearHover,
   resetPictureWait,

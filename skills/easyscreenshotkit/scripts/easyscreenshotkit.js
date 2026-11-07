@@ -3,6 +3,7 @@
 
 const fs = require("fs");
 const { takeShots, normalizeUrl } = require("./lib/shots");
+const { pathOf } = require("./lib/pick");
 const { checkManifest, describeCheck } = require("./lib/pwa");
 const version = require("./lib/version");
 
@@ -18,8 +19,10 @@ people and coding agents, sheet.png shows every page on one picture.
 
 Options:
   --out <dir>       where to save (default: ./easyscreenshotkit-<host>)
-  --pages <n>       how many pages, the home page included (default: 5, at most 12)
-  --page <path>     take this page too, e.g. --page /pricing (repeat for more)
+  --pages <n>       how many pages, the home page included (default: 5, at
+                    most 12); each --page is taken even past it
+  --page <path>     take this page too, e.g. --page /pricing, or a view of an
+                    app such as '/app/#/plants' (repeat for more)
   --sizes <list>    desktop, mobile, iphone, full, mobile-full or WxH, each with
                     an optional @scale (default: desktop,mobile,full)
   --theme <name>    light, dark or both (default: light)
@@ -38,6 +41,11 @@ Options:
 Sizes: desktop is 1600x900 at 2x, mobile 360x640 at 3x (1080x1920), iphone
 440x956 at 3x (1320x2868), full the whole page at 1x, mobile-full the whole
 phone page at 2x. 1270x760@2 is a Product Hunt gallery image.
+
+A #route in the address or in --page is kept: the page opens on that view,
+waits until the view's data has come (10 s at most) and is named after it,
+02-app-plants-desktop.png for /app/#/plants. The tour follows paths only, so
+the #route links on the home page are listed with the pages left out.
 
 --pwa takes each page's first screen at 1920x1080 and on a phone at
 1080x1920, checks them against Chrome's rules for its richer install
@@ -126,13 +134,13 @@ function summary({ dir, manifest }) {
   const lines = [`Saved ${manifest.pages.length === 1 ? "1 page" : `${manifest.pages.length} pages`} of ${new URL(manifest.url).hostname.replace(/^www\./, "")} to ${dir}`, ""];
   const width = Math.max(...manifest.pages.map((page) => page.slug.length));
   for (const page of manifest.pages) {
-    const where = new URL(page.url).pathname;
+    const where = pathOf(page.url);
     lines.push(`  ${String(page.n).padStart(2, "0")} ${page.slug.padEnd(width)}  ${where}  (${page.why})`);
     lines.push(`     ${" ".repeat(width)}  ${page.shots.map((shot) => shot.file).join(", ") || "no files"}`);
   }
   if (manifest.sheet) lines.push("", `  Sheet   ${manifest.sheet.file} (${manifest.sheet.width}x${manifest.sheet.height})`);
   if (manifest.pwa) lines.push(...(manifest.sheet ? [] : [""]), ...pwaLines(manifest.pwa));
-  const left = manifest.skipped.slice(0, 6).map((skip) => `${new URL(skip.url).pathname} (${skip.reason})`);
+  const left = manifest.skipped.slice(0, 6).map((skip) => `${pathOf(skip.url)} (${skip.reason})`);
   if (left.length) lines.push(`  Skipped ${left.join(", ")}${manifest.skipped.length > 6 ? ` and ${manifest.skipped.length - 6} more` : ""}`);
   for (const note of manifest.notes) lines.push(`  Note    ${note}`);
   lines.push("", `Read ${dir}/SCREENSHOTS.md for the details.`);

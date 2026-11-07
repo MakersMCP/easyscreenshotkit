@@ -29,6 +29,7 @@ easyscreenshotkit-linear.app/
 - Pictures that load late, sections that fade in on scroll, counters that count up and videos are there in full, on the first screen and on the whole page.
 - Every heading on a first screen comes with its box in the image's own pixels, and every section of a whole page with where it starts and ends, so a crop or a zoom does not have to guess.
 - Each PNG carries the address it came from, when it was taken and by what, in its own metadata.
+- A view of a web app with a `#/` route, such as `/app/#/plants`, is taken when you give it as the address or with `--page`. The page opens on that view, waits until the view's data has come, and its files are named after it: `02-app-plants-desktop.png`. The tour itself follows paths only, so the `#/` links it finds on the home page are listed with the pages it left out.
 
 ## Record a demo
 
@@ -142,8 +143,10 @@ The skill carries its own script, so it installs nothing else and needs no API k
 npx easyscreenshotkit@latest <url> [options]
 
   --out <dir>       where to save (default: ./easyscreenshotkit-<host>)
-  --pages <n>       how many pages, the home page included (default: 5, at most 12)
-  --page <path>     take this page too, e.g. --page /pricing (repeat for more)
+  --pages <n>       how many pages, the home page included (default: 5, at
+                    most 12); each --page is taken even past it
+  --page <path>     take this page too, e.g. --page /pricing, or a view of an
+                    app such as '/app/#/plants' (repeat for more)
   --sizes <list>    desktop, mobile, iphone, full, mobile-full or WxH, each with
                     an optional @scale (default: desktop,mobile,full)
   --theme <name>    light, dark or both (default: light)
@@ -175,7 +178,10 @@ Some runs:
 npx easyscreenshotkit@latest stripe.com --pages 3 --sizes desktop
 npx easyscreenshotkit@latest cal.com --page /pricing --sizes 1270x760@2 --out gallery
 npx easyscreenshotkit@latest yourapp.com --sizes iphone,mobile --theme both --out store
+npx easyscreenshotkit@latest 'yourapp.com/app/#/today' --pages 1 --page '/app/#/plants' --page '/app/#/settings' --sizes iphone,mobile --out store
 ```
+
+The last one takes three views of a web app and nothing else: with `--pages 1` there is no tour, only the address and the `--page` ones.
 
 Installed globally (`npm install -g easyscreenshotkit`), the command is `easyscreenshotkit`. npx keeps the copy an earlier run fetched, so `npx easyscreenshotkit@latest` is how you get a newer version.
 
@@ -234,6 +240,7 @@ It tells you which screenshots a desktop and a phone would show and what to fix.
 
 - A site that answers with a bot check gets no screenshots: easyscreenshotkit stops and says so, and does not try to get past it.
 - Pages behind a login are not reached.
+- A view of a web app is reached by its address, a `#/` or `#!` route such as `/app/#/plants`. Any other fragment, such as `#pricing`, is a place on the page and leaves it the same page. A view that only a click opens, with no address of its own, is not reached; a demo with `--steps` can click its way there.
 - A menu that only exists while the mouse is over it, and links made of buttons with no address, are not seen; the sitemap and `--page` fill in.
 - A consent wall that blurs the page or loads nothing until you agree can not be hidden away.
 - Dark captures use the site's own dark theme. A site without one looks the same in both.

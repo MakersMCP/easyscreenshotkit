@@ -22,10 +22,10 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
-const { launch, openTab, closeTab, navigate } = require("./chrome");
-const { metrics, scrollTo, walk, waitForContent, settle, waitForFonts, clearHover, resetPictureWait, capture, captureScreen, capturePage } = require("./page");
+const { launch, openTab, closeTab, navigate, currentUrl } = require("./chrome");
+const { metrics, scrollTo, walk, waitForContent, settle, watchRequests, quietNetwork, waitForFonts, clearHover, resetPictureWait, capture, captureScreen, capturePage } = require("./page");
 const { clean } = require("./clean");
-const { homeOf, pageKey, linkUrl, siteOf, fold, kindOf, rankLinks, visitOrder, readSiteIndex, localeOf } = require("./pick");
+const { homeOf, pageKey, routeOf, viewKey, pathOf, pageUrl, siteOf, fold, kindOf, rankLinks, visitOrder, readSiteIndex, localeOf } = require("./pick");
 const { pngSize, tagPng } = require("./png");
 const { PWA_SHOTS, LOOKED_AT, planPwa, checkManifest } = require("./pwa");
 const { renderSheet } = require("./sheet");
@@ -119,7 +119,8 @@ function addPwaShots(groups) {
 }
 
 // "acme.com", "www.acme.com/pricing" and "https://acme.com" all mean a web
-// address; anything that is not http(s) is refused.
+// address; anything that is not http(s) is refused. A fragment stays: a
+// #route opens a view of a single page app.
 function normalizeUrl(raw) {
   const text = String(raw || "").trim();
   if (!text) throw new Error("Give a website address, for example: easyscreenshotkit acme.com");
@@ -130,7 +131,6 @@ function normalizeUrl(raw) {
     throw new Error(`Not a web address: ${text}`);
   }
   if (!/^https?:$/.test(url.protocol) || !url.hostname) throw new Error(`Not a web address: ${text}`);
-  url.hash = "";
   return url.href;
 }
 
@@ -191,28 +191,66 @@ function cleanUp(dir, existed) {
   }
 }
 
-// A page's name in file names: home, pricing, product-teams.
-function slugOf(url, home) {
-  if (pageKey(url) === pageKey(home)) return "home";
-  const parts = new URL(url).pathname.split("/").filter(Boolean);
-  const inner = localeOf(new URL(url).pathname) ? parts.slice(1) : parts;
-  const slug = fold(
-    inner
-      .map((part) => {
-        try {
-          return decodeURIComponent(part);
-        } catch {
-          return part;
-        }
-      })
-      .join("-"),
-  )
-    .replace(/\.[a-z0-9]+$/, "")
+const decoded = (part) => {
+  try {
+    return decodeURIComponent(part);
+  } catch {
+    return part;
+  }
+};
+
+const slugWords = (text) =>
+  fold(text)
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 40)
     .replace(/-+$/, "");
-  return slug || "page";
+
+// A page's name in file names: home, pricing, product-teams. A view of a
+// single page app adds its #route: app-plants for /app/#/plants,
+// home-plant-fern for /#/plant/Fern.
+function slugOf(url, home) {
+  let slug = "home";
+  if (pageKey(url) !== pageKey(home)) {
+    const parts = new URL(url).pathname.split("/").filter(Boolean);
+    const inner = localeOf(new URL(url).pathname) ? parts.slice(1) : parts;
+    slug = slugWords(fold(inner.map(decoded).join("-")).replace(/\.[a-z0-9]+$/, "")) || "page";
+  }
+  const route = routeOf(url);
+  const words = route ? slugWords(route.replace(/^#(?:\/|!\/?)/, "").split("/").map(decoded).join("-")) : "";
+  return words ? `${slug}-${words}` : slug;
+}
+
+// The keys a page kept is known by, so another address for it is not taken
+// again, and the address its files are named after. A page asked for with
+// a #route is the view it ended on. One asked for without is its page,
+// whatever route the app went to by itself.
+function identity(asked, landed, canonical = "") {
+  if (routeOf(asked)) return { keys: new Set([viewKey(asked), viewKey(landed)]), named: landed };
+  const keys = new Set([pageKey(asked), pageKey(landed), viewKey(landed)]);
+  try {
+    if (canonical) keys.add(pageKey(canonical));
+  } catch {
+    // A canonical link that is not an address says nothing.
+  }
+  return { keys, named: landed.split("#")[0] };
+}
+
+// The pages asked for with --page, as the addresses to open, each with its
+// fragment. A path is read from the home page, a fragment alone
+// ("#/plants") from the address given, as a view of that page.
+function pagesAsked(extra, asked, home) {
+  return extra.map((raw) => {
+    const url = pageUrl(raw, String(raw).trim().startsWith("#") ? asked : home);
+    if (!url || siteOf(url.href) !== siteOf(home)) throw new Error(`--page ${raw} is not a page of ${siteOf(home)}`);
+    return url.href;
+  });
+}
+
+// Whether a page went somewhere other than the address asked: another view
+// for an address with a #route, another page for one without.
+function movedOn(asked, landed) {
+  return routeOf(asked) ? viewKey(landed) !== viewKey(asked) : pageKey(landed) !== pageKey(asked);
 }
 
 // The site's name: og:site_name, else the title up to its first separator
@@ -384,6 +422,18 @@ function rejectReason({ asked, nav, info, loaded }, check) {
   return same ? `the same page as ${same.slug}` : "";
 }
 
+// A view of a single page app, the address asked or the one the app went
+// to, draws once its data has come: up to 10 s for that, then the address
+// it shows by then. busy: the page had requests going all that time on an
+// earlier visit, so this one waits 2 s at most. Returns whether it was
+// still loading at the limit.
+async function waitForView(tab, nav, asked, busy) {
+  if (!routeOf(asked) && !routeOf(nav.url)) return false;
+  const quiet = await quietNetwork(tab, { limitMs: busy ? 2_000 : 10_000 });
+  nav.url = await currentUrl(tab, nav.url);
+  return !quiet;
+}
+
 // Opens one page on one device in one theme and takes the captures the
 // device holds. check: decide first whether the page is kept (see
 // rejectReason); links: read the page's links too.
@@ -391,6 +441,7 @@ async function visit(chrome, page, group, theme, ctx, { check = null, links = fa
   const tab = await openTab(chrome, group.device, { lang: ctx.lang, theme, reducedMotion: ctx.reducedMotion });
   try {
     resetPictureWait(tab);
+    await watchRequests(tab);
     const nav = await navigate(tab, page.url);
     // A bot check, an error or a redirect to a sign-in page is known at once:
     // no need to wait for it to settle.
@@ -401,6 +452,7 @@ async function visit(chrome, page, group, theme, ctx, { check = null, links = fa
     } else if (glance.challenge || nav.status >= 400) {
       return { nav, info: glance, loaded: false, links: [], shots: [], cleaned: { hidden: 0, unlocked: false, badSelectors: [] } };
     }
+    const busy = await waitForView(tab, nav, page.url, page.busy);
     const loaded = await waitForContent(tab, 20_000);
     await settle(tab, 6_000);
     const info = await readInfo(tab);
@@ -458,7 +510,7 @@ async function visit(chrome, page, group, theme, ctx, { check = null, links = fa
         shots.push({ size: shot.size, full: true, png: whole.png, scale: shot.scale, cssWidth: m.width, cssHeight: whole.height, truncated: whole.truncated, sections });
       }
     }
-    return { nav, info, loaded, links: found, shots, cleaned };
+    return { nav, info, loaded, busy, links: found, shots, cleaned };
   } finally {
     await closeTab(chrome, tab);
   }
@@ -660,13 +712,10 @@ async function takeShots(rawUrl, options = {}) {
   const themes = theme === "both" ? ["light", "dark"] : [theme === "dark" ? "dark" : "light"];
   const asked = normalizeUrl(rawUrl);
   let home = homeOf(asked);
-  // An address deeper than its home page is a page of its own to take.
-  const given = pageKey(asked) !== pageKey(home) ? asked : "";
-  const asks = extra.map((raw) => {
-    const url = linkUrl(raw, home);
-    if (!url || siteOf(url.href) !== siteOf(home)) throw new Error(`--page ${raw} is not a page of ${siteOf(home)}`);
-    return url.href;
-  });
+  // An address deeper than its home page, or a #route of it, is a page of
+  // its own to take.
+  const given = viewKey(asked) !== viewKey(home) ? asked : "";
+  const asks = pagesAsked(extra, asked, home);
   const target = dir || `easyscreenshotkit-${siteOf(asked)}`;
   const existed = fs.existsSync(target);
   prepareDir(target);
@@ -715,9 +764,11 @@ async function takeShots(rawUrl, options = {}) {
     };
     const keep = (page, result) => {
       page.n = kept.length + 1;
+      const { keys, named } = identity(page.asked, result.nav.url, result.info.canonical);
       const taken = new Set(kept.map((other) => other.slug));
-      let slug = page.slug || slugOf(result.nav.url, home);
-      for (let k = 2; taken.has(slug); k++) slug = `${page.slug || slugOf(result.nav.url, home)}-${k}`;
+      const base = page.slug || slugOf(named, home);
+      let slug = base;
+      for (let k = 2; taken.has(slug); k++) slug = `${base}-${k}`;
       page.slug = slug;
       Object.assign(page, {
         url: result.nav.url,
@@ -726,13 +777,15 @@ async function takeShots(rawUrl, options = {}) {
         description: result.info.description,
         lang: result.info.lang,
         textHash: result.info.textHash,
-        keys: new Set([pageKey(page.asked), pageKey(result.nav.url), ...(result.info.canonical ? [pageKey(result.info.canonical)] : [])]),
+        keys,
+        busy: result.busy,
       });
       if (!result.loaded) page.notes.push("still showed a loading screen after 20 s");
-      if (pageKey(result.nav.url) !== pageKey(page.asked)) page.notes.push(`opened ${page.asked} and landed on ${result.nav.url}`);
+      if (result.busy) page.notes.push("still loading data after 10 s");
+      if (movedOn(page.asked, result.nav.url)) page.notes.push(`opened ${page.asked} and landed on ${result.nav.url}`);
       kept.push(page);
       saveShots(page, result, firstTheme, target, written);
-      log(`${String(page.n).padStart(2, "0")} ${page.slug}  ${new URL(result.nav.url).pathname}`);
+      log(`${String(page.n).padStart(2, "0")} ${page.slug}  ${pathOf(result.nav.url)}`);
       others(page);
     };
     const newPage = (url, kind, why) => ({ asked: url, url, kind, why, slug: "", shots: [], notes: [], hidden: 0, pwa: {} });
@@ -767,25 +820,34 @@ async function takeShots(rawUrl, options = {}) {
     keep(start, result);
     if (start.kind === "home") start.keys.add(pageKey(home));
 
+    // The page given, when it is not the page opened first, and the pages
+    // asked for with --page, even past --pages: taken whatever they are,
+    // unless they fail to open. One that is not taken is named in the notes.
+    const named = [...(given && start.kind !== "given" ? [[given, "the address given"]] : []), ...asks.map((url) => [url, "asked for with --page"])];
+    for (const [url, why] of named) {
+      const same = kept.find((page) => page.keys.has(viewKey(url)));
+      if (same) {
+        notes.push(`${url} was asked for but not taken: the same page as ${same.slug}.`);
+        continue;
+      }
+      if (timeLeft() < 45_000) {
+        notes.push(`${url} was asked for but not taken: time ran out; give more with --timeout.`);
+        continue;
+      }
+      const kind = (kindOf(new URL(url), "") || { kind: "other" }).kind;
+      const page = newPage(url, kind, why);
+      log(`Opening ${url}`);
+      const got = await visit(chrome, page, first, firstTheme, ctx);
+      const failed = got.nav.status >= 400 ? `the page answered ${got.nav.status}` : got.info.challenge ? "a bot check instead of the page" : "";
+      if (failed) {
+        rejected.push({ url, reason: failed });
+        notes.push(`${url} was asked for but not taken: ${failed}.`);
+      } else keep(page, got);
+    }
+
     if (wanted > 1) {
       const site = siteOf(home);
       const homeKey = pageKey(kept[0].url);
-      // The page given, when it is not the home page, and the pages asked for
-      // with --page: taken whatever they are, unless they fail to open.
-      const named = [...(given && pageKey(given) !== homeKey ? [[given, "the address given"]] : []), ...asks.map((url) => [url, "asked for with --page"])];
-      for (const [url, why] of named) {
-        if (timeLeft() < 45_000) break;
-        if (kept.some((page) => page.keys.has(pageKey(url)))) continue;
-        const kind = (kindOf(new URL(url), "") || { kind: "other" }).kind;
-        const page = newPage(url, kind, why);
-        log(`Opening ${url}`);
-        const got = await visit(chrome, page, first, firstTheme, ctx);
-        const failed = got.nav.status >= 400 ? `the page answered ${got.nav.status}` : got.info.challenge ? "a bot check instead of the page" : "";
-        if (failed) {
-          rejected.push({ url, reason: failed });
-          notes.push(`${url} was asked for but not taken: ${failed}.`);
-        } else keep(page, got);
-      }
       // Then the pages found on the home page and in the sitemap.
       const index = await indexing;
       const ranked = rankLinks(result.links || [], index.urls || [], {
@@ -793,6 +855,7 @@ async function takeShots(rawUrl, options = {}) {
         robots: index.robots,
         alternates: (result.info.alternates || []).map((alt) => alt.href),
         exclude: kept.map((page) => page.url),
+        keys: kept.flatMap((page) => [...page.keys]),
       });
       skipped.push(...ranked.skipped);
       const queue = visitOrder(ranked.candidates);
@@ -807,7 +870,7 @@ async function takeShots(rawUrl, options = {}) {
           break;
         }
         const candidate = queue.shift();
-        if (kept.some((page) => page.keys.has(pageKey(candidate.url)))) continue;
+        if (kept.some((page) => page.keys.has(viewKey(candidate.url)))) continue;
         visits++;
         const page = newPage(candidate.url, candidate.kind, candidate.why);
         log(`Opening ${candidate.url}`);
@@ -932,7 +995,7 @@ function dedupeSkipped(list) {
   for (const skip of list) {
     let key;
     try {
-      key = pageKey(skip.url);
+      key = viewKey(skip.url);
     } catch {
       key = skip.url;
     }
@@ -943,4 +1006,4 @@ function dedupeSkipped(list) {
   return out.slice(0, 40);
 }
 
-module.exports = { takeShots, parseSizes, addPwaShots, normalizeUrl, prepareDir, slugOf, siteName, readInfo, readLinks, rejectAtOnce, rejectReason, DEVICES, MAX_HEIGHT };
+module.exports = { takeShots, parseSizes, addPwaShots, normalizeUrl, prepareDir, slugOf, identity, movedOn, pagesAsked, waitForView, siteName, readInfo, readLinks, rejectAtOnce, rejectReason, DEVICES, MAX_HEIGHT };
