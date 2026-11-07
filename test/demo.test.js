@@ -12,9 +12,11 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const test = require("node:test");
-const { parseDemo, prepareDemoDir, openDemo, makeDemo } = require("../skills/easyscreenshotkit/scripts/lib/demo");
+const { parseDemo, prepareDemoDir, openDemo, makeDemo, routesNote } = require("../skills/easyscreenshotkit/scripts/lib/demo");
+const { pickPages } = require("../skills/easyscreenshotkit/scripts/lib/tour");
+const { setTimeLimit } = require("../skills/easyscreenshotkit/scripts/lib/time");
 const { readSteps } = require("../skills/easyscreenshotkit/scripts/lib/steps");
-const { findChrome } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
+const { findChrome, launch } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
 const { findFfmpeg } = require("../skills/easyscreenshotkit/scripts/lib/ffmpeg");
 const { readPng, serve, near } = require("./helpers");
 
@@ -416,6 +418,31 @@ test("a tour with a #route asked for with --page: clicked to through its link, a
     server.close();
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("a tour lists the #route links of the pages it takes in one note, also when it needs no more pages", { skip: !findChrome() && "no Chrome, Chromium, Edge or Brave installed", timeout: 120_000 }, async () => {
+  const { server, origin } = await fixture();
+  setTimeLimit(110_000);
+  const chrome = await launch();
+  try {
+    const tour = await pickPages(chrome, `${origin}/app/`, { pages: 2 });
+    assert.deepEqual(tour.pages.map((p) => p.url.slice(origin.length)), ["/", "/app/"]);
+    assert.deepEqual(tour.skipped, []);
+    assert.deepEqual(
+      tour.routes.map((r) => r.url.slice(origin.length)),
+      ["/app/#/plant/Fern", "/app/#/today", "/app/#/plants", "/app/#/light"],
+    );
+    assert.equal(routesNote(tour.routes), "Left out /app/#/plant/Fern, /app/#/today, /app/#/plants and /app/#/light: #routes, which the tour does not follow: give one with --page.");
+  } finally {
+    await chrome.close();
+    server.close();
+  }
+  const route = (view) => ({ url: `https://acme.com/app/#/${view}`, reason: "a #route, which the tour does not follow: give it with --page" });
+  assert.equal(routesNote([route("plants")]), "Left out /app/#/plants: a #route, which the tour does not follow: give it with --page.");
+  assert.equal(
+    routesNote(Array.from({ length: 15 }, (_, i) => route(`item/${i + 1}`))),
+    `Left out ${Array.from({ length: 12 }, (_, i) => `/app/#/item/${i + 1}`).join(", ")} and 3 more: #routes, which the tour does not follow: give one with --page.`,
+  );
 });
 
 // Every file and folder under dir, with each file's bytes, hidden ones too.

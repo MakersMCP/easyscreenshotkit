@@ -358,9 +358,8 @@ function whyOf(where, text, url) {
 // the addresses of pages taken already; keys: their keys (pageKey or
 // viewKey), when known. Returns {candidates, skipped}: candidates best
 // first, skipped with reasons (links only: a sitemap holds every post the
-// site has). A link to a #route of the site is never a candidate: the tour
-// follows paths only. It is listed with the pages left out, after the
-// others, unless that view is taken already.
+// site has). A link to a #route of the site is never a candidate, since
+// the tour follows paths only: routeLinks() lists those.
 function rankLinks(links, sitemap, { home, robots = null, alternates = [], exclude = [], keys = [] }) {
   const homeUrl = new URL(home);
   const homeLocale = localeOf(homeUrl.pathname);
@@ -370,16 +369,10 @@ function rankLinks(links, sitemap, { home, robots = null, alternates = [], exclu
   const otherLanguages = new Set(alternates.map((alt) => { try { return pageKey(alt); } catch { return ""; } }));
   const byKey = new Map();
   const skipped = new Map();
-  const routes = new Map();
   let order = 0;
   const consider = (raw, text, where) => {
     const full = pageUrl(raw, home);
-    if (!full || siteOf(full.href) !== site || FILE.test(full.pathname)) return;
-    if (routeOf(full.href)) {
-      const key = viewKey(full.href);
-      if (where !== "sitemap" && !taken.has(key) && !routes.has(key)) routes.set(key, { url: full.href, reason: ROUTE_LINK });
-      return;
-    }
+    if (!full || siteOf(full.href) !== site || FILE.test(full.pathname) || routeOf(full.href)) return;
     const url = linkUrl(raw, home);
     const key = pageKey(url.href);
     if (taken.has(key)) return;
@@ -410,7 +403,24 @@ function rankLinks(links, sitemap, { home, robots = null, alternates = [], exclu
       depthOf(new URL(a.url)) - depthOf(new URL(b.url)) ||
       a.order - b.order,
   );
-  return { candidates, skipped: [...skipped.values(), ...routes.values()] };
+  return { candidates, skipped: [...skipped.values()] };
+}
+
+// The links to views of a single page app (#routes) of the site among
+// links, the ones the tour does not follow, to be listed with the pages
+// left out: one for each view, none for a view taken already (keys: the
+// keys of the pages taken) or for the home page's own.
+function routeLinks(links, { home, keys = [] }) {
+  const site = siteOf(home);
+  const taken = new Set([viewKey(home), ...keys]);
+  const routes = new Map();
+  for (const link of links) {
+    const url = pageUrl(link.href, home);
+    if (!url || siteOf(url.href) !== site || !routeOf(url.href)) continue;
+    const key = viewKey(url.href);
+    if (!taken.has(key) && !routes.has(key)) routes.set(key, { url: url.href, reason: ROUTE_LINK });
+  }
+  return [...routes.values()];
 }
 
 // The order to visit candidates in: the best of each kind first (two for
@@ -581,6 +591,7 @@ module.exports = {
   excludedBecause,
   kindOf,
   rankLinks,
+  routeLinks,
   visitOrder,
   parseRobots,
   robotsAllows,

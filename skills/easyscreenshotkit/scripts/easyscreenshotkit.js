@@ -45,8 +45,9 @@ phone page at 2x. 1270x760@2 is a Product Hunt gallery image.
 
 A #route in the address or in --page is kept: the page opens on that view,
 waits until the view's data has come (10 s at most) and is named after it,
-02-app-plants-desktop.png for /app/#/plants. The tour follows paths only, so
-the #route links on the home page are listed with the pages left out.
+02-app-plants-desktop.png for /app/#/plants. The tour follows paths only:
+the #route links on the home page, the address given and each --page are
+listed with the pages it left out.
 
 The folder has to be new, empty or hold an earlier run. A run builds its
 files in a folder whose name starts with a dot, inside the folder it saves
@@ -147,8 +148,11 @@ function summary({ dir, manifest }) {
   }
   if (manifest.sheet) lines.push("", `  Sheet   ${manifest.sheet.file} (${manifest.sheet.width}x${manifest.sheet.height})`);
   if (manifest.pwa) lines.push(...(manifest.sheet ? [] : [""]), ...pwaLines(manifest.pwa));
-  const left = manifest.skipped.slice(0, 6).map((skip) => `${pathOf(skip.url)} (${skip.reason})`);
-  if (left.length) lines.push(`  Skipped ${left.join(", ")}${manifest.skipped.length > 6 ? ` and ${manifest.skipped.length - 6} more` : ""}`);
+  // The first pages left out, those with the same reason together.
+  const reasons = new Map();
+  for (const skip of manifest.skipped.slice(0, 6)) reasons.set(skip.reason, [...(reasons.get(skip.reason) || []), pathOf(skip.url)]);
+  const left = [...reasons].map(([reason, paths]) => `${paths.join(", ")} (${reason})`);
+  if (left.length) lines.push(`  Skipped ${left.join("; ")}${manifest.skipped.length > 6 ? ` and ${manifest.skipped.length - 6} more` : ""}`);
   for (const note of manifest.notes) lines.push(`  Note    ${note}`);
   lines.push("", `Read ${dir}/SCREENSHOTS.md for the details.`);
   return lines.join("\n");

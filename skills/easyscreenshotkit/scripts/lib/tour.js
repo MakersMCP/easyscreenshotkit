@@ -13,16 +13,17 @@
 const { openTab, closeTab, navigate } = require("./chrome");
 const { waitForContent, settle, walk, watchRequests } = require("./page");
 const { readInfo, readLinks, rejectAtOnce, rejectReason, slugOf, siteName, identity, pagesAsked, waitForView } = require("./shots");
-const { fold, homeOf, pageKey, routeOf, viewKey, pathOf, siteOf, rankLinks, visitOrder, readSiteIndex, kindOf, ROUTE_LINK } = require("./pick");
+const { fold, homeOf, pageKey, routeOf, viewKey, pathOf, siteOf, rankLinks, routeLinks, visitOrder, readSiteIndex, kindOf } = require("./pick");
 const { TOP_COVER } = require("./record");
 const { timeLeft } = require("./time");
 
 const PROBE = { width: 1600, height: 900, scale: 1, mobile: false, touch: false, agent: "desktop" };
 
 // Opens a candidate in a window of its own and says whether it is a page
-// worth showing: {nav, info}, or {rejected: reason}. A view of a single
-// page app is waited for as the screenshots wait for it.
-async function probe(chrome, url, check, ctx) {
+// worth showing: {nav, info, links}, or {rejected: reason}. A view of a
+// single page app is waited for as the screenshots wait for it. links: read
+// the page's links too, for the #routes in its menu.
+async function probe(chrome, url, check, ctx, { links = false } = {}) {
   const tab = await openTab(chrome, PROBE, ctx);
   try {
     await watchRequests(tab);
@@ -35,14 +36,15 @@ async function probe(chrome, url, check, ctx) {
     await settle(tab, 4_000);
     const info = await readInfo(tab);
     const reason = rejectReason({ asked: url, nav, info, loaded }, check);
-    return reason ? { rejected: reason } : { nav, info };
+    return reason ? { rejected: reason } : { nav, info, links: links ? await readLinks(tab) : [] };
   } finally {
     await closeTab(chrome, tab);
   }
 }
 
 // The pages of the tour, the home page first: [{url, kind, why, title}],
-// with the ones left out and why.
+// with the ones opened and left out and why (skipped), and the #route links
+// on the pages taken, which the tour does not follow (routes).
 async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = "", theme = "light", reducedMotion = false, log = () => {} } = {}) {
   const ctx = { lang, theme, reducedMotion };
   let home = homeOf(asked);
@@ -86,7 +88,8 @@ async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = 
   const homeKeys = identity(home, nav.url, info.canonical).keys;
   const kept = [{ url: nav.url, kind: "home", why: "the home page", title: info.title, slug: "home", textHash: info.textHash, keys: homeKeys.add(pageKey(home)) }];
   const skipped = [];
-  const routes = [];
+  // The links on the pages given and asked for, for their #routes.
+  const namedLinks = [];
   const keep = (url, kind, why, got) => {
     const { keys, named } = identity(url, got.nav.url, got.info.canonical);
     kept.push({ url: got.nav.url, kind, why, title: got.info.title, slug: slugOf(named, home), textHash: got.info.textHash, keys });
@@ -101,9 +104,12 @@ async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = 
       skipped.push({ url, reason: `the same page as ${same.slug}` });
       continue;
     }
-    const got = await probe(chrome, url, { site: check.site, homeKey: "", kept: [] }, ctx);
+    const got = await probe(chrome, url, { site: check.site, homeKey: "", kept: [] }, ctx, { links: wanted > 1 });
     if (got.rejected) skipped.push({ url, reason: got.rejected });
-    else keep(url, (kindOf(new URL(url), "") || { kind: "other" }).kind, why, got);
+    else {
+      keep(url, (kindOf(new URL(url), "") || { kind: "other" }).kind, why, got);
+      namedLinks.push(...got.links);
+    }
   }
   if (wanted > kept.length) {
     const index = await indexing;
@@ -114,8 +120,6 @@ async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = 
       exclude: kept.map((page) => page.url),
       keys: kept.flatMap((page) => [...page.keys]),
     });
-    // The views of an app the tour does not open are said, after the rest.
-    routes.push(...ranked.skipped.filter((skip) => skip.reason === ROUTE_LINK));
     const queue = visitOrder(ranked.candidates);
     let visits = 0;
     while (queue.length && kept.length < wanted && visits < wanted * 3 && timeLeft() > 240_000) {
@@ -133,10 +137,13 @@ async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = 
       else keep(candidate.url, candidate.kind, candidate.why, got);
     }
   }
+  // The views of an app that the pages taken link to by #route, whether the
+  // tour still needed pages or not.
+  const routes = wanted > 1 ? routeLinks([...links, ...namedLinks], { home: nav.url, keys: kept.flatMap((page) => [...page.keys]) }) : [];
   // A visitor's order: what the product is first, what it costs last.
   const [first, ...rest] = kept;
   const ordered = [first, ...rest.filter((page) => page.kind !== "pricing"), ...rest.filter((page) => page.kind === "pricing")];
-  return { pages: ordered.map(({ url, kind, why, title, slug }) => ({ url, kind, why, title, slug })), skipped: [...skipped, ...routes], site: siteName(info, nav.url) };
+  return { pages: ordered.map(({ url, kind, why, title, slug }) => ({ url, kind, why, title, slug })), skipped, routes, site: siteName(info, nav.url) };
 }
 
 // Where a page is worth stopping on the way down: the tops of its first

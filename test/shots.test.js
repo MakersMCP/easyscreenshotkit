@@ -544,6 +544,30 @@ test("an app at the site's root: the home page is home whatever route it opens o
   }
 });
 
+test("the #route links of the address given are listed with the pages left out, after the home page's, whatever the tour took", { skip: noBrowser, timeout: 120_000 }, async () => {
+  const { server, origin } = await appFixture({ delay: 300 });
+  const dir = path.join(tempDir(), "shots");
+  try {
+    const { manifest } = await takeShots(`${origin}/app/`, { dir, pages: 2, sizes: "desktop", timeLimit: 100_000 });
+    assert.deepEqual(
+      manifest.pages.map((p) => [p.slug, p.url]),
+      [
+        ["home", `${origin}/#/dashboard`],
+        ["app", `${origin}/app/`],
+      ],
+    );
+    const ROUTE = "a #route, which the tour does not follow: give it with --page";
+    assert.deepEqual(
+      manifest.skipped.map((s) => [s.url.slice(origin.length), s.reason]),
+      ["/#/today", "/#/plants", "/#/light", "/#/settings", "/app/#/today", "/app/#/plants", "/app/#/light", "/app/#/settings"].map((view) => [view, ROUTE]),
+    );
+    assert.match(fs.readFileSync(path.join(dir, "SCREENSHOTS.md"), "utf8"), /- http:\/\/127\.0\.0\.1:\d+\/app\/#\/plants: a #route, which the tour does not follow: give it with --page/);
+  } finally {
+    server.close();
+    fs.rmSync(path.dirname(dir), { recursive: true, force: true });
+  }
+});
+
 test("opening another #route of the page already open does not wait for a load that never comes", { skip: noBrowser, timeout: 60_000 }, async () => {
   const { server, origin } = await appFixture({ delay: 100 });
   // Enough time left for the 20 s a load is waited for.

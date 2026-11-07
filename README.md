@@ -29,7 +29,7 @@ easyscreenshotkit-linear.app/
 - Pictures that load late, sections that fade in on scroll, counters that count up and videos are there in full, on the first screen and on the whole page.
 - Every heading on a first screen comes with its box in the image's own pixels, and every section of a whole page with where it starts and ends, so a crop or a zoom does not have to guess.
 - Each PNG carries the address it came from, when it was taken and by what, in its own metadata.
-- A view of a web app with a `#/` route, such as `/app/#/plants`, is taken when you give it as the address or with `--page`. The page opens on that view, waits until the view's data has come, and its files are named after it: `02-app-plants-desktop.png`. The tour itself follows paths only, so the `#/` links it finds on the home page are listed with the pages it left out.
+- A view of a web app with a `#/` route, such as `/app/#/plants`, is taken when you give it as the address or with `--page`. The page opens on that view, waits until the view's data has come, and its files are named after it: `02-app-plants-desktop.png`. The tour itself follows paths only, so the `#/` links it finds on the home page, on the address given and on each `--page` are listed with the pages it left out.
 
 ## Record a demo
 
@@ -105,7 +105,7 @@ The demo needs ffmpeg, the one on your machine (`brew install ffmpeg`, `sudo apt
 
 How a demo is made:
 
-1. A tour takes the pages the screenshots would: the home page, then features, pricing and the like, each opened first to check it. On each page it rests on the first screen, scrolls down to a section or two, and goes on to the next page through the link in the site's own menu, or with a crossfade when the menu has none. Pricing comes last.
+1. A tour takes the pages the screenshots would: the home page, then features, pricing and the like, each opened first to check it. On each page it rests on the first screen, scrolls down to a section or two, and goes on to the next page through the link in the site's own menu, or with a crossfade when the menu has none. Pricing comes last. It follows paths only: the notes in steps.json name the `#/` links on its pages, which `--page` can add.
 2. Every page loads off camera. The recording pauses while the page opens, scrolls through it once so lazy pictures load, hides what floats over it and waits for its fonts and pictures. Then it comes in with a crossfade.
 3. Chrome draws the page at 1.5 pixels per CSS pixel, so a zoomed-in view stays sharp, and streams its screen. A scroll is taken a frame at a time, the page moved to exactly where each frame of the video needs it, so it is even however slowly the machine draws. A page that draws slowly is recorded in slow motion and played back at speed.
 4. The pointer, the zoom, the rings around clicks and the window are not drawn into the page. They are added afterwards from what was recorded, every frame drawn in a second browser window, and ffmpeg encodes the result.

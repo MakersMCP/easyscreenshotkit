@@ -10,7 +10,7 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const test = require("node:test");
 const { parse, summary } = require("../skills/easyscreenshotkit/scripts/easyscreenshotkit");
-const { parseSizes, normalizeUrl, prepareDir, openShots, slugOf, identity, movedOn, pagesAsked, siteName } = require("../skills/easyscreenshotkit/scripts/lib/shots");
+const { parseSizes, normalizeUrl, prepareDir, openShots, slugOf, identity, movedOn, pagesAsked, leftOut, siteName } = require("../skills/easyscreenshotkit/scripts/lib/shots");
 const { sheetHtml } = require("../skills/easyscreenshotkit/scripts/lib/sheet");
 
 const CLI = path.resolve(__dirname, "../skills/easyscreenshotkit/scripts/easyscreenshotkit.js");
@@ -124,13 +124,41 @@ test("the summary and the sheet show a view's #route with its path", () => {
     pages: [{ n: 1, slug: "app-plants", url: "https://acme.com/app/#/plants", why: "the address given", shots: [shot("01-app-plants-desktop.png", 3200, 1800)] }],
     sheet: null,
     pwa: null,
-    skipped: [{ url: "https://acme.com/app/#/light", reason: "a #route, which the tour does not follow: give it with --page" }],
+    skipped: [
+      { url: "https://acme.com/start", reason: "redirected to a sign-in page" },
+      { url: "https://acme.com/app/#/light", reason: "a #route, which the tour does not follow: give it with --page" },
+      { url: "https://acme.com/app/#/settings", reason: "a #route, which the tour does not follow: give it with --page" },
+    ],
     notes: [],
   };
   const text = summary({ dir: "shots", manifest });
   assert.match(text, /01 app-plants {2}\/app\/#\/plants {2}\(the address given\)/);
-  assert.match(text, /Skipped \/app\/#\/light \(a #route, which the tour does not follow: give it with --page\)/);
+  // The pages left out with the same reason come together.
+  assert.match(text, /Skipped \/start \(redirected to a sign-in page\); \/app\/#\/light, \/app\/#\/settings \(a #route, which the tour does not follow: give it with --page\)\n/);
   assert.match(sheetHtml(manifest, "shots"), /<span>\/app\/#\/plants<\/span>/);
+});
+
+test("the pages left out: those opened first, then the #route links, then the other links, 40 at most, with the #route links past them counted", () => {
+  const ROUTE = "a #route, which the tour does not follow: give it with --page";
+  const rejected = [{ url: "https://acme.com/start", reason: "redirected to a sign-in page" }, { url: "https://acme.com/app/#/private", reason: "the page answered 404" }];
+  const routes = ["today", "plants", "private"].map((view) => ({ url: `https://acme.com/app/#/${view}`, reason: ROUTE }));
+  const posts = Array.from({ length: 45 }, (_, i) => ({ url: `https://acme.com/blog/2025/post-number-${i + 1}`, reason: "a single post" }));
+  const left = leftOut(rejected, routes, posts);
+  assert.equal(left.skipped.length, 40);
+  assert.deepEqual(
+    left.skipped.slice(0, 5).map((s) => [s.url.slice(16), s.reason]),
+    [
+      ["/start", "redirected to a sign-in page"],
+      ["/app/#/private", "the page answered 404"],
+      ["/app/#/today", ROUTE],
+      ["/app/#/plants", ROUTE],
+      ["/blog/2025/post-number-1", "a single post"],
+    ],
+  );
+  assert.equal(left.routesPast, 0);
+  // More #route links than the list holds: counted, for a note.
+  const many = Array.from({ length: 50 }, (_, i) => ({ url: `https://acme.com/app/#/item/${i}`, reason: ROUTE }));
+  assert.deepEqual([leftOut(rejected, many, posts).skipped.length, leftOut(rejected, many, posts).routesPast], [40, 12]);
 });
 
 // Every file and folder under dir, with each file's bytes, hidden ones too:

@@ -18,7 +18,7 @@ const fs = require("fs");
 const path = require("path");
 const { launch } = require("./chrome");
 const { normalizeUrl } = require("./shots");
-const { siteOf, routeOf, viewKey, viewOf } = require("./pick");
+const { siteOf, routeOf, viewKey, viewOf, pathOf } = require("./pick");
 const { Recorder } = require("./record");
 const { readSteps, toYaml, targetText } = require("./steps");
 const { pickPages, tourSteps } = require("./tour");
@@ -65,7 +65,8 @@ Options:
 
 A #route in the address, in --page or in a visit step is kept, and every
 view the video shows, one a click opened included, is a page of its own in
-steps.json.
+steps.json. A tour follows paths only: the notes in steps.json name the
+#route links on its pages.
 
 A demo builds its files inside the folder it saves in and moves them into
 place once it has ended well, replacing an earlier demo's. One that fails or
@@ -201,6 +202,15 @@ const placeOf = (url) => `${new URL(url).pathname}${routeOf(url)}`;
 
 const clock = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
 
+// The #route links a tour left out, in one note: their paths and routes,
+// the first 12 of them, and how many more.
+function routesNote(routes) {
+  const shown = routes.slice(0, 12).map((route) => pathOf(route.url));
+  const more = routes.length - shown.length;
+  const list = more ? `${shown.join(", ")} and ${more} more` : shown.length > 1 ? `${shown.slice(0, -1).join(", ")} and ${shown[shown.length - 1]}` : shown[0];
+  return routes.length === 1 ? `Left out ${list}: a #route, which the tour does not follow: give it with --page.` : `Left out ${list}: #routes, which the tour does not follow: give one with --page.`;
+}
+
 async function makeDemo(rawUrl, options = {}) {
   const {
     dir,
@@ -252,7 +262,8 @@ async function makeDemo(rawUrl, options = {}) {
       if (!script) {
         tour = await pickPages(chrome, asked, { pages: wanted, extra, lang, theme, reducedMotion, log });
         name = tour.site;
-        for (const skip of tour.skipped.slice(0, 8)) notes.push(`Left out ${skip.url}: ${skip.reason}.`);
+        for (const skip of tour.skipped) notes.push(`Left out ${skip.url}: ${skip.reason}.`);
+        if (tour.routes.length) notes.push(routesNote(tour.routes));
       }
       await recorder.open();
       log("Recording");
@@ -452,4 +463,4 @@ async function main(argv) {
   }
 }
 
-module.exports = { main, makeDemo, parseDemo, prepareDemoDir, openDemo, summary, USAGE };
+module.exports = { main, makeDemo, parseDemo, prepareDemoDir, openDemo, routesNote, summary, USAGE };

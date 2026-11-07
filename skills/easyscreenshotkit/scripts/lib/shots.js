@@ -25,7 +25,7 @@ const crypto = require("crypto");
 const { launch, openTab, closeTab, navigate, currentUrl } = require("./chrome");
 const { metrics, scrollTo, walk, waitForContent, settle, watchRequests, quietNetwork, waitForFonts, clearHover, resetPictureWait, capture, captureScreen, capturePage } = require("./page");
 const { clean } = require("./clean");
-const { homeOf, pageKey, routeOf, viewKey, pathOf, pageUrl, siteOf, fold, kindOf, rankLinks, visitOrder, readSiteIndex, localeOf } = require("./pick");
+const { homeOf, pageKey, routeOf, viewKey, pathOf, pageUrl, siteOf, fold, kindOf, rankLinks, routeLinks, visitOrder, readSiteIndex, localeOf, ROUTE_LINK } = require("./pick");
 const { pngSize, tagPng } = require("./png");
 const { PWA_SHOTS, LOOKED_AT, planPwa, checkManifest } = require("./pwa");
 const { renderSheet } = require("./sheet");
@@ -432,8 +432,10 @@ async function waitForView(tab, nav, asked, busy) {
 
 // Opens one page on one device in one theme and takes the captures the
 // device holds. check: decide first whether the page is kept (see
-// rejectReason); links: read the page's links too.
-async function visit(chrome, page, group, theme, ctx, { check = null, links = false } = {}) {
+// rejectReason); links: read the page's links too, after a walk down it
+// so lazy parts are there; routes: read its links as it stands, for the
+// #routes in its menu.
+async function visit(chrome, page, group, theme, ctx, { check = null, links = false, routes = false } = {}) {
   const tab = await openTab(chrome, group.device, { lang: ctx.lang, theme, reducedMotion: ctx.reducedMotion });
   try {
     resetPictureWait(tab);
@@ -461,7 +463,7 @@ async function visit(chrome, page, group, theme, ctx, { check = null, links = fa
     // come up before the clean-up. A first screen alone needs no walk.
     if (full || links) await walk(tab, MAX_HEIGHT);
     else await scrollTo(tab, 0);
-    const found = links ? await readLinks(tab) : null;
+    const found = links || routes ? await readLinks(tab) : null;
     const m0 = await metrics(tab);
     const cleaned = ctx.clean
       ? await clean(tab, { hide: ctx.hide, viewport: { width: m0.width, height: m0.viewportHeight } })
@@ -714,6 +716,7 @@ async function takeShots(rawUrl, options = {}) {
   const kept = [];
   const written = [];
   let leftover = [];
+  let routes = [];
   let name = "";
   let siteManifest = "";
   let pwaSaved = null;
@@ -810,6 +813,9 @@ async function takeShots(rawUrl, options = {}) {
     // The page given, when it is not the page opened first, and the pages
     // asked for with --page, even past --pages: taken whatever they are,
     // unless they fail to open. One that is not taken is named in the notes.
+    // With a tour, the #route links on each are listed with the pages left
+    // out, as the home page's are.
+    const namedLinks = [];
     const named = [...(given && start.kind !== "given" ? [[given, "the address given"]] : []), ...asks.map((url) => [url, "asked for with --page"])];
     for (const [url, why] of named) {
       const same = kept.find((page) => page.keys.has(viewKey(url)));
@@ -824,12 +830,15 @@ async function takeShots(rawUrl, options = {}) {
       const kind = (kindOf(new URL(url), "") || { kind: "other" }).kind;
       const page = newPage(url, kind, why);
       log(`Opening ${url}`);
-      const got = await visit(chrome, page, first, firstTheme, ctx);
+      const got = await visit(chrome, page, first, firstTheme, ctx, { routes: wanted > 1 });
       const failed = got.nav.status >= 400 ? `the page answered ${got.nav.status}` : got.info.challenge ? "a bot check instead of the page" : "";
       if (failed) {
         rejected.push({ url, reason: failed });
         notes.push(`${url} was asked for but not taken: ${failed}.`);
-      } else keep(page, got);
+      } else {
+        keep(page, got);
+        namedLinks.push(...(got.links || []));
+      }
     }
 
     if (wanted > 1) {
@@ -880,6 +889,9 @@ async function takeShots(rawUrl, options = {}) {
         else keep(page, got);
       }
       leftover = queue.slice(0, 20).map(({ url, kind, score, why }) => ({ url, kind, score, why }));
+      // The views of an app that the pages taken link to by #route: the
+      // tour does not follow them, so they are listed for --page.
+      routes = routeLinks([...(result.links || []), ...namedLinks], { home: kept[0].url, keys: kept.flatMap((page) => [...page.keys]) });
     }
 
     await pool.drain();
@@ -888,6 +900,8 @@ async function takeShots(rawUrl, options = {}) {
     for (const page of kept) page.shots.sort((a, b) => themes.indexOf(a.theme) - themes.indexOf(b.theme) || order.indexOf(a.size) - order.indexOf(b.size));
     if (!kept.some((page) => page.shots.length)) throw new Error("No page could be captured.");
     if (kept.some((page) => page.notes.some((note) => /time ran out/.test(note)))) notes.push("Time ran out before every size was taken; give more with --timeout.");
+    const left = leftOut(rejected, routes, skipped);
+    if (left.routesPast) notes.push(`${left.routesPast === 1 ? "1 more #route link was" : `${left.routesPast} more #route links were`} left out past the ${LEFT_OUT} listed; give one with --page to take it.`);
     if (themes.includes("dark")) notes.push("Dark captures use the page's own dark theme, through prefers-color-scheme. A site without one looks the same in both.");
     if (pwa) pwaSaved = savePwa(kept, run);
     manifest = {
@@ -916,7 +930,7 @@ async function takeShots(rawUrl, options = {}) {
       sheet: null,
       pwa: pwaSaved,
       candidates: leftover,
-      skipped: dedupeSkipped([...rejected, ...skipped]),
+      skipped: left.skipped,
       notes,
     };
     // The site's own manifest is read while the sheet is drawn: no browser
@@ -976,10 +990,16 @@ function makePool(limit) {
   };
 }
 
-function dedupeSkipped(list) {
+// The pages left out, each once, as manifest.json lists them: the pages
+// opened and left out first, then the #route links the tour does not
+// follow, which --page can take, then the links left out by their address
+// or their words. LEFT_OUT at most; routesPast: the #route links past it.
+const LEFT_OUT = 40;
+
+function leftOut(rejected, routes, links) {
   const seen = new Set();
-  const out = [];
-  for (const skip of list) {
+  const all = [];
+  for (const skip of [...rejected, ...routes, ...links]) {
     let key;
     try {
       key = viewKey(skip.url);
@@ -988,9 +1008,9 @@ function dedupeSkipped(list) {
     }
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push(skip);
+    all.push(skip);
   }
-  return out.slice(0, 40);
+  return { skipped: all.slice(0, LEFT_OUT), routesPast: all.slice(LEFT_OUT).filter((skip) => skip.reason === ROUTE_LINK).length };
 }
 
-module.exports = { takeShots, parseSizes, addPwaShots, normalizeUrl, prepareDir, openShots, slugOf, identity, movedOn, pagesAsked, waitForView, siteName, readInfo, readLinks, rejectAtOnce, rejectReason, DEVICES, MAX_HEIGHT };
+module.exports = { takeShots, parseSizes, addPwaShots, normalizeUrl, prepareDir, openShots, slugOf, identity, movedOn, pagesAsked, waitForView, leftOut, siteName, readInfo, readLinks, rejectAtOnce, rejectReason, DEVICES, MAX_HEIGHT };
