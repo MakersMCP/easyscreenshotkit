@@ -13,7 +13,8 @@ const { spawn, spawnSync } = require("node:child_process");
 const test = require("node:test");
 const { takeShots, DEVICES } = require("../skills/easyscreenshotkit/scripts/lib/shots");
 const { findChrome, launch, openTab, closeTab, navigate } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
-const { setTimeLimit } = require("../skills/easyscreenshotkit/scripts/lib/time");
+const { setTimeLimit, sleep } = require("../skills/easyscreenshotkit/scripts/lib/time");
+const { watchRequests, networkQuiet } = require("../skills/easyscreenshotkit/scripts/lib/page");
 const { LOCATE } = require("../skills/easyscreenshotkit/scripts/lib/record");
 const { pngText } = require("../skills/easyscreenshotkit/scripts/lib/png");
 const { readPng, serve, near } = require("./helpers");
@@ -379,7 +380,9 @@ test("--no-clean keeps the floating boxes; --hide hides more; --json prints the 
 // same few nodes at the same height, so only the requests tell it is not
 // done. Each view has a heading and a colour of its own. #/private sends
 // itself on to #/login. At the root, the app opens on #/dashboard when the
-// address has no route.
+// address has no route. At /hit/, each view sends a hit with keepalive once
+// it is drawn, as an analytics tag does, and does not read the answer:
+// answered with no-store, Chrome never says such a request has finished.
 const VIEWS = {
   dashboard: ["Dashboard", [0, 120, 255]],
   today: ["Today", [0, 160, 0]],
@@ -389,7 +392,7 @@ const VIEWS = {
   login: ["Sign in", [0, 200, 200]],
   settings: ["Settings", [250, 220, 0]],
 };
-const APP = (root) =>
+const APP = (root, { hit = false } = {}) =>
   page(
     "App | Acme",
     `<nav><a href="#/today">Today</a> <a href="#/plants">Plants</a> <a href="#/light">Light</a> <a href="#/settings">Settings</a></nav>
@@ -406,6 +409,7 @@ const APP = (root) =>
         if ((location.hash || "#/today").slice(2) !== route) return;
         view.innerHTML = '<h1>' + data.title + '</h1><div class="band" style="background:' + data.color + '"></div>';
         document.title = data.title + " | Acme";
+        ${hit ? 'fetch("/api/hit", { method: "POST", keepalive: true, body: route });' : ""}
       }
       addEventListener("hashchange", go);
       go();
@@ -419,6 +423,8 @@ async function appFixture({ delay = 5_000 } = {}) {
     const html = (body) => res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(body);
     if (url.pathname === "/") return html(APP(true));
     if (url.pathname === "/app/") return html(APP(false));
+    if (url.pathname === "/hit/") return html(APP(false, { hit: true }));
+    if (url.pathname === "/api/hit") return res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" }).end("{}");
     if (url.pathname === "/app") return res.writeHead(301, { Location: "/app/" }).end();
     const view = url.pathname.startsWith("/api/") ? VIEWS[decodeURIComponent(url.pathname.slice(5))] : null;
     if (view) return setTimeout(() => res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ title: view[0], color: `rgb(${view[1].join(",")})` })), delay);
@@ -456,6 +462,57 @@ test("a #route in the address and in --page: each view opened, waited for and na
     }
     assert.equal(pngText(fs.readFileSync(path.join(dir, "01-app-plants-desktop.png"))).Source, `${origin}/app/#/plants`);
     assert.match(fs.readFileSync(path.join(dir, "SCREENSHOTS.md"), "utf8"), /## 02 app-plant-fern\n\n- Address: http:\/\/127\.0\.0\.1:\d+\/app\/#\/plant\/Fern/);
+  } finally {
+    server.close();
+    fs.rmSync(path.dirname(dir), { recursive: true, force: true });
+  }
+});
+
+// What the browser says of each request, played to the network wait by
+// hand: an answer that came and had no data for half a second is done,
+// even when the browser never says it finished (a fetch sent with
+// keepalive); one that has not been answered is waited for.
+test("the network wait: a request answered and quiet for half a second is done, one with no answer yet is not", async () => {
+  const listeners = {};
+  const cdp = { on: (method, fn) => (listeners[method] = listeners[method] || []).push(fn), send: async () => ({}) };
+  const emit = (method, params) => (listeners[method] || []).forEach((fn) => fn(params));
+  await watchRequests(cdp);
+  emit("Network.requestWillBeSent", { requestId: "data", type: "Fetch" });
+  emit("Network.requestWillBeSent", { requestId: "hit", type: "Fetch" });
+  emit("Network.requestWillBeSent", { requestId: "song", type: "Media" });
+  emit("Network.responseReceived", { requestId: "hit" });
+  emit("Network.dataReceived", { requestId: "hit" });
+  await sleep(700);
+  assert.equal(networkQuiet(cdp), false, "the data has no answer yet");
+  emit("Network.responseReceived", { requestId: "data" });
+  emit("Network.dataReceived", { requestId: "data" });
+  assert.equal(networkQuiet(cdp), false, "the data is still coming");
+  await sleep(700);
+  emit("Network.dataReceived", { requestId: "song" });
+  assert.equal(networkQuiet(cdp), true, "answered, and nothing more for half a second");
+  emit("Network.requestWillBeSent", { requestId: "more", type: "XHR" });
+  assert.equal(networkQuiet(cdp), false);
+  emit("Network.loadingFinished", { requestId: "more" });
+  assert.equal(networkQuiet(cdp), false, "half a second after the last request");
+  await sleep(600);
+  assert.equal(networkQuiet(cdp), true);
+});
+
+test("a view that sends a hit with keepalive is not held for the whole wait", { skip: noBrowser, timeout: 120_000 }, async () => {
+  const { server, origin } = await appFixture({ delay: 300 });
+  const dir = path.join(tempDir(), "shots");
+  try {
+    const started = Date.now();
+    const { manifest } = await takeShots(`${origin}/hit/#/plants`, { dir, pages: 1, sizes: "desktop,mobile", extra: ["#/light"], timeLimit: 100_000 });
+    assert.deepEqual(
+      manifest.pages.map((p) => [p.slug, p.heading, p.notes]),
+      [
+        ["hit-plants", "Your plants", []],
+        ["hit-light", "Light check", []],
+      ],
+    );
+    // Two views on two sizes: held 10 s and 2 s each, this took over 25 s.
+    assert.ok(Date.now() - started < 22_000, `took ${Date.now() - started} ms`);
   } finally {
     server.close();
     fs.rmSync(path.dirname(dir), { recursive: true, force: true });

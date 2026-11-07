@@ -110,15 +110,29 @@ async function settle(cdp, limitMs = 8_000) {
 // counted; a WebSocket is not a request here at all.
 const requests = new WeakMap();
 const ENDLESS = new Set(["EventSource", "Media"]);
+// A request whose answer has come and that has had no data for this long
+// counts as done. Chrome never says a fetch sent with keepalive (the way
+// analytics tags send their hits) has finished, though its answer came:
+// counted until then, it held every view for the whole wait.
+const STILL_MS = 500;
 
 function watchRequests(cdp) {
   if (requests.has(cdp)) return Promise.resolve();
-  const state = { out: new Set(), last: Date.now() };
+  // Each request out, with when its answer or its last data came: 0 while
+  // no answer has come.
+  const state = { out: new Map(), last: Date.now() };
   requests.set(cdp, state);
   cdp.on("Network.requestWillBeSent", (p) => {
     state.last = Date.now();
-    if (!ENDLESS.has(p.type)) state.out.add(p.requestId);
+    if (!ENDLESS.has(p.type)) state.out.set(p.requestId, 0);
   });
+  const heard = (p) => {
+    if (!state.out.has(p.requestId)) return;
+    state.last = Date.now();
+    state.out.set(p.requestId, state.last);
+  };
+  cdp.on("Network.responseReceived", heard);
+  cdp.on("Network.dataReceived", heard);
   const done = (p) => {
     state.last = Date.now();
     state.out.delete(p.requestId);
@@ -132,10 +146,14 @@ function watchRequests(cdp) {
   return cdp.send("Network.enable", { maxTotalBufferSize: 1, maxResourceBufferSize: 1 }, 5_000).catch(() => {});
 }
 
-// Whether the page has had no request out for quietMs.
+// Whether the page has had no request out for quietMs: none waits for its
+// answer, and none had data in the last half second.
 function networkQuiet(cdp, quietMs = 500) {
   const state = requests.get(cdp);
-  return !state || (!state.out.size && Date.now() - state.last >= quietMs);
+  if (!state) return true;
+  const now = Date.now();
+  for (const heardAt of state.out.values()) if (!heardAt || now - heardAt < STILL_MS) return false;
+  return now - state.last >= quietMs;
 }
 
 // Waits until the page has had no request out for half a second, at most
