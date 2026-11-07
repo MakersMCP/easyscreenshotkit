@@ -5,7 +5,6 @@
 // pages were taken with, from the files already saved: no request goes out.
 
 const fs = require("fs");
-const os = require("os");
 const path = require("path");
 const { pathToFileURL } = require("url");
 const { openTab, closeTab, navigate } = require("./chrome");
@@ -64,11 +63,13 @@ function sheetHtml(manifest, dir) {
   </main></body></html>`;
 }
 
-// The sheet as a page of its own: an HTML file in a temp folder that shows
-// the saved PNGs, opened in a new window and captured whole.
+// The sheet as a page of its own: an HTML file that shows the saved PNGs,
+// opened in a new window and captured whole. dir: the folder the PNGs are
+// in, where sheet.png goes; the HTML file is made in a folder of its own
+// there, and goes once the sheet is drawn.
 async function renderSheet(chrome, manifest, dir) {
   if (!manifest.pages.some((page) => picksFor(page).length)) return null;
-  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-sheet-"));
+  const temp = fs.mkdtempSync(path.join(dir, "sheet-"));
   const file = path.join(temp, "sheet.html");
   fs.writeFileSync(file, sheetHtml(manifest, dir));
   const tab = await openTab(chrome, SHEET);

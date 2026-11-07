@@ -9,7 +9,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { spawn } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 const test = require("node:test");
 const { takeShots, DEVICES } = require("../skills/easyscreenshotkit/scripts/lib/shots");
 const { findChrome, launch, openTab, closeTab, navigate } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
@@ -522,6 +522,123 @@ test("a demo's link to a #route is to that view, and its link to a page goes bef
   } finally {
     await chrome.close();
     server.close();
+  }
+});
+
+// Every file and folder under dir, with each file's bytes, hidden ones too.
+function snapshot(dir) {
+  const out = {};
+  const walk = (at, rel) => {
+    for (const entry of fs.readdirSync(at, { withFileTypes: true })) {
+      const name = rel ? `${rel}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        out[`${name}/`] = "";
+        walk(path.join(at, entry.name), name);
+      } else out[name] = fs.readFileSync(path.join(at, entry.name)).toString("base64");
+    }
+  };
+  if (fs.existsSync(dir)) walk(dir, "");
+  return out;
+}
+
+// The profiles of the browsers a process has started, from /proc: Linux
+// only, none elsewhere.
+function profilesOf(pid) {
+  try {
+    const kids = fs.readFileSync(`/proc/${pid}/task/${pid}/children`, "utf8").trim().split(/\s+/).filter(Boolean);
+    return kids.flatMap((kid) => {
+      try {
+        // Chrome writes its arguments back as one line.
+        return [...fs.readFileSync(`/proc/${kid}/cmdline`, "utf8").matchAll(/--user-data-dir=([^\s\0]+)/g)].map((m) => m[1]);
+      } catch {
+        return [];
+      }
+    });
+  } catch {
+    return [];
+  }
+}
+
+// The CLI in a child process, stopped with signal (to it, or to its whole
+// process group as a supervisor sends it) once stopAt(stderr, pid) says so.
+// profiles: those of the browsers it had going then.
+function stopCli(args, { stopAt, signal = "SIGTERM", group = false }) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [CLI, ...args], { detached: group });
+    let stdout = "";
+    let stderr = "";
+    let sent = false;
+    let profiles = [];
+    const check = () => {
+      if (sent || !stopAt(stderr, child.pid)) return;
+      sent = true;
+      profiles = profilesOf(child.pid);
+      process.kill(group ? -child.pid : child.pid, signal);
+    };
+    const timer = setInterval(check, 100);
+    child.stdout.on("data", (d) => (stdout += d));
+    child.stderr.on("data", (d) => {
+      stderr += d;
+      check();
+    });
+    child.on("close", (status, how) => {
+      clearInterval(timer);
+      resolve({ status, signal: how, stdout, stderr, sent, profiles });
+    });
+  });
+}
+
+test("a run that fails or is stopped leaves the earlier run's files as they were and adds nothing", { skip: noBrowser, timeout: 280_000 }, async () => {
+  const { server, origin } = await fixture();
+  const root = tempDir();
+  const dir = path.join(root, "shots");
+  try {
+    const { manifest } = await takeShots(origin, { dir, pages: 2, sizes: "desktop", timeLimit: 120_000 });
+    assert.equal(manifest.pages.length, 2);
+    fs.writeFileSync(path.join(dir, "keep-me.txt"), "mine");
+    const before = snapshot(dir);
+    assert.deepEqual(Object.keys(before).sort(), ["01-home-desktop.png", "02-pricing-desktop.png", "SCREENSHOTS.md", "keep-me.txt", "manifest.json", "sheet.png"]);
+
+    // A home page that answers 404.
+    await assert.rejects(takeShots(`${origin}/missing`, { dir, pages: 1, sizes: "desktop", timeLimit: 60_000 }), /answered 404, so no screenshots were taken/);
+    assert.deepEqual(snapshot(dir), before);
+
+    // No browser where CHROME_PATH points: nothing changes, and a new folder
+    // is not made.
+    for (const out of [dir, path.join(root, "new", "shots")]) {
+      const none = spawnSync(process.execPath, [CLI, origin, "--out", out], { env: { ...process.env, CHROME_PATH: path.join(root, "no-chrome") }, encoding: "utf8" });
+      assert.equal(none.status, 1);
+      assert.match(none.stderr, /No Chrome, Chromium, Edge or Brave found/);
+    }
+    assert.deepEqual(snapshot(dir), before);
+    assert.equal(fs.existsSync(path.join(root, "new")), false);
+
+    // Stopped with SIGTERM once a page is taken, sent to the process, then
+    // to its whole group as a supervisor sends it (with --json, which logs
+    // nothing, once a picture is in the run's part folder): the browser, its
+    // profile and the files the run had made go, and it ends by the same
+    // signal.
+    const pageTaken = (stderr) => /^01 home {2}\/$/m.test(stderr);
+    const pictureMade = () => {
+      try {
+        return fs.readdirSync(dir).some((name) => name.startsWith(".easyscreenshotkit-part-") && fs.readdirSync(path.join(dir, name)).some((file) => file.endsWith(".png")));
+      } catch {
+        return false;
+      }
+    };
+    for (const group of [false, true]) {
+      const stopped = await stopCli([origin, "--out", dir, "--sizes", "desktop,mobile", ...(group ? ["--json"] : [])], { stopAt: group ? pictureMade : pageTaken, group });
+      assert.ok(stopped.sent, stopped.stderr);
+      if (process.platform === "linux") assert.equal(stopped.profiles.length, 1);
+      assert.equal(stopped.signal, "SIGTERM", `${stopped.status} ${stopped.stderr}`);
+      assert.match(stopped.stderr, new RegExp(`easyscreenshotkit: stopped\\. ${dir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} is as it was before this run\\.`));
+      if (group) assert.deepEqual(JSON.parse(stopped.stdout || "null"), { ok: false, error: `stopped. ${dir} is as it was before this run.` });
+      assert.deepEqual(snapshot(dir), before, group ? "group" : "process");
+      for (const profile of stopped.profiles) assert.equal(fs.existsSync(profile), false, profile);
+    }
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });
 

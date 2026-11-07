@@ -117,6 +117,10 @@ function connect(wsUrl) {
   });
 }
 
+// The browsers this process has started and not closed yet, each with its
+// profile, from the moment it is spawned.
+const open = new Set();
+
 // --use-mock-keychain and --password-store=basic keep Chrome on macOS from
 // asking for the login keychain, which it does for a fresh profile. The
 // profile is a temp folder; the user's own home and browser are untouched.
@@ -160,6 +164,8 @@ async function launch({ lang = "", args = [] } = {}) {
   let exited = false;
   child.on("exit", () => (exited = true));
   child.on("error", () => (exited = true));
+  const started = { child, profile };
+  open.add(started);
   let base = "";
   let browser = null;
   // Chrome is asked to quit first: killed outright, its helper processes go
@@ -174,6 +180,7 @@ async function launch({ lang = "", args = [] } = {}) {
     if (browser) browser.close();
     if (!exited) child.kill("SIGKILL");
     for (let i = 0; i < 20 && !exited; i++) await sleep(100);
+    open.delete(started);
     try {
       fs.rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     } catch {
@@ -322,4 +329,39 @@ async function currentUrl(cdp, fallback = "") {
   }
 }
 
-module.exports = { findChrome, onPath, launch, connect, openTab, closeTab, navigate, currentUrl, userAgentFor };
+// For a process that is being stopped and has no time to ask its browsers
+// to quit: each one is killed at once. Returns their profiles, for
+// removeProfiles() once the browsers' helper processes have ended too,
+// about a tenth of a second later: removed sooner, a profile fills up again.
+function killBrowsers() {
+  const profiles = [];
+  for (const { child, profile } of open) {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      // Gone already.
+    }
+    profiles.push(profile);
+  }
+  open.clear();
+  return profiles;
+}
+
+// Synchronous, with no retries that wait long: a stopped process may have a
+// second left before it is killed outright.
+function removeProfiles(profiles) {
+  for (const profile of profiles) {
+    for (let tries = 0; tries < 2; tries++) {
+      try {
+        fs.rmSync(profile, { recursive: true, force: true });
+        break;
+      } catch {
+        // Something still wrote to it: once more a moment later, then it is
+        // left for the system's temp clean-up.
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+      }
+    }
+  }
+}
+
+module.exports = { findChrome, onPath, launch, connect, openTab, closeTab, navigate, currentUrl, killBrowsers, removeProfiles, userAgentFor };

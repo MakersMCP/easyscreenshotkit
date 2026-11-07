@@ -12,7 +12,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const test = require("node:test");
-const { parseDemo, prepareDemoDir, makeDemo } = require("../skills/easyscreenshotkit/scripts/lib/demo");
+const { parseDemo, prepareDemoDir, openDemo, makeDemo } = require("../skills/easyscreenshotkit/scripts/lib/demo");
 const { readSteps } = require("../skills/easyscreenshotkit/scripts/lib/steps");
 const { findChrome } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
 const { findFfmpeg } = require("../skills/easyscreenshotkit/scripts/lib/ffmpeg");
@@ -63,45 +63,68 @@ test("the CLI hands demo to its own command, with its own help", () => {
   assert.match(spawnSync(process.execPath, [CLI, "--help"], { encoding: "utf8" }).stdout, /easyscreenshotkit demo <url>/);
 });
 
-test("a demo never writes into a folder that holds someone else's files, and replaces an earlier demo's", () => {
+test("a demo never writes into a folder that holds someone else's files, and its files take an earlier demo's place once it has ended well", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-demo-dir-"));
   const earlier = () => fs.writeFileSync(path.join(dir, "steps.json"), JSON.stringify({ version: 1, kind: "demo", tool: "easyscreenshotkit 0.1.0" }));
+  const record = (options, files) => {
+    const run = openDemo(dir, options);
+    for (const [name, text] of Object.entries(files)) run.write(name, text);
+    run.write("steps.json", JSON.stringify({ version: 1, kind: "demo", tool: "easyscreenshotkit 0.1.2" }));
+    run.commit([...Object.keys(files), "steps.json"]);
+  };
+  const read = (name) => fs.readFileSync(path.join(dir, name), "utf8");
+  const hourAgo = new Date(Date.now() - 3_600_000);
   try {
     fs.writeFileSync(path.join(dir, "notes.txt"), "mine");
     // A folder of someone else's is refused, and nothing in it is touched,
     // not even a folder that looks like the frames of a run.
     fs.mkdirSync(path.join(dir, ".frames-cache"));
+    assert.throws(() => openDemo(dir), /not empty/);
     assert.throws(() => prepareDemoDir(dir), /not empty/);
-    assert.ok(fs.existsSync(path.join(dir, ".frames-cache")));
+    assert.deepEqual(fs.readdirSync(dir).sort(), [".frames-cache", "notes.txt"]);
     fs.rmSync(path.join(dir, "notes.txt"));
     fs.rmSync(path.join(dir, ".frames-cache"), { recursive: true });
     earlier();
     fs.writeFileSync(path.join(dir, "demo.mp4"), "old");
+    fs.writeFileSync(path.join(dir, "demo.gif"), "old");
     fs.writeFileSync(path.join(dir, "demo.yaml"), "steps:\n  - wait: 1\n");
     fs.writeFileSync(path.join(dir, "keep-me.txt"), "mine");
-    // The frames a stopped run left behind go too.
+    // The frames a run of 0.1.1 left when it was stopped: they go once a
+    // run ends well and they are half an hour old.
     fs.mkdirSync(path.join(dir, ".frames-abc123"));
     fs.writeFileSync(path.join(dir, ".frames-abc123", "f000001.jpg"), "x");
-    // Recording again from the tour's own demo.yaml, edited: it stays.
-    prepareDemoDir(dir, { steps: path.join(dir, "demo.yaml") });
-    assert.deepEqual(fs.readdirSync(dir).sort(), ["demo.yaml", "keep-me.txt"]);
+    // A run that does not end well leaves the earlier demo as it was.
+    const stopped = openDemo(dir, { tour: true });
+    stopped.write("demo.mp4", "half");
+    stopped.abort();
+    assert.deepEqual(fs.readdirSync(dir).sort(), [".frames-abc123", "demo.gif", "demo.mp4", "demo.yaml", "keep-me.txt", "steps.json"]);
+    assert.equal(read("demo.mp4"), "old");
+    // Recording again from the tour's own demo.yaml, edited: it stays, and
+    // the earlier GIF goes, as this run makes none.
+    record({ steps: path.join(dir, "demo.yaml") }, { "demo.mp4": "new", "poster.png": "new" });
+    assert.deepEqual(fs.readdirSync(dir).sort(), [".frames-abc123", "demo.mp4", "demo.yaml", "keep-me.txt", "poster.png", "steps.json"]);
+    assert.deepEqual([read("demo.mp4"), read("demo.yaml")], ["new", "steps:\n  - wait: 1\n"]);
     // A new tour replaces the old tour's demo.yaml.
-    earlier();
-    prepareDemoDir(dir, { tour: true });
-    assert.deepEqual(fs.readdirSync(dir).sort(), ["keep-me.txt"]);
+    for (const at of [path.join(dir, ".frames-abc123", "f000001.jpg"), path.join(dir, ".frames-abc123")]) fs.utimesSync(at, hourAgo, hourAgo);
+    record({ tour: true }, { "demo.mp4": "tour", "demo.yaml": "steps:\n  - wait: 2\n" });
+    assert.deepEqual(fs.readdirSync(dir).sort(), ["demo.mp4", "demo.yaml", "keep-me.txt", "steps.json"]);
+    assert.equal(read("demo.yaml"), "steps:\n  - wait: 2\n");
+    // A steps file that sits where the demo saves its steps.json is refused.
+    fs.mkdirSync(path.join(dir, "inner"));
+    fs.writeFileSync(path.join(dir, "inner", "steps.json"), JSON.stringify({ steps: [{ wait: 1 }] }));
+    assert.throws(() => openDemo(path.join(dir, "inner"), { steps: path.join(dir, "inner", "steps.json") }), /inner\/steps\.json is the steps file this demo follows, and the demo saves its own steps\.json in its place\./);
     // A folder that holds only the steps file is the run's to use.
-    fs.rmSync(path.join(dir, "keep-me.txt"));
-    fs.writeFileSync(path.join(dir, "flow.yaml"), "steps:\n  - wait: 1\n");
-    prepareDemoDir(dir, { steps: path.join(dir, "flow.yaml") });
-    assert.deepEqual(fs.readdirSync(dir), ["flow.yaml"]);
+    fs.rmSync(path.join(dir, "inner", "steps.json"));
+    fs.writeFileSync(path.join(dir, "inner", "flow.yaml"), "steps:\n  - wait: 1\n");
+    openDemo(path.join(dir, "inner"), { steps: path.join(dir, "inner", "flow.yaml") }).abort();
+    assert.deepEqual(fs.readdirSync(path.join(dir, "inner")), ["flow.yaml"]);
+    fs.rmSync(path.join(dir, "inner"), { recursive: true });
     // A demo from when the tool was called easyscreenshot counts too.
     fs.writeFileSync(path.join(dir, "steps.json"), JSON.stringify({ version: 1, kind: "demo", tool: "easyscreenshot 0.1.0" }));
-    fs.writeFileSync(path.join(dir, "demo.mp4"), "old");
-    prepareDemoDir(dir, { steps: path.join(dir, "flow.yaml") });
-    assert.deepEqual(fs.readdirSync(dir), ["flow.yaml"]);
+    openDemo(dir, { steps: path.join(dir, "demo.yaml") }).abort();
     // A screenshots run is not a demo.
     fs.writeFileSync(path.join(dir, "steps.json"), JSON.stringify({ version: 1, tool: "easyscreenshotkit 0.1.0" }));
-    assert.throws(() => prepareDemoDir(dir), /no earlier easyscreenshotkit demo/);
+    assert.throws(() => openDemo(dir), /no earlier easyscreenshotkit demo/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -389,6 +412,82 @@ test("a tour with a #route asked for with --page: clicked to through its link, a
     assert.deepEqual(again.steps.find((s) => s.action === "click").target, { css: 'a[href$="#/plant/Fern"]' });
     const middle = await frameOf(path.join(dir, "demo.mp4"), (manifest.pages[1].start + manifest.pages[1].end) / 2);
     assert.ok(near(unzoomed(middle, 800, 700), PURPLE), `Fern: ${unzoomed(middle, 800, 700)}`);
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// Every file and folder under dir, with each file's bytes, hidden ones too.
+function snapshot(dir) {
+  const out = {};
+  const walk = (at, rel) => {
+    for (const entry of fs.readdirSync(at, { withFileTypes: true })) {
+      const name = rel ? `${rel}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        out[`${name}/`] = "";
+        walk(path.join(at, entry.name), name);
+      } else out[name] = fs.readFileSync(path.join(at, entry.name)).toString("base64");
+    }
+  };
+  if (fs.existsSync(dir)) walk(dir, "");
+  return out;
+}
+
+// The profiles of the browsers a process has started, from /proc: Linux
+// only, none elsewhere. Chrome writes its arguments back as one line.
+function profilesOf(pid) {
+  try {
+    const kids = fs.readFileSync(`/proc/${pid}/task/${pid}/children`, "utf8").trim().split(/\s+/).filter(Boolean);
+    return kids.flatMap((kid) => {
+      try {
+        return [...fs.readFileSync(`/proc/${kid}/cmdline`, "utf8").matchAll(/--user-data-dir=([^\s\0]+)/g)].map((m) => m[1]);
+      } catch {
+        return [];
+      }
+    });
+  } catch {
+    return [];
+  }
+}
+
+test("a demo that fails or is stopped leaves an earlier demo as it was and adds nothing", { skip: missing, timeout: 300_000 }, async () => {
+  const { server, origin } = await fixture();
+  const root = tempDir();
+  const dir = path.join(root, "demo");
+  const good = path.join(root, "good.yaml");
+  const bad = path.join(root, "bad.yaml");
+  fs.writeFileSync(good, "steps:\n  - visit: /\n  - wait: 0.6\n  - scroll: { to: \"text=Simple\" }\n  - wait: 0.6\n");
+  fs.writeFileSync(bad, "steps:\n  - visit: /\n  - click: 'text=Not on this page'\n");
+  try {
+    await makeDemo(origin, { dir, steps: good, timeLimit: 200_000 });
+    const before = snapshot(dir);
+    assert.deepEqual(Object.keys(before).sort(), ["demo.gif", "demo.mp4", "poster.png", "steps.json"]);
+
+    // A step that points at nothing.
+    await assert.rejects(makeDemo(origin, { dir, steps: bad, gif: false, timeLimit: 100_000 }), /step 2 \(click\): nothing on the page matches/);
+    assert.deepEqual(snapshot(dir), before);
+
+    // Stopped with SIGTERM to its whole process group while the video is
+    // drawn, as a supervisor stops a job: the partial demo.mp4, the frames
+    // and the browser's profile go, and it ends by the same signal.
+    const child = spawn(process.execPath, [CLI, "demo", origin, "--steps", good, "--out", dir], { detached: true });
+    let stderr = "";
+    let profiles = [];
+    child.stderr.on("data", (d) => {
+      const first = !/^Drawing /m.test(stderr);
+      stderr += d;
+      if (first && /^Drawing /m.test(stderr)) {
+        profiles = profilesOf(child.pid);
+        process.kill(-child.pid, "SIGTERM");
+      }
+    });
+    const how = await new Promise((resolve) => child.on("close", (status, signal) => resolve(signal || status)));
+    assert.equal(how, "SIGTERM", stderr);
+    assert.match(stderr, /easyscreenshotkit demo: stopped\. .*demo is as it was before this run\./);
+    if (process.platform === "linux") assert.equal(profiles.length, 1, stderr);
+    for (const profile of profiles) assert.equal(fs.existsSync(profile), false, profile);
+    assert.deepEqual(snapshot(dir), before);
   } finally {
     server.close();
     fs.rmSync(root, { recursive: true, force: true });

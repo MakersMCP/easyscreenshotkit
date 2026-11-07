@@ -10,7 +10,7 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const test = require("node:test");
 const { parse, summary } = require("../skills/easyscreenshotkit/scripts/easyscreenshotkit");
-const { parseSizes, normalizeUrl, prepareDir, slugOf, identity, movedOn, pagesAsked, siteName } = require("../skills/easyscreenshotkit/scripts/lib/shots");
+const { parseSizes, normalizeUrl, prepareDir, openShots, slugOf, identity, movedOn, pagesAsked, siteName } = require("../skills/easyscreenshotkit/scripts/lib/shots");
 const { sheetHtml } = require("../skills/easyscreenshotkit/scripts/lib/sheet");
 
 const CLI = path.resolve(__dirname, "../skills/easyscreenshotkit/scripts/easyscreenshotkit.js");
@@ -133,26 +133,124 @@ test("the summary and the sheet show a view's #route with its path", () => {
   assert.match(sheetHtml(manifest, "shots"), /<span>\/app\/#\/plants<\/span>/);
 });
 
-test("never writes into a folder that holds someone else's files, and replaces an earlier run's", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-dir-"));
+// Every file and folder under dir, with each file's bytes, hidden ones too:
+// to tell a folder is exactly as it was.
+function snapshot(dir) {
+  const out = {};
+  const walk = (at, rel) => {
+    for (const entry of fs.readdirSync(at, { withFileTypes: true })) {
+      const name = rel ? `${rel}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        out[`${name}/`] = "";
+        walk(path.join(at, entry.name), name);
+      } else out[name] = fs.readFileSync(path.join(at, entry.name)).toString("base64");
+    }
+  };
+  if (fs.existsSync(dir)) walk(dir, "");
+  return out;
+}
+
+const hourAgo = () => new Date(Date.now() - 3_600_000);
+
+test("a run's folder: refused when it holds someone else's files, and an earlier run's files stay until a new run has ended well", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-dir-"));
+  const dir = path.join(root, "shots");
+  const put = (rel, text) => {
+    fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
+    fs.writeFileSync(path.join(dir, rel), text);
+  };
   try {
-    fs.writeFileSync(path.join(dir, "notes.txt"), "mine");
+    put("notes.txt", "mine");
+    assert.throws(() => openShots(dir), /not empty and holds no earlier easyscreenshotkit run\. Pick another folder with --out\./);
     assert.throws(() => prepareDir(dir), /not empty/);
+    assert.deepEqual(fs.readdirSync(dir), ["notes.txt"]);
     fs.rmSync(path.join(dir, "notes.txt"));
-    fs.writeFileSync(path.join(dir, "manifest.json"), JSON.stringify({ version: 1, tool: "easyscreenshotkit 0.1.0" }));
-    fs.writeFileSync(path.join(dir, "01-home-desktop.png"), "old");
-    fs.writeFileSync(path.join(dir, "keep-me.txt"), "mine");
+    // A run from 0.1.1, with files of the user's next to it and in pwa/.
+    put("manifest.json", JSON.stringify({ version: 1, tool: "easyscreenshotkit 0.1.1" }));
+    for (const file of ["01-home-desktop.png", "02-pricing-desktop.png", "sheet.png", "SCREENSHOTS.md", "pwa/manifest-screenshots.json", "pwa/screenshots/wide-01.png"]) put(file, `old ${file}`);
+    put("keep-me.txt", "mine");
+    put("pwa/screenshots/mine.png", "mine");
+    const before = snapshot(dir);
     prepareDir(dir);
-    assert.deepEqual(fs.readdirSync(dir).sort(), ["keep-me.txt"]);
+    assert.deepEqual(snapshot(dir), before, "prepareDir only checks");
+
+    // A run that is stopped or fails leaves the folder exactly as it was.
+    const stopped = openShots(dir, { pwa: true });
+    assert.equal(path.dirname(stopped.part), path.resolve(dir));
+    assert.match(path.basename(stopped.part), /^\.easyscreenshotkit-part-\d+-[0-9a-f]{8}$/);
+    stopped.write("01-home-desktop.png", "new");
+    stopped.write("pwa/screenshots/wide-01.png", "new");
+    assert.deepEqual(snapshot(dir)["01-home-desktop.png"], before["01-home-desktop.png"]);
+    stopped.abort();
+    stopped.abort();
+    assert.deepEqual(snapshot(dir), before);
+    assert.throws(() => stopped.write("02-x-desktop.png", "late"), /stopped/);
+    assert.deepEqual(snapshot(dir), before, "a write after the stop does not make the part folder again");
+
+    // A commit that cannot finish puts back what it moved.
+    put("03-features-desktop.png/inside.txt", "a folder named like a file of the run");
+    const held = snapshot(dir);
+    const blocked = openShots(dir);
+    blocked.write("01-home-desktop.png", "new home");
+    blocked.write("03-features-desktop.png", "new features");
+    blocked.write("manifest.json", "{}");
+    assert.throws(
+      () => blocked.commit(["01-home-desktop.png", "03-features-desktop.png", "manifest.json"]),
+      /^Error: Could not move this run's files into .*shots: .*03-features-desktop\.png: a folder of that name is in the way\. What the folder held before this run is as it was\.$/,
+    );
+    assert.deepEqual(snapshot(dir), held);
+    fs.rmSync(path.join(dir, "03-features-desktop.png"), { recursive: true });
+
+    // The part folder of a run killed outright an hour ago goes once a run
+    // ends well; one whose process still runs, or that changed lately, stays.
+    const dead = path.join(dir, ".easyscreenshotkit-part-99999999-0123abcd");
+    const busy = path.join(dir, ".easyscreenshotkit-part-99999999-4567cdef");
+    const alive = path.join(dir, `.easyscreenshotkit-part-${process.ppid}-89abcdef`);
+    for (const folder of [dead, busy, alive]) {
+      fs.mkdirSync(folder);
+      fs.writeFileSync(path.join(folder, "01-home-desktop.png"), "left");
+      if (folder !== busy) for (const at of [path.join(folder, "01-home-desktop.png"), folder]) fs.utimesSync(at, hourAgo(), hourAgo());
+    }
+    // A run that ends well: its files in place of the earlier run's, the
+    // user's files and folders as they were.
+    const good = openShots(dir);
+    good.write("01-home-desktop.png", "new home");
+    good.write("SCREENSHOTS.md", "new md");
+    good.write("manifest.json", JSON.stringify({ version: 1, tool: "easyscreenshotkit 0.1.2" }));
+    good.commit(["01-home-desktop.png", "SCREENSHOTS.md", "manifest.json"]);
+    const after = snapshot(dir);
+    const text = (rel) => Buffer.from(after[rel], "base64").toString();
+    assert.deepEqual(
+      Object.keys(after).filter((rel) => !rel.startsWith(".easyscreenshotkit-part-")).sort(),
+      ["01-home-desktop.png", "SCREENSHOTS.md", "keep-me.txt", "manifest.json", "pwa/", "pwa/screenshots/", "pwa/screenshots/mine.png"],
+    );
+    assert.deepEqual([text("01-home-desktop.png"), text("SCREENSHOTS.md"), text("keep-me.txt"), text("pwa/screenshots/mine.png")], ["new home", "new md", "mine", "mine"]);
+    assert.deepEqual([fs.existsSync(dead), fs.existsSync(busy), fs.existsSync(alive)], [false, true, true]);
+    fs.rmSync(busy, { recursive: true });
+    fs.rmSync(alive, { recursive: true });
+
+    // With --pwa, a file where its folder goes is refused before the run.
+    fs.rmSync(path.join(dir, "pwa"), { recursive: true });
+    put("pwa", "a file");
+    assert.throws(() => openShots(dir, { pwa: true }), /shots\/pwa is a file, and this run saves a folder of that name there\. Move it, or pick another folder with --out\./);
+    assert.throws(() => openShots(path.join(dir, "keep-me.txt")), /EEXIST|ENOTDIR/);
+    fs.rmSync(path.join(dir, "pwa"));
+
     // A run from when the tool was called easyscreenshot counts too, another
     // tool's does not.
-    fs.writeFileSync(path.join(dir, "manifest.json"), JSON.stringify({ version: 1, tool: "easyscreenshot 0.1.0" }));
-    fs.writeFileSync(path.join(dir, "01-home-desktop.png"), "old");
-    prepareDir(dir);
-    assert.deepEqual(fs.readdirSync(dir).sort(), ["keep-me.txt"]);
-    fs.writeFileSync(path.join(dir, "manifest.json"), JSON.stringify({ version: 1, tool: "easyscreenshotter 1.0.0" }));
-    assert.throws(() => prepareDir(dir), /no earlier easyscreenshotkit run/);
+    put("manifest.json", JSON.stringify({ version: 1, tool: "easyscreenshot 0.1.0" }));
+    openShots(dir).abort();
+    put("manifest.json", JSON.stringify({ version: 1, tool: "easyscreenshotter 1.0.0" }));
+    assert.throws(() => openShots(dir), /no earlier easyscreenshotkit run/);
+
+    // A new folder is made for the run, and goes again, with the folders
+    // made for it, when the run does not end well.
+    const fresh = path.join(root, "a", "b", "shots");
+    const run = openShots(fresh);
+    assert.ok(fs.existsSync(run.part));
+    run.abort();
+    assert.equal(fs.existsSync(path.join(root, "a")), false);
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });

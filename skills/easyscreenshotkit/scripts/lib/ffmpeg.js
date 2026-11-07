@@ -21,9 +21,34 @@ function findFfmpeg() {
 
 const MISSING = "The demo needs ffmpeg, and none was found. Install it (brew install ffmpeg, sudo apt install ffmpeg, winget install ffmpeg) or point FFMPEG_PATH at it.";
 
+// The ffmpeg processes this process has going, for a stop to kill.
+const children = new Set();
+
+function track(child) {
+  children.add(child);
+  const done = () => children.delete(child);
+  child.on("close", done);
+  child.on("error", done);
+  return child;
+}
+
+// Kills every ffmpeg still going, at once. Returns how many there were.
+function killChildren() {
+  const count = children.size;
+  for (const child of children) {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      // Gone already.
+    }
+  }
+  children.clear();
+  return count;
+}
+
 function run(binary, args, { timeout = 600_000 } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(binary, args, { stdio: ["ignore", "pipe", "pipe"] });
+    const child = track(spawn(binary, args, { stdio: ["ignore", "pipe", "pipe"] }));
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (d) => (stdout += d));
@@ -61,7 +86,7 @@ async function pickEncoder(binary) {
 // are sRGB; the video is tagged BT.709, which players expect of HD.
 // Returns {write(buffer), end()}; both wait for ffmpeg.
 function startVideo(binary, file, { fps, encoder, title = "" }) {
-  const child = spawn(
+  const child = track(spawn(
     binary,
     [
       "-hide_banner", "-loglevel", "error", "-y",
@@ -76,7 +101,7 @@ function startVideo(binary, file, { fps, encoder, title = "" }) {
       file,
     ],
     { stdio: ["pipe", "ignore", "pipe"] },
-  );
+  ));
   let stderr = "";
   let failed = null;
   child.stderr.on("data", (d) => (stderr = (stderr + d).slice(-20_000)));
@@ -140,4 +165,4 @@ async function makeGif(binary, video, file, { budget = 8 * 1024 * 1024, dir }) {
   }
 }
 
-module.exports = { findFfmpeg, pickEncoder, startVideo, makeGif, run, MISSING, GIF_TRIES };
+module.exports = { findFfmpeg, pickEncoder, startVideo, makeGif, run, killChildren, MISSING, GIF_TRIES };

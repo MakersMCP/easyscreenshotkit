@@ -52,6 +52,8 @@ easyscreenshotkit-demo-cal.com/
   demo.yaml    the tour as steps, to edit and record again
 ```
 
+A demo saves in its folder the same way as the screenshots: an earlier demo there stays as it was until a new one has ended well, and a demo that fails or is stopped adds nothing.
+
 `steps.json` is there for what goes on top of the video later, such as narration, music, captions or a click sound: each step has its label and its start and end, and a click also has the frame it lands on and the point in the video where it lands. Its `pages` list every page the video shows with its start and end; a view of a web app reached by its `#/` route, by a visit or a click, is a page of its own there.
 
 To record a flow of your own, write it down and pass it with `--steps`:
@@ -183,6 +185,8 @@ npx easyscreenshotkit@latest 'yourapp.com/app/#/today' --pages 1 --page '/app/#/
 ```
 
 The last one takes three views of a web app and nothing else: with `--pages 1` there is no tour, only the address and the `--page` ones.
+
+The folder a run saves in has to be new, empty or hold an earlier run. A run builds its files in a folder whose name starts with `.easyscreenshotkit-part-`, inside the folder it saves in, and moves them into place only once it has ended well, replacing the earlier run's files. A run that fails, or is stopped with Ctrl-C or a TERM signal, leaves the earlier run's files as they were and adds nothing. A run killed outright with `kill -9` cannot clean up after itself. It leaves its part folder, which the next run to end well in that folder removes once it is half an hour old, and its browser profile in the temp folder, and its browser goes on running unless the kill reached its whole process group.
 
 Installed globally (`npm install -g easyscreenshotkit`), the command is `easyscreenshotkit`. npx keeps the copy an earlier run fetched, so `npx easyscreenshotkit@latest` is how you get a newer version.
 

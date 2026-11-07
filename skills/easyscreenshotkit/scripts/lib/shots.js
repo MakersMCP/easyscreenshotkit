@@ -29,6 +29,7 @@ const { homeOf, pageKey, routeOf, viewKey, pathOf, pageUrl, siteOf, fold, kindOf
 const { pngSize, tagPng } = require("./png");
 const { PWA_SHOTS, LOOKED_AT, planPwa, checkManifest } = require("./pwa");
 const { renderSheet } = require("./sheet");
+const { begin, checkDir } = require("./outdir");
 const { setTimeLimit, timeLeft, sleep } = require("./time");
 const version = require("./version");
 
@@ -135,7 +136,7 @@ function normalizeUrl(raw) {
 }
 
 // Files a run writes, by name: a manifest someone edited cannot point the
-// clean-up outside the folder. With --pwa, also these in pwa/ and
+// run at anything else in the folder. With --pwa, also these in pwa/ and
 // pwa/screenshots/.
 const RUN_FILE = /^(\d{2}-[a-z0-9-]+\.png|sheet\.png|manifest\.json|SCREENSHOTS\.md)$/;
 const PWA_DIR = "pwa";
@@ -144,51 +145,46 @@ const PWA_FILES = [
   [PWA_DIR, /^manifest-screenshots\.json$/],
 ];
 
-function removeRunFiles(dir) {
-  for (const file of fs.readdirSync(dir)) if (RUN_FILE.test(file)) fs.rmSync(path.join(dir, file), { force: true });
-  for (const [sub, name] of PWA_FILES) {
-    const folder = path.join(dir, sub);
-    if (!fs.existsSync(folder)) continue;
-    for (const file of fs.readdirSync(folder)) if (name.test(file)) fs.rmSync(path.join(folder, file), { force: true });
+// An earlier run's files in dir, as paths inside it.
+function earlierFiles(dir) {
+  const files = (sub, name) => {
     try {
-      fs.rmdirSync(folder);
+      return fs.readdirSync(path.join(dir, sub), { withFileTypes: true }).filter((entry) => !entry.isDirectory() && name.test(entry.name)).map((entry) => path.join(sub, entry.name));
     } catch {
-      // Not empty: what is left there is not a run's.
+      return [];
     }
-  }
+  };
+  return [...files("", RUN_FILE), ...PWA_FILES.flatMap(([sub, name]) => files(sub, name))];
 }
 
-// The run's folder: created when missing, reused when an earlier
-// easyscreenshotkit run made it (that run's files are replaced), refused when
-// it holds anything else, so a run never mixes into or overwrites someone's
-// own files.
-function prepareDir(dir) {
-  fs.mkdirSync(dir, { recursive: true });
-  if (fs.readdirSync(dir).length === 0) return;
-  let old = null;
-  try {
-    old = JSON.parse(fs.readFileSync(path.join(dir, "manifest.json"), "utf8"));
-  } catch {
-    // Not a run of ours.
-  }
-  // Runs from when the tool was called easyscreenshot count too.
-  if (!old || old.version !== 1 || !/^easyscreenshot(kit)? /.test(String(old.tool || ""))) {
-    throw new Error(`${dir} is not empty and holds no earlier easyscreenshotkit run. Pick another folder with --out.`);
-  }
-  removeRunFiles(dir);
+// The run's folder, for outdir.js: created when missing, used when it is
+// empty or an earlier easyscreenshotkit run made it, whose files the new
+// run's replace once it has ended well, refused when it holds anything
+// else, so a run never mixes into or overwrites someone's own files.
+function shotsSpec({ pwa = false } = {}) {
+  return {
+    marker: "manifest.json",
+    // Runs from when the tool was called easyscreenshot count too.
+    accepts: (old) => old.version === 1 && /^easyscreenshot(kit)? /.test(String(old.tool || "")),
+    refusal: (dir) => `${dir} is not empty and holds no earlier easyscreenshotkit run. Pick another folder with --out.`,
+    earlier: earlierFiles,
+    files: ["manifest.json", "SCREENSHOTS.md", "sheet.png", ...(pwa ? [path.join(PWA_DIR, "manifest-screenshots.json")] : [])],
+    folders: pwa ? [PWA_DIR, path.join(PWA_DIR, "screenshots")] : [],
+    tidy: [path.join(PWA_DIR, "screenshots"), PWA_DIR],
+  };
 }
 
-// A failed run leaves nothing half made: its own files go, and so does the
-// folder when this run created it.
-function cleanUp(dir, existed) {
-  removeRunFiles(dir);
-  if (!existed) {
-    try {
-      fs.rmdirSync(dir);
-    } catch {
-      // Not empty: what is left there is not this run's.
-    }
-  }
+// Opens a run of the screenshots in dir (see outdir.js).
+function openShots(dir, { pwa = false } = {}) {
+  return begin(dir, shotsSpec({ pwa }));
+}
+
+// Whether a run of the screenshots may save in dir: it is missing, empty or
+// holds an earlier run. Throws the reason when it may not. Since 0.1.2 it
+// changes nothing: an earlier run's files stay until a new run has ended
+// well, and a run that does not end well leaves them as they were.
+function prepareDir(dir, { pwa = false } = {}) {
+  checkDir(dir, shotsSpec({ pwa }));
 }
 
 const decoded = (part) => {
@@ -516,20 +512,8 @@ async function visit(chrome, page, group, theme, ctx, { check = null, links = fa
   }
 }
 
-// A file of the run. A full disk or quota comes back from Node as "UNKNOWN:
-// unknown error, write" (EDQUOT), which says nothing; this says what.
-function save(dir, file, data) {
-  try {
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, file), data);
-  } catch (err) {
-    const full = err.code === "ENOSPC" || err.code === "EDQUOT" || err.errno === -122;
-    throw new Error(`Could not save ${file} in ${dir}: ${full ? "the disk, or your disk quota, is full" : err.message}`);
-  }
-}
-
 // Writes a visit's captures as files of the page and records them.
-function saveShots(page, result, theme, dir, written) {
+function saveShots(page, result, theme, run, written) {
   for (const shot of result.shots) {
     // A capture for a web app manifest waits for the end of the run, when
     // the ones that go in are picked and numbered.
@@ -544,7 +528,7 @@ function saveShots(page, result, theme, dir, written) {
       "Creation Time": new Date().toISOString(),
       Software: `easyscreenshotkit ${version}`,
     });
-    save(dir, file, png);
+    run.write(file, png);
     written.push(file);
     const { width, height } = pngSize(png);
     const entry = { file, size: shot.size, full: Boolean(shot.full), theme, width, height, scale: shot.scale, cssWidth: shot.cssWidth, cssHeight: shot.cssHeight };
@@ -559,7 +543,7 @@ function saveShots(page, result, theme, dir, written) {
 // Writes the screenshots for a web app manifest, pwa/screenshots/*.png, and
 // pwa/manifest-screenshots.json, whose src paths hold when the screenshots
 // folder sits next to the manifest.
-function savePwa(kept, dir) {
+function savePwa(kept, run) {
   const plan = planPwa(kept.map((page) => ({ n: page.n, slug: page.slug, heading: page.heading, title: page.title, captures: page.pwa })));
   const out = {
     file: "",
@@ -573,10 +557,10 @@ function savePwa(kept, dir) {
   for (const file of plan.files) {
     const page = kept.find((other) => other.n === file.page);
     const png = tagPng(file.png, { Title: page.title || "", Source: page.url, "Creation Time": new Date().toISOString(), Software: `easyscreenshotkit ${version}` });
-    save(path.join(dir, PWA_DIR, "screenshots"), file.name, png);
+    run.write(path.join(PWA_DIR, "screenshots", file.name), png);
     out.screenshots.push({ file: `${PWA_DIR}/screenshots/${file.name}`, page: file.page, ...file.entry });
   }
-  save(path.join(dir, PWA_DIR), "manifest-screenshots.json", JSON.stringify({ screenshots: plan.entries }, null, 2) + "\n");
+  run.write(path.join(PWA_DIR, "manifest-screenshots.json"), JSON.stringify({ screenshots: plan.entries }, null, 2) + "\n");
   out.file = `${PWA_DIR}/manifest-screenshots.json`;
   return out;
 }
@@ -645,7 +629,7 @@ function describeSizes(groups) {
   return out;
 }
 
-function writeMarkdown(manifest, dir) {
+function writeMarkdown(manifest, run) {
   const date = manifest.takenAt.slice(0, 10);
   const lines = [`# Screenshots of ${manifest.site}`, "", `Taken from ${manifest.url} on ${date} by easyscreenshotkit ${version}.`, ""];
   lines.push(
@@ -688,7 +672,7 @@ function writeMarkdown(manifest, dir) {
     lines.push("");
   }
   if (manifest.notes.length) lines.push("## Notes", "", ...manifest.notes.map((note) => `- ${note}`), "");
-  save(dir, "SCREENSHOTS.md", lines.join("\n"));
+  run.write("SCREENSHOTS.md", lines.join("\n"));
 }
 
 async function takeShots(rawUrl, options = {}) {
@@ -717,8 +701,9 @@ async function takeShots(rawUrl, options = {}) {
   const given = viewKey(asked) !== viewKey(home) ? asked : "";
   const asks = pagesAsked(extra, asked, home);
   const target = dir || `easyscreenshotkit-${siteOf(asked)}`;
-  const existed = fs.existsSync(target);
-  prepareDir(target);
+  // Every file is made in the run's part folder and put in place once the
+  // run has ended well (see outdir.js).
+  const run = openShots(target, { pwa });
   // The screenshots for a manifest are taken in the first theme only.
   const ctx = { lang, hide, reducedMotion, clean: tidy, pwaTheme: pwa ? themes[0] : "" };
   const notes = [];
@@ -732,11 +717,13 @@ async function takeShots(rawUrl, options = {}) {
   let name = "";
   let siteManifest = "";
   let pwaSaved = null;
-  const chrome = await launch({ lang });
+  let manifest = null;
+  let chrome = null;
   // The other devices and themes of a page kept are taken in windows of
   // their own while the next pages are being found.
   const pool = makePool(2);
   try {
+    chrome = await launch({ lang });
     const [first] = groups;
     const firstTheme = themes[0];
     const others = (page) => {
@@ -754,7 +741,7 @@ async function takeShots(rawUrl, options = {}) {
             try {
               const got = await visit(chrome, { ...page }, group, themeName, ctx);
               if (got.info.challenge || got.nav.status >= 400) page.notes.push(`${label} not taken: ${got.info.challenge ? "the site answered with a bot check" : `the page answered ${got.nav.status}`}`);
-              saveShots(page, got, themeName, target, written);
+              saveShots(page, got, themeName, run, written);
             } catch (err) {
               page.notes.push(`${label} could not be taken: ${err.message}`);
             }
@@ -784,7 +771,7 @@ async function takeShots(rawUrl, options = {}) {
       if (result.busy) page.notes.push("still loading data after 10 s");
       if (movedOn(page.asked, result.nav.url)) page.notes.push(`opened ${page.asked} and landed on ${result.nav.url}`);
       kept.push(page);
-      saveShots(page, result, firstTheme, target, written);
+      saveShots(page, result, firstTheme, run, written);
       log(`${String(page.n).padStart(2, "0")} ${page.slug}  ${pathOf(result.nav.url)}`);
       others(page);
     };
@@ -902,57 +889,57 @@ async function takeShots(rawUrl, options = {}) {
     if (!kept.some((page) => page.shots.length)) throw new Error("No page could be captured.");
     if (kept.some((page) => page.notes.some((note) => /time ran out/.test(note)))) notes.push("Time ran out before every size was taken; give more with --timeout.");
     if (themes.includes("dark")) notes.push("Dark captures use the page's own dark theme, through prefers-color-scheme. A site without one looks the same in both.");
-    if (pwa) pwaSaved = savePwa(kept, target);
-  } catch (err) {
-    await pool.drain();
-    await chrome.close();
-    cleanUp(target, existed);
-    throw err;
-  }
-  const manifest = {
-    version: 1,
-    tool: `easyscreenshotkit ${version}`,
-    url: asked,
-    site: name,
-    takenAt: new Date().toISOString(),
-    sizes: describeSizes(groups),
-    themes,
-    lang: lang || (kept[0] && kept[0].lang) || "",
-    pages: kept.map((page) => ({
-      n: page.n,
-      slug: page.slug,
-      url: page.url,
-      kind: page.kind,
-      why: page.why,
-      title: page.title,
-      heading: page.heading,
-      description: page.description,
-      lang: page.lang,
-      hidden: page.hidden,
-      notes: page.notes,
-      shots: page.shots,
-    })),
-    sheet: null,
-    pwa: pwaSaved,
-    candidates: leftover,
-    skipped: dedupeSkipped([...rejected, ...skipped]),
-    notes,
-  };
-  // The site's own manifest is read while the sheet is drawn: no browser
-  // needed.
-  const siteCheck = pwaSaved ? checkSite(siteManifest, kept[0].url, pwaSaved.screenshots.length) : null;
-  try {
+    if (pwa) pwaSaved = savePwa(kept, run);
+    manifest = {
+      version: 1,
+      tool: `easyscreenshotkit ${version}`,
+      url: asked,
+      site: name,
+      takenAt: new Date().toISOString(),
+      sizes: describeSizes(groups),
+      themes,
+      lang: lang || (kept[0] && kept[0].lang) || "",
+      pages: kept.map((page) => ({
+        n: page.n,
+        slug: page.slug,
+        url: page.url,
+        kind: page.kind,
+        why: page.why,
+        title: page.title,
+        heading: page.heading,
+        description: page.description,
+        lang: page.lang,
+        hidden: page.hidden,
+        notes: page.notes,
+        shots: page.shots,
+      })),
+      sheet: null,
+      pwa: pwaSaved,
+      candidates: leftover,
+      skipped: dedupeSkipped([...rejected, ...skipped]),
+      notes,
+    };
+    // The site's own manifest is read while the sheet is drawn: no browser
+    // needed.
+    const siteCheck = pwaSaved ? checkSite(siteManifest, kept[0].url, pwaSaved.screenshots.length) : null;
     log("Drawing the sheet");
     // The sheet takes a few seconds and is drawn even when the pages used up
     // the run's time.
     if (timeLeft() < 90_000) setTimeLimit(90_000);
-    manifest.sheet = await renderSheet(chrome, manifest, target).catch(() => null);
-  } finally {
+    manifest.sheet = await renderSheet(chrome, manifest, run.part).catch(() => null);
     await chrome.close();
+    chrome = null;
+    if (siteCheck) Object.assign(manifest.pwa, await siteCheck);
+    run.write("manifest.json", JSON.stringify(manifest, null, 2) + "\n");
+    writeMarkdown(manifest, run);
+  } catch (err) {
+    await pool.drain();
+    if (chrome) await chrome.close();
+    run.abort();
+    throw err;
   }
-  if (siteCheck) Object.assign(manifest.pwa, await siteCheck);
-  save(target, "manifest.json", JSON.stringify(manifest, null, 2) + "\n");
-  writeMarkdown(manifest, target);
+  // The run has ended well: its files take the place of the earlier run's.
+  run.commit([...written, ...(manifest.sheet ? ["sheet.png"] : []), ...(pwaSaved && pwaSaved.file ? [...pwaSaved.screenshots.map((shot) => shot.file), pwaSaved.file] : []), "SCREENSHOTS.md", "manifest.json"]);
   return { dir: target, manifest };
 }
 
@@ -1006,4 +993,4 @@ function dedupeSkipped(list) {
   return out.slice(0, 40);
 }
 
-module.exports = { takeShots, parseSizes, addPwaShots, normalizeUrl, prepareDir, slugOf, identity, movedOn, pagesAsked, waitForView, siteName, readInfo, readLinks, rejectAtOnce, rejectReason, DEVICES, MAX_HEIGHT };
+module.exports = { takeShots, parseSizes, addPwaShots, normalizeUrl, prepareDir, openShots, slugOf, identity, movedOn, pagesAsked, waitForView, siteName, readInfo, readLinks, rejectAtOnce, rejectReason, DEVICES, MAX_HEIGHT };

@@ -27,6 +27,7 @@ const { cameraAt } = require("./motion");
 const { findFfmpeg, pickEncoder, startVideo, makeGif, MISSING } = require("./ffmpeg");
 const { tagPng, pngSize } = require("./png");
 const { setTimeLimit, timeLeft } = require("./time");
+const { begin, checkDir, stopOnSignals } = require("./outdir");
 const version = require("./version");
 
 const USAGE = `Usage: easyscreenshotkit demo <url> [options]
@@ -65,6 +66,11 @@ Options:
 A #route in the address, in --page or in a visit step is kept, and every
 view the video shows, one a click opened included, is a page of its own in
 steps.json.
+
+A demo builds its files inside the folder it saves in and moves them into
+place once it has ended well, replacing an earlier demo's. One that fails or
+is stopped with Ctrl-C or a TERM signal leaves an earlier demo there as it
+was and adds nothing.
 
 Needs Node 22 or newer, Chrome, Chromium, Edge or Brave, and ffmpeg. Set
 CHROME_PATH or FFMPEG_PATH to pick them.`;
@@ -116,53 +122,52 @@ function parseDemo(argv) {
   return { ...options, url: rest[0] || "" };
 }
 
-// Files a demo run writes, by name, and the folder its frames are kept in
-// while it runs. demo.yaml is a tour's: a run from a steps file never
-// touches it, since that may be the very file it follows.
-const RUN_FILE = /^(demo\.mp4|demo\.gif|poster\.png|steps\.json)$/;
+// Files a demo run writes, by name. demo.yaml is a tour's: a run from a
+// steps file never touches it, since that may be the very file it follows.
+const RUN_FILES = ["demo.mp4", "demo.gif", "poster.png", "steps.json"];
 const TOUR_FILE = "demo.yaml";
+// Where 0.1.1 kept a run's frames, in the folder itself.
 const FRAMES = /^\.frames-[A-Za-z0-9]{6}$/;
 
-// The run's folder: created when missing, reused when an earlier demo made
-// it (its files are replaced), refused when it holds anything else, so a
-// run never mixes into someone's own files. The steps file the run reads
-// may sit in it.
-function prepareDemoDir(dir, { steps = "", tour = false } = {}) {
-  fs.mkdirSync(dir, { recursive: true });
+const isFile = (at) => {
+  const s = fs.lstatSync(at, { throwIfNoEntry: false });
+  return Boolean(s) && !s.isDirectory();
+};
+
+// The run's folder, for outdir.js: created when missing, used when it is
+// empty or an earlier demo made it, whose files the new run's replace once
+// it has ended well, refused when it holds anything else, so a run never
+// mixes into someone's own files. The steps file the run follows may sit in
+// it: it is never moved, nor replaced.
+function demoSpec({ steps = "", tour = false } = {}) {
   const keep = steps ? path.resolve(steps) : "";
-  const names = fs.readdirSync(dir).filter((name) => path.resolve(dir, name) !== keep);
-  if (names.some((name) => !FRAMES.test(name))) {
-    let old = null;
-    try {
-      old = JSON.parse(fs.readFileSync(path.join(dir, "steps.json"), "utf8"));
-    } catch {
-      // Not a demo of ours.
-    }
+  const names = [...RUN_FILES, ...(tour ? [TOUR_FILE] : [])];
+  return {
+    marker: "steps.json",
     // Demos from when the tool was called easyscreenshot count too.
-    if (!old || old.kind !== "demo" || !/^easyscreenshot(kit)? /.test(String(old.tool || ""))) {
-      throw new Error(`${dir} is not empty and holds no earlier easyscreenshotkit demo. Pick another folder with --out.`);
-    }
-  }
-  for (const name of names) {
-    if (FRAMES.test(name) || RUN_FILE.test(name) || (tour && name === TOUR_FILE)) fs.rmSync(path.join(dir, name), { recursive: true, force: true });
-  }
+    accepts: (old) => old.kind === "demo" && /^easyscreenshot(kit)? /.test(String(old.tool || "")),
+    refusal: (dir) => `${dir} is not empty and holds no earlier easyscreenshotkit demo. Pick another folder with --out.`,
+    earlier: (target) => names.filter((name) => path.resolve(target, name) !== keep && isFile(path.join(target, name))),
+    ignore: (name, target) => FRAMES.test(name) || path.resolve(target, name) === keep,
+    files: names,
+    claim: (dir, target) => {
+      if (keep && path.dirname(keep) === target && names.includes(path.basename(keep))) {
+        throw new Error(`${steps} is the steps file this demo follows, and the demo saves its own ${path.basename(keep)} in its place. Give the steps file another name, or pick another folder with --out.`);
+      }
+    },
+    leftovers: FRAMES,
+  };
 }
 
-// A failed run leaves nothing half made: its own files and frames go, and
-// the folder too when this run created it.
-function cleanUp(dir, existed, { frames = "", tour = false } = {}) {
-  if (!fs.existsSync(dir)) return;
-  if (frames) fs.rmSync(frames, { recursive: true, force: true });
-  for (const name of fs.readdirSync(dir)) {
-    if (RUN_FILE.test(name) || (tour && name === TOUR_FILE)) fs.rmSync(path.join(dir, name), { force: true });
-  }
-  if (!existed) {
-    try {
-      fs.rmdirSync(dir);
-    } catch {
-      // Not empty: what is left there is not this run's.
-    }
-  }
+// Opens a demo's run in dir (see outdir.js).
+function openDemo(dir, { steps = "", tour = false } = {}) {
+  return begin(dir, demoSpec({ steps, tour }));
+}
+
+// Whether a demo may save in dir: it is missing, empty or holds an earlier
+// demo. Throws the reason when it may not; changes nothing.
+function prepareDemoDir(dir, { steps = "", tour = false } = {}) {
+  checkDir(dir, demoSpec({ steps, tour }));
 }
 
 const round = (value, places = 3) => Math.round(value * 10 ** places) / 10 ** places;
@@ -224,9 +229,10 @@ async function makeDemo(rawUrl, options = {}) {
   const encoder = await pickEncoder(ffmpeg);
   if (!encoder) throw new Error(`${ffmpeg} has no H.264 encoder (x264, VideoToolbox, OpenH264 or Media Foundation). Install a full build of ffmpeg.`);
   const target = dir || `easyscreenshotkit-demo-${siteOf(asked)}`;
-  const existed = fs.existsSync(target);
-  prepareDemoDir(target, { steps: stepsFile, tour: !script });
-  const frames = fs.mkdtempSync(path.join(target, ".frames-"));
+  // Every file is made in the run's part folder, the frames too, and put in
+  // place once the run has ended well (see outdir.js).
+  const run = openDemo(target, { steps: stepsFile, tour: !script });
+  const frames = run.file("frames");
   const viewport = { width: 1600, height: 900 };
   // Drawn at least as sharp as the zoom goes deep, so a zoomed-in view is
   // not blown up: 1.5 pixels per CSS pixel for the default zoom.
@@ -236,7 +242,10 @@ async function makeDemo(rawUrl, options = {}) {
   let take;
   let tour = null;
   let name = "";
+  let gifInfo = null;
+  let manifest;
   try {
+    fs.mkdirSync(frames);
     const chrome = await launch({ lang, args: [`--force-device-scale-factor=${density}`] });
     const recorder = new Recorder(chrome, { dir: frames, base: asked, fps, viewport, hide: [...hide, ...(script ? script.hide : [])], clean: tidy, theme, lang, reducedMotion, log });
     try {
@@ -280,7 +289,7 @@ async function makeDemo(rawUrl, options = {}) {
     const composer = await launch();
     let drawn;
     let poster;
-    const video = path.join(target, "demo.mp4");
+    const video = run.file("demo.mp4");
     try {
       if (timeLeft() < 120_000) setTimeLimit(Math.max(120_000, take.duration * 6_000));
       const sink = startVideo(ffmpeg, video, { fps, encoder, title: `${name} demo` });
@@ -300,11 +309,10 @@ async function makeDemo(rawUrl, options = {}) {
       await composer.close();
     }
     const png = tagPng(poster.png, { Title: `${name} demo`, Source: asked, "Creation Time": new Date().toISOString(), Software: `easyscreenshotkit ${version}` });
-    fs.writeFileSync(path.join(target, "poster.png"), png);
-    let gifInfo = null;
+    run.write("poster.png", png);
     if (gif) {
       log("Making demo.gif");
-      gifInfo = await makeGif(ffmpeg, video, path.join(target, "demo.gif"), { dir: frames });
+      gifInfo = await makeGif(ffmpeg, video, run.file("demo.gif"), { dir: frames });
       if (gifInfo.overBudget) notes.push(`demo.gif is ${(gifInfo.bytes / 1048576).toFixed(1)} MB even at ${gifInfo.width} px wide; a shorter demo makes a smaller GIF.`);
     }
 
@@ -354,7 +362,7 @@ async function makeDemo(rawUrl, options = {}) {
       };
     });
     const total = drawn.frames;
-    const manifest = {
+    manifest = {
       version: 1,
       kind: "demo",
       tool: `easyscreenshotkit ${version}`,
@@ -370,17 +378,19 @@ async function makeDemo(rawUrl, options = {}) {
       steps,
       notes,
     };
-    fs.writeFileSync(path.join(target, "steps.json"), JSON.stringify(manifest, null, 2) + "\n");
+    run.write("steps.json", JSON.stringify(manifest, null, 2) + "\n");
     if (tour) {
       const header = [`The tour easyscreenshotkit ${version} took of ${new URL(asked).hostname.replace(/^www\./, "")}.`, "Edit it and record again: easyscreenshotkit demo --steps demo.yaml"];
-      fs.writeFileSync(path.join(target, "demo.yaml"), toYaml({ url: asked, steps: records.map((record) => asWritten(record.step)) }, header));
+      run.write(TOUR_FILE, toYaml({ url: asked, steps: records.map((record) => asWritten(record.step)) }, header));
     }
-    fs.rmSync(frames, { recursive: true, force: true });
-    return { dir: target, manifest };
   } catch (err) {
-    cleanUp(target, existed, { frames, tour: !script });
+    run.abort();
     throw err;
   }
+  // The run has ended well: its files take the place of the earlier demo's,
+  // and the frames go with the part folder.
+  run.commit(["demo.mp4", ...(gifInfo ? ["demo.gif"] : []), "poster.png", ...(tour ? [TOUR_FILE] : []), "steps.json"]);
+  return { dir: target, manifest };
 }
 
 function summary({ dir, manifest }) {
@@ -414,6 +424,7 @@ async function main(argv) {
   }
   if (options.help) return void process.stdout.write(`${USAGE}\n`);
   if (options.version) return void process.stdout.write(`${version}\n`);
+  stopOnSignals({ name: "easyscreenshotkit demo", json: options.json });
   try {
     const result = await makeDemo(options.url, {
       dir: options.out,
@@ -441,4 +452,4 @@ async function main(argv) {
   }
 }
 
-module.exports = { main, makeDemo, parseDemo, prepareDemoDir, summary, USAGE };
+module.exports = { main, makeDemo, parseDemo, prepareDemoDir, openDemo, summary, USAGE };

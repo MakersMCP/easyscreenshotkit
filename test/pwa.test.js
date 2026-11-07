@@ -11,7 +11,7 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const test = require("node:test");
 const { imageInfo, checkScreenshots, labelOf, planPwa, manifestLink, checkManifest, describeCheck } = require("../skills/easyscreenshotkit/scripts/lib/pwa");
-const { parseSizes, addPwaShots, prepareDir } = require("../skills/easyscreenshotkit/scripts/lib/shots");
+const { parseSizes, addPwaShots, openShots } = require("../skills/easyscreenshotkit/scripts/lib/shots");
 const { parse } = require("../skills/easyscreenshotkit/scripts/easyscreenshotkit");
 const { pngOf, serve } = require("./helpers");
 
@@ -206,23 +206,41 @@ test("--pwa adds its captures to the windows a run opens anyway, else opens its 
   assert.throws(() => parse(["acme.com", "--pwa-check", "acme.com"]), /runs on its own/);
 });
 
-test("a run's folder: an earlier run's screenshots for a manifest go, other files in pwa/ stay", () => {
+test("a run's folder: an earlier run's screenshots for a manifest go once a new run has ended well, other files in pwa/ stay", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-pwa-dir-"));
   try {
-    const run = () => {
+    const earlier = () => {
       fs.writeFileSync(path.join(dir, "manifest.json"), JSON.stringify({ version: 1, tool: "easyscreenshotkit 0.1.0" }));
       fs.mkdirSync(path.join(dir, "pwa", "screenshots"), { recursive: true });
       fs.writeFileSync(path.join(dir, "pwa", "manifest-screenshots.json"), "{}");
       fs.writeFileSync(path.join(dir, "pwa", "screenshots", "wide-01.png"), "old");
       fs.writeFileSync(path.join(dir, "pwa", "screenshots", "narrow-01.png"), "old");
     };
-    run();
-    prepareDir(dir);
-    assert.deepEqual(fs.readdirSync(dir), []);
-    run();
+    const again = (pwa) => {
+      const run = openShots(dir, { pwa });
+      run.write("manifest.json", JSON.stringify({ version: 1, tool: "easyscreenshotkit 0.1.2" }));
+      if (pwa) {
+        run.write(path.join("pwa", "screenshots", "wide-01.png"), "new");
+        run.write(path.join("pwa", "manifest-screenshots.json"), "{\"screenshots\":[]}");
+      }
+      run.commit(["manifest.json", ...(pwa ? ["pwa/screenshots/wide-01.png", "pwa/manifest-screenshots.json"] : [])]);
+    };
+    earlier();
+    // Until the new run ends, the earlier one's are all there.
+    const run = openShots(dir, { pwa: true });
+    assert.deepEqual(fs.readdirSync(path.join(dir, "pwa", "screenshots")).sort(), ["narrow-01.png", "wide-01.png"]);
+    run.abort();
+    again(false);
+    assert.deepEqual(fs.readdirSync(dir), ["manifest.json"]);
+    earlier();
     fs.writeFileSync(path.join(dir, "pwa", "screenshots", "mine.png"), "mine");
-    prepareDir(dir);
+    again(false);
     assert.deepEqual(fs.readdirSync(path.join(dir, "pwa", "screenshots")), ["mine.png"]);
+    assert.deepEqual(fs.readdirSync(path.join(dir, "pwa")), ["screenshots"]);
+    again(true);
+    assert.deepEqual(fs.readdirSync(path.join(dir, "pwa", "screenshots")).sort(), ["mine.png", "wide-01.png"]);
+    assert.equal(fs.readFileSync(path.join(dir, "pwa", "screenshots", "wide-01.png"), "utf8"), "new");
+    assert.equal(fs.readFileSync(path.join(dir, "pwa", "manifest-screenshots.json"), "utf8"), "{\"screenshots\":[]}");
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

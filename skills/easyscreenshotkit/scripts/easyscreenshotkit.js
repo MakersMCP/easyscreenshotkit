@@ -4,6 +4,7 @@
 const fs = require("fs");
 const { takeShots, normalizeUrl } = require("./lib/shots");
 const { pathOf } = require("./lib/pick");
+const { stopOnSignals } = require("./lib/outdir");
 const { checkManifest, describeCheck } = require("./lib/pwa");
 const version = require("./lib/version");
 
@@ -46,6 +47,12 @@ A #route in the address or in --page is kept: the page opens on that view,
 waits until the view's data has come (10 s at most) and is named after it,
 02-app-plants-desktop.png for /app/#/plants. The tour follows paths only, so
 the #route links on the home page are listed with the pages left out.
+
+The folder has to be new, empty or hold an earlier run. A run builds its
+files in a folder whose name starts with a dot, inside the folder it saves
+in, and moves them into place once it has ended well, replacing the earlier
+run's. A run that fails or is stopped with Ctrl-C or a TERM signal leaves
+the earlier run's files as they were and adds nothing.
 
 --pwa takes each page's first screen at 1920x1080 and on a phone at
 1080x1920, checks them against Chrome's rules for its richer install
@@ -159,6 +166,7 @@ async function main() {
   if (options.help) return void process.stdout.write(`${USAGE}\n`);
   if (options.version) return void process.stdout.write(`${version}\n`);
   if (options.pwaCheck) return pwaCheck(options);
+  stopOnSignals({ name: "easyscreenshotkit", json: options.json });
   try {
     const result = await takeShots(options.url, {
       dir: options.out,
