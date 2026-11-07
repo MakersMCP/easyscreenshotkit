@@ -237,7 +237,7 @@ async function* tourSteps(recorder, pages) {
       link = await linkOnScreen(recorder, next.url);
     }
     const where = readable(`${new URL(next.url).pathname}${routeOf(next.url)}`);
-    if (link) yield { action: "click", target: { href: next.url }, label: link.text ? `Click ${quote(link.text)}` : `Open ${where}`, text: link.text, expect: next.url };
+    if (link) yield { action: "click", target: { href: next.url }, label: link.text ? `Click ${quote(link.text)}` : `Open ${where}`, text: link.text, attribute: link.attribute, expect: next.url };
     else yield { action: "visit", url: next.url, label: `Open ${where}` };
   }
 }

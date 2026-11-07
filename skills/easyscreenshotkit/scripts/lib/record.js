@@ -47,7 +47,8 @@ const WALK_SCREENS = 6;
 // an address. Interactive elements win over plain text, then the first in
 // the page's order. A link to an address with a #route is a link to that
 // view; for one without, a link to the page itself goes before a link to a
-// view of it. Returns its box on the screen, or null.
+// view of it. Returns its box on the screen, its words and, for a link, its
+// href as the page wrote it, or null.
 const LOCATE = `((spec) => {
   const norm = (s) => String(s || "").replace(/\\s+/g, " ").trim().toLowerCase();
   const shown = (el) => {
@@ -98,7 +99,7 @@ const LOCATE = `((spec) => {
     if (hit && (hit === el || el.contains(hit) || hit.contains(el))) { x = px; y = py; covered = false; break; }
   }
   const link = el.closest("a");
-  return { x, y, left: r.left, top: r.top, width: r.width, height: r.height, covered, text: label0(el), newTab: !!(link && /^_blank$/i.test(link.target)) };
+  return { x, y, left: r.left, top: r.top, width: r.width, height: r.height, covered, text: label0(el), attribute: link ? link.getAttribute("href") || "" : "", newTab: !!(link && /^_blank$/i.test(link.target)) };
   function label0(e) { return String(e.innerText || e.value || e.getAttribute("aria-label") || "").replace(/\\s+/g, " ").trim().slice(0, 60); }
 })`;
 

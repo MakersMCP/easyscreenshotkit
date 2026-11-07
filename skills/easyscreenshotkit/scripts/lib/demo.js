@@ -18,7 +18,7 @@ const fs = require("fs");
 const path = require("path");
 const { launch } = require("./chrome");
 const { normalizeUrl } = require("./shots");
-const { siteOf, routeOf, viewKey, viewOf, pathOf } = require("./pick");
+const { siteOf, routeOf, viewKey, viewOf, pathOf, readable } = require("./pick");
 const { Recorder } = require("./record");
 const { readSteps, toYaml, targetText } = require("./steps");
 const { pickPages, tourSteps } = require("./tour");
@@ -186,13 +186,18 @@ function what(step) {
 }
 
 // A tour's internal steps as a steps file writes them: a click on a link by
-// its words when it has some, else by its address: its #route when it has
-// one (a[href$="#/plants"]), else its path.
+// its words when it has some, else by its href as the page wrote it
+// (a[href="#/plants"]), so a route in other letters is matched as the page
+// has it, not escaped as in the address. Without that, by its #route
+// (a[href$="#/plants"]), else by its path.
 function asWritten(step) {
   if (step.action !== "click" || !step.target.href) return step;
-  const route = routeOf(step.target.href);
+  const route = readable(routeOf(step.target.href));
   const quoted = (text) => `"${text.replace(/["\\]/g, "\\$&")}"`;
-  const target = step.text ? { text: step.text } : { css: route ? `a[href$=${quoted(route)}]` : `a[href*=${quoted(new URL(step.target.href).pathname)}]` };
+  let target;
+  if (step.text) target = { text: step.text };
+  else if (step.attribute) target = { css: `a[href=${quoted(step.attribute)}]` };
+  else target = { css: route ? `a[href$=${quoted(route)}]` : `a[href*=${quoted(readable(new URL(step.target.href).pathname))}]` };
   return { action: "click", target, label: step.label };
 }
 

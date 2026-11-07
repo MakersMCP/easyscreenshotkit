@@ -16,7 +16,7 @@ const { parseDemo, prepareDemoDir, openDemo, makeDemo, routesNote } = require(".
 const { pickPages } = require("../skills/easyscreenshotkit/scripts/lib/tour");
 const { setTimeLimit } = require("../skills/easyscreenshotkit/scripts/lib/time");
 const { readSteps } = require("../skills/easyscreenshotkit/scripts/lib/steps");
-const { findChrome, launch } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
+const { findChrome, launch, openTab, closeTab, navigate } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
 const { findFfmpeg } = require("../skills/easyscreenshotkit/scripts/lib/ffmpeg");
 const { readPng, serve, near } = require("./helpers");
 
@@ -169,10 +169,11 @@ const plain = (title, color) => page(`${title} | Acme`, `<header><a href="/">Acm
 
 // A single page app at /app/ with hash routes. Each view asks /api/<view>
 // for its data, which comes after 800 ms. Today names no plant; Your plants
-// links to each one.
+// links to each one. Its menu ends with a link with no words to a view
+// whose route is in Cyrillic.
 const APP = page(
   "Today | Plants",
-  `<nav><a href="#/today">Today</a> <a href="#/plants">Plants</a> <a href="#/light">Light</a></nav><main id="view"><h1>Loading…</h1><div class="band"></div></main>
+  `<nav><a href="#/today">Today</a> <a href="#/plants">Plants</a> <a href="#/light">Light</a> <a class="cacti" href="#/растения" aria-label=""><i></i></a></nav><main id="view"><h1>Loading…</h1><div class="band"></div></main>
   <script>
     const view = document.getElementById("view");
     async function go() {
@@ -186,13 +187,14 @@ const APP = page(
     addEventListener("hashchange", go);
     go();
   </script>`,
-  "nav{height:60px;display:flex;gap:30px;align-items:center;padding:0 40px;font-size:22px} h1{margin:0;height:60px;padding:0 40px} .plants{margin:0;height:60px;padding:0 40px;font-size:22px} .band{height:1600px;background:rgb(240,240,240)}",
+  "nav{height:60px;display:flex;gap:30px;align-items:center;padding:0 40px;font-size:22px} .cacti{display:inline-block;width:28px;height:28px;background:rgb(0,200,200)} h1{margin:0;height:60px;padding:0 40px} .plants{margin:0;height:60px;padding:0 40px;font-size:22px} .band{height:1600px;background:rgb(240,240,240)}",
 );
 const APP_VIEWS = {
   today: ["Today", "rgb(0,160,0)", '<p class="plants">Nothing to water today.</p>'],
   plants: ["Your plants", "rgb(200,0,0)", '<p class="plants"><a href="#/plant/Fern">Fern</a> <a href="#/plant/Calathea">Calathea</a></p>'],
   light: ["Light check", "rgb(255,140,0)", '<p class="plants">1,850 lux</p>'],
   "plant/Fern": ["Fern", "rgb(120,0,200)", '<p class="plants">Water today</p>'],
+  растения: ["Растения", "rgb(0,200,200)", '<p class="plants">Cacti</p>'],
 };
 
 async function fixture() {
@@ -398,22 +400,39 @@ test("a #route in the address and in a steps file: each view opened on its route
   }
 });
 
-test("a tour with a #route asked for with --page: clicked to through its link, and written so in demo.yaml", { skip: missing, timeout: 300_000 }, async () => {
+test("a tour with #routes asked for with --page: clicked to through their links, and written so in demo.yaml", { skip: missing, timeout: 300_000 }, async () => {
   const { server, origin } = await fixture();
   const root = tempDir();
   const dir = path.join(root, "tour");
   try {
-    const { manifest } = await makeDemo(origin, { dir, pages: 2, extra: ["/app/#/plant/Fern"], gif: false, timeLimit: 280_000 });
-    assert.deepEqual(manifest.pages.map((p) => p.url.slice(origin.length)), ["/", "/app/#/plant/Fern"]);
+    const { manifest } = await makeDemo(origin, { dir, pages: 3, extra: ["/app/#/plant/Fern", "/app/#/растения"], gif: false, timeLimit: 280_000 });
+    assert.deepEqual(manifest.pages.map((p) => decodeURI(p.url.slice(origin.length))), ["/", "/app/#/plant/Fern", "/app/#/растения"]);
     assert.equal(manifest.pages[1].why, "asked for with --page");
-    const click = manifest.steps.find((s) => s.action === "click");
-    assert.equal(click.label, "Open /app/#/plant/Fern");
-    assert.equal(click.opened, `${origin}/app/#/plant/Fern`);
-    // The icon link has no words: the steps file finds it by its route.
+    const clicks = manifest.steps.filter((s) => s.action === "click");
+    assert.deepEqual(clicks.map((s) => s.label), ["Open /app/#/plant/Fern", "Open /app/#/растения"]);
+    assert.deepEqual(clicks.map((s) => decodeURI(s.opened.slice(origin.length))), ["/app/#/plant/Fern", "/app/#/растения"]);
+    // The icon links have no words: the steps file finds each by its href
+    // as the page wrote it, the Cyrillic one too, and that finds it again.
     const again = readSteps(path.join(dir, "demo.yaml"));
-    assert.deepEqual(again.steps.find((s) => s.action === "click").target, { css: 'a[href$="#/plant/Fern"]' });
-    const middle = await frameOf(path.join(dir, "demo.mp4"), (manifest.pages[1].start + manifest.pages[1].end) / 2);
-    assert.ok(near(unzoomed(middle, 800, 700), PURPLE), `Fern: ${unzoomed(middle, 800, 700)}`);
+    const targets = again.steps.filter((s) => s.action === "click").map((s) => s.target);
+    assert.deepEqual(targets, [{ css: 'a[href="/app/#/plant/Fern"]' }, { css: 'a[href="#/растения"]' }]);
+    setTimeLimit(120_000);
+    const chrome = await launch();
+    try {
+      for (const [at, target] of [[`${origin}/`, targets[0]], [`${origin}/app/#/plant/Fern`, targets[1]]]) {
+        const tab = await openTab(chrome, { width: 1600, height: 900, scale: 1, mobile: false, touch: false, agent: "desktop" });
+        await navigate(tab, at);
+        const { result } = await tab.send("Runtime.evaluate", { expression: `!!document.querySelector(${JSON.stringify(target.css)})`, returnByValue: true });
+        assert.equal(result.value, true, `${target.css} on ${at}`);
+        await closeTab(chrome, tab);
+      }
+    } finally {
+      await chrome.close();
+    }
+    for (const [i, color] of [[1, PURPLE], [2, TEAL]]) {
+      const middle = await frameOf(path.join(dir, "demo.mp4"), (manifest.pages[i].start + manifest.pages[i].end) / 2);
+      assert.ok(near(unzoomed(middle, 800, 700), color), `${manifest.pages[i].url}: ${unzoomed(middle, 800, 700)}`);
+    }
   } finally {
     server.close();
     fs.rmSync(root, { recursive: true, force: true });
@@ -429,10 +448,10 @@ test("a tour lists the #route links of the pages it takes in one note, also when
     assert.deepEqual(tour.pages.map((p) => p.url.slice(origin.length)), ["/", "/app/"]);
     assert.deepEqual(tour.skipped, []);
     assert.deepEqual(
-      tour.routes.map((r) => r.url.slice(origin.length)),
-      ["/app/#/plant/Fern", "/app/#/today", "/app/#/plants", "/app/#/light"],
+      tour.routes.map((r) => decodeURI(r.url.slice(origin.length))),
+      ["/app/#/plant/Fern", "/app/#/today", "/app/#/plants", "/app/#/light", "/app/#/растения"],
     );
-    assert.equal(routesNote(tour.routes), "Left out /app/#/plant/Fern, /app/#/today, /app/#/plants and /app/#/light: #routes, which the tour does not follow: give one with --page.");
+    assert.equal(routesNote(tour.routes), "Left out /app/#/plant/Fern, /app/#/today, /app/#/plants, /app/#/light and /app/#/растения: #routes, which the tour does not follow: give one with --page.");
   } finally {
     await chrome.close();
     server.close();
