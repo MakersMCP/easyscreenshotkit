@@ -204,7 +204,9 @@ const slugWords = (text) =>
 
 // A page's name in file names: home, pricing, product-teams. A view of a
 // single page app adds its #route: app-plants for /app/#/plants,
-// home-plant-fern for /#/plant/Fern.
+// home-plant-fern for /#/plant/Fern. A route with no letter or digit a
+// file name keeps (#/растения, #/植物) adds view and six hex digits of its
+// own, so it is told from its page and from the app's other views.
 function slugOf(url, home) {
   let slug = "home";
   if (pageKey(url) !== pageKey(home)) {
@@ -213,8 +215,10 @@ function slugOf(url, home) {
     slug = slugWords(fold(inner.map(decoded).join("-")).replace(/\.[a-z0-9]+$/, "")) || "page";
   }
   const route = routeOf(url);
-  const words = route ? slugWords(route.replace(/^#(?:\/|!\/?)/, "").split("/").map(decoded).join("-")) : "";
-  return words ? `${slug}-${words}` : slug;
+  if (!route) return slug;
+  const parts = route.replace(/^#(?:\/|!\/?)/, "").split("/").filter(Boolean).map(decoded);
+  const words = slugWords(parts.join("-")) || `view-${crypto.createHash("sha1").update(parts.join("/")).digest("hex").slice(0, 6)}`;
+  return `${slug}-${words}`;
 }
 
 // The keys a page kept is known by, so another address for it is not taken

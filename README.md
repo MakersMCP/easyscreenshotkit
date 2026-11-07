@@ -29,7 +29,7 @@ easyscreenshotkit-linear.app/
 - Pictures that load late, sections that fade in on scroll, counters that count up and videos are there in full, on the first screen and on the whole page.
 - Every heading on a first screen comes with its box in the image's own pixels, and every section of a whole page with where it starts and ends, so a crop or a zoom does not have to guess.
 - Each PNG carries the address it came from, when it was taken and by what, in its own metadata.
-- A view of a web app with a `#/` route, such as `/app/#/plants`, is taken when you give it as the address or with `--page`. The page opens on that view, waits until the view's data has come, and its files are named after it: `02-app-plants-desktop.png`. The tour itself follows paths only, so the `#/` links it finds on the home page, on the address given and on each `--page` are listed with the pages it left out.
+- A view of a web app with a `#/` route, such as `/app/#/plants`, is taken when you give it as the address or with `--page`. The page opens on that view, waits until the view's data has come, and its files are named after it: `02-app-plants-desktop.png`. File names keep a to z and digits only, so a route in other letters, such as `#/растения`, gets `view-` and six characters of its own, the same on every run. The tour itself follows paths only, so the `#/` links it finds on the home page, on the address given and on each `--page` are listed with the pages it left out.
 
 ## Record a demo
 

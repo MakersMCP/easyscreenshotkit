@@ -13,7 +13,7 @@
 const { openTab, closeTab, navigate } = require("./chrome");
 const { waitForContent, settle, walk, watchRequests } = require("./page");
 const { readInfo, readLinks, rejectAtOnce, rejectReason, slugOf, siteName, identity, pagesAsked, waitForView } = require("./shots");
-const { fold, homeOf, pageKey, routeOf, viewKey, pathOf, siteOf, rankLinks, routeLinks, visitOrder, readSiteIndex, kindOf } = require("./pick");
+const { fold, homeOf, pageKey, routeOf, viewKey, pathOf, readable, siteOf, rankLinks, routeLinks, visitOrder, readSiteIndex, kindOf } = require("./pick");
 const { TOP_COVER } = require("./record");
 const { timeLeft } = require("./time");
 
@@ -236,7 +236,7 @@ async function* tourSteps(recorder, pages) {
       yield { action: "scroll", to: "top", label: "Back to the top" };
       link = await linkOnScreen(recorder, next.url);
     }
-    const where = `${new URL(next.url).pathname}${routeOf(next.url)}`;
+    const where = readable(`${new URL(next.url).pathname}${routeOf(next.url)}`);
     if (link) yield { action: "click", target: { href: next.url }, label: link.text ? `Click ${quote(link.text)}` : `Open ${where}`, text: link.text, expect: next.url };
     else yield { action: "visit", url: next.url, label: `Open ${where}` };
   }

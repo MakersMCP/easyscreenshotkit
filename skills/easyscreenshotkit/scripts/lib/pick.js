@@ -245,11 +245,22 @@ function viewOf(raw) {
   return routeOf(text) ? text : text.split("#")[0];
 }
 
-// What an address shows after its host: the path, the query and the
-// fragment.
+// An address or a part of one as a person reads it, its letters decoded:
+// /uygulama%20%C3%A7al%C4%B1%C5%9Fma/ is /uygulama çalışma/. An escape that
+// stands for /, ?, # or the like stays as it is.
+function readable(text) {
+  try {
+    return decodeURI(String(text));
+  } catch {
+    return String(text);
+  }
+}
+
+// What an address shows after its host, as a person reads it: the path,
+// the query and the fragment.
 function pathOf(raw) {
   const url = new URL(raw);
-  return `${url.pathname}${url.search}${url.hash}`;
+  return readable(`${url.pathname}${url.search}${url.hash}`);
 }
 
 // The address to open for a link: absolute, http(s), no hash, no query.
@@ -582,6 +593,7 @@ module.exports = {
   routeOf,
   viewKey,
   viewOf,
+  readable,
   pathOf,
   linkUrl,
   pageUrl,

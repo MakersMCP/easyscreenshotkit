@@ -151,6 +151,9 @@ test("layout, backdrop and the address in the title bar", () => {
   assert.equal(addressOf("http://127.0.0.1:18761/app/#/plants"), "127.0.0.1:18761/app/#/plants");
   assert.equal(addressOf("https://www.acme.com/#/plant/Fern"), "acme.com/#/plant/Fern");
   assert.equal(addressOf("https://acme.com/pricing#faq"), "acme.com/pricing");
+  // Letters in a path or a route show as a browser shows them.
+  assert.equal(addressOf("https://acme.com/uygulama%20%C3%A7al%C4%B1%C5%9Fma/#/%D1%80%D0%B0%D1%81%D1%82%D0%B5%D0%BD%D0%B8%D1%8F"), "acme.com/uygulama çalışma/#/растения");
+  assert.equal(addressOf("https://acme.com/a%2Fb"), "acme.com/a%2Fb");
 });
 
 test("each frame of the video: the right recorded frame, the crossfade at a cut, the pointer under the zoom", () => {

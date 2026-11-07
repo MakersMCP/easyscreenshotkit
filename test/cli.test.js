@@ -98,7 +98,16 @@ test("addresses, page names and the site's name", () => {
   assert.equal(slugOf("https://acme.com/#/plant/Fiddle%20leaf%20fig", home), "home-plant-fiddle-leaf-fig");
   assert.equal(slugOf("https://acme.com/mail/#!/inbox", home), "mail-inbox");
   assert.equal(slugOf("https://acme.com/pricing#faq", home), "pricing");
-  assert.equal(slugOf("https://acme.com/app/#/%F0%9F%8C%BF", home), "app");
+  // A route with no letter or digit a file name keeps is told apart by six
+  // hex digits of its own, the same for the same route.
+  const mark = (route) => `view-${require("node:crypto").createHash("sha1").update(route).digest("hex").slice(0, 6)}`;
+  assert.equal(slugOf("https://acme.com/app/#/%F0%9F%8C%BF", home), `app-${mark("🌿")}`);
+  assert.equal(slugOf("https://acme.com/app/#/%D1%80%D0%B0%D1%81%D1%82%D0%B5%D0%BD%D0%B8%D1%8F", home), `app-${mark("растения")}`);
+  assert.equal(slugOf("https://acme.com/app/#/растения/", home), `app-${mark("растения")}`);
+  assert.equal(slugOf("https://acme.com/app/#/растения/кактус", home), `app-${mark("растения/кактус")}`);
+  assert.notEqual(mark("растения"), mark("растения/кактус"));
+  assert.equal(slugOf("https://acme.com/app/#/растения/42", home), "app-42");
+  assert.equal(slugOf("https://acme.com/uygulama%20%C3%A7al%C4%B1%C5%9Fma/#/%C5%9Fehir/%C4%B0zmir", home), "uygulama-calisma-sehir-izmir");
   // The pages asked for with --page keep their route; a fragment alone is a
   // view of the address given.
   assert.deepEqual(pagesAsked(["/app/#/plants", "#/light", "/pricing?plan=pro"], "https://acme.com/app/#/today", home), ["https://acme.com/app/#/plants", "https://acme.com/app/#/light", "https://acme.com/pricing"]);
@@ -131,8 +140,12 @@ test("the summary and the sheet show a view's #route with its path", () => {
     ],
     notes: [],
   };
+  manifest.pages.push({ n: 2, slug: "uygulama-calisma-sehir-izmir", url: "https://acme.com/uygulama%20%C3%A7al%C4%B1%C5%9Fma/#/%C5%9Fehir/%C4%B0zmir", why: "asked for with --page", shots: [shot("02-uygulama-calisma-sehir-izmir-desktop.png", 3200, 1800)] });
   const text = summary({ dir: "shots", manifest });
-  assert.match(text, /01 app-plants {2}\/app\/#\/plants {2}\(the address given\)/);
+  assert.match(text, /01 app-plants {20}\/app\/#\/plants {2}\(the address given\)/);
+  // A path and a route in other letters read as they are written.
+  assert.match(text, /02 uygulama-calisma-sehir-izmir {2}\/uygulama çalışma\/#\/şehir\/İzmir {2}\(asked for with --page\)/);
+  assert.match(sheetHtml(manifest, "shots"), /<span>\/uygulama çalışma\/#\/şehir\/İzmir<\/span>/);
   // The pages left out with the same reason come together.
   assert.match(text, /Skipped \/start \(redirected to a sign-in page\); \/app\/#\/light, \/app\/#\/settings \(a #route, which the tour does not follow: give it with --page\)\n/);
   assert.match(sheetHtml(manifest, "shots"), /<span>\/app\/#\/plants<\/span>/);
