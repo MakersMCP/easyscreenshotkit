@@ -282,22 +282,27 @@ async function closeTab(chrome, cdp) {
 // Opens the address and waits for its load event, at most 20 s: a page that
 // never finishes loading (a stuck tracking script) is read as it stands.
 // Another #route of the page already open loads nothing (Chrome answers
-// with no loader for it), so there is no load event to wait for. Returns
-// the address the tab ended on, after any redirects, and the HTTP status
-// the page came with.
+// with no loader for it), so there is no load event to wait for: only for
+// the page to move to it, which comes after the answer, 2 s at most.
+// Returns the address the tab ended on, after any redirects, and the HTTP
+// status the page came with.
 async function navigate(cdp, url) {
   let onLoad;
+  let onMove;
   let timer;
   const loaded = new Promise((resolve) => cdp.on("Page.loadEventFired", (onLoad = resolve)));
+  const moved = new Promise((resolve) => cdp.on("Page.navigatedWithinDocument", (onMove = resolve)));
   try {
     const { errorText, loaderId } = await cdp.send("Page.navigate", { url });
     if (errorText) throw new Error(`Could not open ${url}: ${errorText}`);
-    // The 20 s wait is cleared once the page has loaded: left running, it
-    // kept the process alive that long after the last page.
-    if (loaderId) await Promise.race([loaded, new Promise((resolve) => (timer = setTimeout(resolve, Math.max(1_000, Math.min(20_000, timeLeft() - 60_000)))))]);
+    // The wait is cleared once the page has loaded: left running, it kept
+    // the process alive that long after the last page.
+    const limit = loaderId ? Math.max(1_000, Math.min(20_000, timeLeft() - 60_000)) : 2_000;
+    await Promise.race([loaderId ? loaded : moved, new Promise((resolve) => (timer = setTimeout(resolve, limit)))]);
   } finally {
     clearTimeout(timer);
     cdp.off("Page.loadEventFired", onLoad);
+    cdp.off("Page.navigatedWithinDocument", onMove);
   }
   const finalUrl = await currentUrl(cdp, url);
   const { result } = await cdp

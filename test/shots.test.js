@@ -14,6 +14,7 @@ const test = require("node:test");
 const { takeShots, DEVICES } = require("../skills/easyscreenshotkit/scripts/lib/shots");
 const { findChrome, launch, openTab, closeTab, navigate } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
 const { setTimeLimit } = require("../skills/easyscreenshotkit/scripts/lib/time");
+const { LOCATE } = require("../skills/easyscreenshotkit/scripts/lib/record");
 const { pngText } = require("../skills/easyscreenshotkit/scripts/lib/png");
 const { readPng, serve, near } = require("./helpers");
 
@@ -393,6 +394,7 @@ const APP = (root) =>
     "App | Acme",
     `<nav><a href="#/today">Today</a> <a href="#/plants">Plants</a> <a href="#/light">Light</a> <a href="#/settings">Settings</a></nav>
     <main id="view"><h1>Loading…</h1><div class="band"></div></main>
+    ${root ? "" : '<footer><a href="/app/">App home</a></footer>'}
     <script>
       ${root ? 'if (!location.hash) location.replace("#/dashboard");' : ""}
       const view = document.getElementById("view");
@@ -497,6 +499,25 @@ test("opening another #route of the page already open does not wait for a load t
     const nav = await navigate(tab, `${origin}/app/#/plants`);
     assert.ok(Date.now() - started < 3_000, `took ${Date.now() - started} ms`);
     assert.equal(nav.url, `${origin}/app/#/plants`);
+    await closeTab(chrome, tab);
+  } finally {
+    await chrome.close();
+    server.close();
+  }
+});
+
+test("a demo's link to a #route is to that view, and its link to a page goes before a link to a view of it", { skip: noBrowser, timeout: 60_000 }, async () => {
+  const { server, origin } = await appFixture({ delay: 100 });
+  setTimeLimit(120_000);
+  const chrome = await launch();
+  try {
+    const tab = await openTab(chrome, DEVICES.desktop);
+    await navigate(tab, `${origin}/app/#/today`);
+    const find = async (href) => (await tab.send("Runtime.evaluate", { expression: `${LOCATE}(${JSON.stringify({ href })})`, returnByValue: true })).result.value;
+    assert.equal((await find(`${origin}/app/#/plants`)).text, "Plants");
+    assert.equal((await find(`${origin}/app/#/light/`)).text, "Light");
+    assert.equal((await find(`${origin}/app/`)).text, "App home");
+    assert.equal(await find(`${origin}/app/#/nowhere`), null);
     await closeTab(chrome, tab);
   } finally {
     await chrome.close();

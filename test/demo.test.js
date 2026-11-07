@@ -115,7 +115,7 @@ const page = (title, body, style = "") =>
 // blue cookie bar and a magenta chat bubble.
 const HOME = page(
   "Acme | Tools for teams",
-  `<header><a href="/">Acme</a><nav><a href="/features">Features</a><a href="/pricing">Pricing</a><a href="/login">Log in</a></nav></header>
+  `<header><a href="/">Acme</a><nav><a href="/features">Features</a><a href="/pricing">Pricing</a><a href="/login">Log in</a><a class="fern" href="/app/#/plant/Fern" aria-label=""><i></i></a></nav></header>
   <div class="hero"><h1>Tools for teams</h1><button id="go" aria-label="Go"></button>
   <form action="/thanks"><input id="email" name="email" placeholder="Email"></form></div>
   <section class="fast"><h2>Fast</h2></section>
@@ -125,6 +125,7 @@ const HOME = page(
   <script>document.getElementById("go").onclick = () => { document.querySelector(".hero").style.background = "rgb(120,0,200)"; };</script>`,
   `header{height:70px;display:flex;align-items:center;gap:40px;padding:0 40px;font-size:22px;background:#fff}
   nav{display:flex;gap:30px}
+  .fern{display:inline-block;width:28px;height:28px;background:rgb(120,0,200)}
   .hero{height:820px;background:rgb(0,160,0);position:relative}
   h1{margin:0;padding:40px;font-size:48px}
   #go{position:absolute;left:200px;top:300px;width:240px;height:80px;background:rgb(0,0,0);border:0}
@@ -141,6 +142,34 @@ const HOME = page(
 
 const plain = (title, color) => page(`${title} | Acme`, `<header><a href="/">Acme</a> <a href="/features">Features</a> <a href="/pricing">Pricing</a></header><h1>${title}</h1><div style="height:2400px;background:${color}"><h2 style="margin:0;padding-top:900px">More</h2></div>`, "header{height:70px;font-size:22px}");
 
+// A single page app at /app/ with hash routes. Each view asks /api/<view>
+// for its data, which comes after 800 ms. Today names no plant; Your plants
+// links to each one.
+const APP = page(
+  "Today | Plants",
+  `<nav><a href="#/today">Today</a> <a href="#/plants">Plants</a> <a href="#/light">Light</a></nav><main id="view"><h1>Loading…</h1><div class="band"></div></main>
+  <script>
+    const view = document.getElementById("view");
+    async function go() {
+      const route = (location.hash || "#/today").slice(2);
+      view.innerHTML = '<h1>Loading…</h1><div class="band"></div>';
+      const data = await (await fetch("/api/" + route)).json();
+      if ((location.hash || "#/today").slice(2) !== route) return;
+      view.innerHTML = "<h1>" + data.title + "</h1>" + data.body + '<div class="band" style="background:' + data.color + '"></div>';
+      document.title = data.title + " | Plants";
+    }
+    addEventListener("hashchange", go);
+    go();
+  </script>`,
+  "nav{height:60px;display:flex;gap:30px;align-items:center;padding:0 40px;font-size:22px} h1{margin:0;height:60px;padding:0 40px} .plants{margin:0;height:60px;padding:0 40px;font-size:22px} .band{height:1600px;background:rgb(240,240,240)}",
+);
+const APP_VIEWS = {
+  today: ["Today", "rgb(0,160,0)", '<p class="plants">Nothing to water today.</p>'],
+  plants: ["Your plants", "rgb(200,0,0)", '<p class="plants"><a href="#/plant/Fern">Fern</a> <a href="#/plant/Calathea">Calathea</a></p>'],
+  light: ["Light check", "rgb(255,140,0)", '<p class="plants">1,850 lux</p>'],
+  "plant/Fern": ["Fern", "rgb(120,0,200)", '<p class="plants">Water today</p>'],
+};
+
 async function fixture() {
   const seen = [];
   const { server, origin } = await serve((req, res) => {
@@ -152,6 +181,9 @@ async function fixture() {
     if (url.pathname === "/pricing") return html(plain("Pricing", "rgb(0,120,255)"));
     if (url.pathname === "/login") return html(plain("Log in", "#eee"));
     if (url.pathname === "/thanks") return html(page("Thanks | Acme", `<h1>Thanks, ${String(url.searchParams.get("email")).replace(/[<>&]/g, "")}</h1><div style="height:1400px"></div>`, "body{background:rgb(250,220,0)}"));
+    if (url.pathname === "/app/") return html(APP);
+    const view = url.pathname.startsWith("/api/") ? APP_VIEWS[decodeURIComponent(url.pathname.slice(5))] : null;
+    if (view) return setTimeout(() => res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ title: view[0], color: view[1], body: view[2] })), 800);
     res.writeHead(404).end("not found");
   });
   return { server, origin, seen };
@@ -293,6 +325,70 @@ test("a tour: the pages the menu puts forward, clicked through the menu, pricing
     // The features page, in the middle of the video.
     const middle = await frameOf(path.join(dir, "demo.mp4"), (manifest.pages[1].start + manifest.pages[1].end) / 2);
     assert.ok(near(unzoomed(middle, 800, 700), TEAL) || near(unzoomed(middle, 800, 400), TEAL), `features: ${unzoomed(middle, 800, 700)}`);
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a #route in the address and in a steps file: each view opened on its route, a route clicked to is a page of its own", { skip: missing, timeout: 300_000 }, async () => {
+  const { server, origin } = await fixture();
+  const root = tempDir();
+  const dir = path.join(root, "demo");
+  const steps = path.join(root, "app.yaml");
+  fs.writeFileSync(
+    steps,
+    `steps:
+  - click: "text=Fern"
+    zoom: false
+  - visit: /app/#/today
+  - click: "text=Plants"
+    zoom: false
+  - wait: 0.5
+`,
+  );
+  try {
+    const { manifest } = await makeDemo(`${origin}/app/#/plants`, { dir, steps, gif: false, timeLimit: 280_000 });
+    assert.equal(manifest.url, `${origin}/app/#/plants`);
+    assert.deepEqual(
+      manifest.pages.map((p) => [p.url.slice(origin.length), p.title]),
+      [
+        ["/app/#/plants", "Your plants | Plants"],
+        ["/app/#/plant/Fern", "Fern | Plants"],
+        ["/app/#/today", "Today | Plants"],
+        ["/app/#/plants", "Your plants | Plants"],
+      ],
+    );
+    const clicks = manifest.steps.filter((s) => s.action === "click");
+    assert.deepEqual(clicks.map((s) => s.opened), [`${origin}/app/#/plant/Fern`, `${origin}/app/#/plants`]);
+    // Each view on camera once its data had come.
+    for (const [i, color] of [[0, RED], [1, PURPLE], [2, GREEN], [3, RED]]) {
+      const shown = manifest.pages[i];
+      const frame = await frameOf(path.join(dir, "demo.mp4"), shown.end - 0.15);
+      assert.ok(near(unzoomed(frame, 800, 700), color), `${shown.url}: ${unzoomed(frame, 800, 700)}`);
+    }
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a tour with a #route asked for with --page: clicked to through its link, and written so in demo.yaml", { skip: missing, timeout: 300_000 }, async () => {
+  const { server, origin } = await fixture();
+  const root = tempDir();
+  const dir = path.join(root, "tour");
+  try {
+    const { manifest } = await makeDemo(origin, { dir, pages: 2, extra: ["/app/#/plant/Fern"], gif: false, timeLimit: 280_000 });
+    assert.deepEqual(manifest.pages.map((p) => p.url.slice(origin.length)), ["/", "/app/#/plant/Fern"]);
+    assert.equal(manifest.pages[1].why, "asked for with --page");
+    const click = manifest.steps.find((s) => s.action === "click");
+    assert.equal(click.label, "Open /app/#/plant/Fern");
+    assert.equal(click.opened, `${origin}/app/#/plant/Fern`);
+    // The icon link has no words: the steps file finds it by its route.
+    const again = readSteps(path.join(dir, "demo.yaml"));
+    assert.deepEqual(again.steps.find((s) => s.action === "click").target, { css: 'a[href$="#/plant/Fern"]' });
+    const middle = await frameOf(path.join(dir, "demo.mp4"), (manifest.pages[1].start + manifest.pages[1].end) / 2);
+    assert.ok(near(unzoomed(middle, 800, 700), PURPLE), `Fern: ${unzoomed(middle, 800, 700)}`);
   } finally {
     server.close();
     fs.rmSync(root, { recursive: true, force: true });

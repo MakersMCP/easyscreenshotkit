@@ -52,7 +52,7 @@ easyscreenshotkit-demo-cal.com/
   demo.yaml    the tour as steps, to edit and record again
 ```
 
-`steps.json` is there for what goes on top of the video later, such as narration, music, captions or a click sound: each step has its label and its start and end, and a click also has the frame it lands on and the point in the video where it lands.
+`steps.json` is there for what goes on top of the video later, such as narration, music, captions or a click sound: each step has its label and its start and end, and a click also has the frame it lands on and the point in the video where it lands. Its `pages` list every page the video shows with its start and end; a view of a web app reached by its `#/` route, by a visit or a click, is a page of its own there.
 
 To record a flow of your own, write it down and pass it with `--steps`:
 
@@ -75,7 +75,7 @@ npx easyscreenshotkit@latest demo --steps demo.yaml
 
 | Step | What it does |
 | --- | --- |
-| `visit: /pricing` | opens a page of the site, or any address |
+| `visit: /pricing` | opens a page of the site, or any address; `visit: /app/#/plants` opens that view of a web app |
 | `scroll: 800` | scrolls down 800 px, or up with a negative number; also `top`, `bottom`, a target, or `{ to: <target>, duration: 2 }` |
 | `click: <target>` | moves the pointer there and clicks, zoomed in; add `zoom: false` or `zoom: 2` to the step to change that |
 | `type: <text>` | types into the field in focus, or clicks `into: <target>` first |
@@ -90,7 +90,8 @@ The demo needs ffmpeg, the one on your machine (`brew install ffmpeg`, `sudo apt
 ```
   --steps <file>      follow the steps in this YAML or JSON file instead of a tour
   --pages <n>         pages in the tour, the home page included (default: 4, at most 8)
-  --page <path>       take this page in the tour, e.g. --page /pricing
+  --page <path>       take this page in the tour, e.g. --page /pricing, or a
+                      view of an app such as '/app/#/plants'
   --zoom <n>          how far a click zooms in, 1 to 2.5 (default: 1.5); --no-zoom for none
   --background <bg>   behind the window: a colour, two colours for a gradient, or a picture
   --no-frame          the page alone, filling the video

@@ -14,6 +14,7 @@ const { pathToFileURL } = require("url");
 const { openTab, closeTab, navigate } = require("./chrome");
 const { planCamera, cameraAt, cursorAt, ringsAt, keyAt, ease, clamp } = require("./motion");
 const { toRgb } = require("./png");
+const { routeOf } = require("./pick");
 
 const WIDTH = 1920;
 const HEIGHT = 1080;
@@ -147,11 +148,16 @@ window.ready = true;
 </script></body></html>`;
 }
 
-// The address as the title bar shows it: no scheme, no trailing slash.
+// The address as the title bar shows it: no scheme, no trailing slash, and
+// a single page app's #route after its path as it is written there
+// (acme.com/app/#/plants). An anchor on the page is not shown.
 function addressOf(url) {
   try {
     const u = new URL(url);
-    return `${u.host.replace(/^www\./, "")}${u.pathname === "/" ? "" : u.pathname.replace(/\/$/, "")}`;
+    const host = u.host.replace(/^www\./, "");
+    const route = routeOf(url);
+    if (route) return `${host}${u.pathname}${route}`;
+    return `${host}${u.pathname === "/" ? "" : u.pathname.replace(/\/$/, "")}`;
   } catch {
     return String(url || "");
   }

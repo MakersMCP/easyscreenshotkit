@@ -18,7 +18,7 @@ const fs = require("fs");
 const path = require("path");
 const { launch } = require("./chrome");
 const { normalizeUrl } = require("./shots");
-const { siteOf, pageKey } = require("./pick");
+const { siteOf, routeOf, viewKey, viewOf } = require("./pick");
 const { Recorder } = require("./record");
 const { readSteps, toYaml, targetText } = require("./steps");
 const { pickPages, tourSteps } = require("./tour");
@@ -44,7 +44,8 @@ Options:
   --out <dir>         where to save (default: ./easyscreenshotkit-demo-<host>)
   --pages <n>         pages in the tour, the home page included (default: 4,
                       at most 8)
-  --page <path>       take this page in the tour, e.g. --page /pricing
+  --page <path>       take this page in the tour, e.g. --page /pricing, or a
+                      view of an app such as '/app/#/plants'
   --zoom <n>          how far a click zooms in, 1 to 2.5 (default: 1.5)
   --no-zoom           no zoom on clicks
   --background <bg>   behind the window: a colour, two colours for a
@@ -60,6 +61,10 @@ Options:
   --json              print steps.json instead of a summary
   --timeout <s>       give up after this many seconds (default: 900)
   -h, --help          show this help
+
+A #route in the address, in --page or in a visit step is kept, and every
+view the video shows, one a click opened included, is a page of its own in
+steps.json.
 
 Needs Node 22 or newer, Chrome, Chromium, Edge or Brave, and ffmpeg. Set
 CHROME_PATH or FFMPEG_PATH to pick them.`;
@@ -175,12 +180,19 @@ function what(step) {
 }
 
 // A tour's internal steps as a steps file writes them: a click on a link by
-// its words when it has some, else by its address.
+// its words when it has some, else by its address: its #route when it has
+// one (a[href$="#/plants"]), else its path.
 function asWritten(step) {
   if (step.action !== "click" || !step.target.href) return step;
-  const target = step.text ? { text: step.text } : { css: `a[href*="${new URL(step.target.href).pathname}"]` };
+  const route = routeOf(step.target.href);
+  const quoted = (text) => `"${text.replace(/["\\]/g, "\\$&")}"`;
+  const target = step.text ? { text: step.text } : { css: route ? `a[href$=${quoted(route)}]` : `a[href*=${quoted(new URL(step.target.href).pathname)}]` };
   return { action: "click", target, label: step.label };
 }
+
+// The path and the #route of an address, to tell whether a link led where
+// the tour meant it to.
+const placeOf = (url) => `${new URL(url).pathname}${routeOf(url)}`;
 
 const clock = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
 
@@ -251,7 +263,7 @@ async function makeDemo(rawUrl, options = {}) {
           throw new Error(added && n === 1 ? `opening ${asked}: ${err.message}` : `step ${n - added} (${step.action}): ${err.message}`);
         }
         records.push({ n: n - added, step, ...record });
-        if (step.expect && record.opened && new URL(record.opened).pathname !== new URL(step.expect).pathname) notes.push(`The link for ${step.expect} led to ${record.opened}.`);
+        if (step.expect && record.opened && placeOf(record.opened) !== placeOf(step.expect)) notes.push(`The link for ${step.expect} led to ${record.opened}.`);
       }
       take = await recorder.finish();
       if (!name && take.pages[0]) name = take.pages[0].siteName || new URL(asked).hostname.replace(/^www\./, "");
@@ -322,13 +334,14 @@ async function makeDemo(rawUrl, options = {}) {
       entry.page = record.url;
       return entry;
     });
-    // The pages in the order they were shown; an address that comes again
-    // right after itself is the same page.
-    const changes = take.urls.filter((change, i) => i === 0 || change.url.split("#")[0] !== take.urls[i - 1].url.split("#")[0]);
+    // The pages in the order they were shown, each #route a page of its own;
+    // an address that comes again right after itself, or with another
+    // anchor, is the same page.
+    const changes = take.urls.filter((change, i) => i === 0 || viewOf(change.url) !== viewOf(take.urls[i - 1].url));
     const pagesShown = changes.map((change, i) => {
       const end = i + 1 < changes.length ? changes[i + 1].t : take.duration;
       const known = take.pages.find((page) => page.url === change.url);
-      const picked = tour && tour.pages.find((page) => pageKey(page.url) === pageKey(change.url));
+      const picked = tour && tour.pages.find((page) => viewKey(page.url) === viewKey(change.url));
       return {
         n: i + 1,
         url: change.url,

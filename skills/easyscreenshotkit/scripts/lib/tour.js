@@ -11,23 +11,26 @@
 // cut when the menu has none).
 
 const { openTab, closeTab, navigate } = require("./chrome");
-const { waitForContent, settle, walk } = require("./page");
-const { readInfo, readLinks, rejectAtOnce, rejectReason, slugOf, siteName } = require("./shots");
-const { fold, homeOf, pageKey, siteOf, rankLinks, visitOrder, readSiteIndex, kindOf, linkUrl } = require("./pick");
+const { waitForContent, settle, walk, watchRequests } = require("./page");
+const { readInfo, readLinks, rejectAtOnce, rejectReason, slugOf, siteName, identity, pagesAsked, waitForView } = require("./shots");
+const { fold, homeOf, pageKey, routeOf, viewKey, pathOf, siteOf, rankLinks, visitOrder, readSiteIndex, kindOf, ROUTE_LINK } = require("./pick");
 const { TOP_COVER } = require("./record");
 const { timeLeft } = require("./time");
 
 const PROBE = { width: 1600, height: 900, scale: 1, mobile: false, touch: false, agent: "desktop" };
 
 // Opens a candidate in a window of its own and says whether it is a page
-// worth showing: {nav, info}, or {rejected: reason}.
+// worth showing: {nav, info}, or {rejected: reason}. A view of a single
+// page app is waited for as the screenshots wait for it.
 async function probe(chrome, url, check, ctx) {
   const tab = await openTab(chrome, PROBE, ctx);
   try {
+    await watchRequests(tab);
     const nav = await navigate(tab, url);
     const glance = await readInfo(tab);
     const early = rejectAtOnce({ asked: url, nav, info: glance }, check);
     if (early) return { rejected: early };
+    await waitForView(tab, nav, url, false);
     const loaded = await waitForContent(tab, 15_000);
     await settle(tab, 4_000);
     const info = await readInfo(tab);
@@ -43,12 +46,10 @@ async function probe(chrome, url, check, ctx) {
 async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = "", theme = "light", reducedMotion = false, log = () => {} } = {}) {
   const ctx = { lang, theme, reducedMotion };
   let home = homeOf(asked);
-  const given = pageKey(asked) !== pageKey(home) ? asked : "";
-  const asks = extra.map((raw) => {
-    const url = linkUrl(raw, home);
-    if (!url || siteOf(url.href) !== siteOf(home)) throw new Error(`--page ${raw} is not a page of ${siteOf(home)}`);
-    return url.href;
-  });
+  // An address deeper than its home page, or a #route of it, is a page of
+  // its own in the tour.
+  const given = viewKey(asked) !== viewKey(home) ? asked : "";
+  const asks = pagesAsked(extra, asked, home);
   log(`Opening ${home}`);
   const indexing = wanted > 1 ? readSiteIndex(new URL(home).origin).catch(() => ({ robots: null, urls: [] })) : Promise.resolve({ robots: null, urls: [] });
   const tab = await openTab(chrome, PROBE, ctx);
@@ -56,8 +57,10 @@ async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = 
   let info;
   let links = [];
   try {
+    await watchRequests(tab);
     nav = await navigate(tab, home);
     if (nav.status >= 400) throw new Error(`${nav.url} answered ${nav.status}, so no demo was recorded.`);
+    await waitForView(tab, nav, home, false);
     await waitForContent(tab, 20_000);
     await settle(tab, 6_000);
     info = await readInfo(tab);
@@ -80,25 +83,24 @@ async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = 
     await closeTab(chrome, tab);
   }
   const homeKey = pageKey(nav.url);
-  const kept = [{ url: nav.url, kind: "home", why: "the home page", title: info.title, slug: "home", textHash: info.textHash, keys: new Set([pageKey(home), homeKey]) }];
+  const homeKeys = identity(home, nav.url, info.canonical).keys;
+  const kept = [{ url: nav.url, kind: "home", why: "the home page", title: info.title, slug: "home", textHash: info.textHash, keys: homeKeys.add(pageKey(home)) }];
   const skipped = [];
+  const routes = [];
   const keep = (url, kind, why, got) => {
-    kept.push({
-      url: got.nav.url,
-      kind,
-      why,
-      title: got.info.title,
-      slug: slugOf(got.nav.url, home),
-      textHash: got.info.textHash,
-      keys: new Set([pageKey(url), pageKey(got.nav.url), ...(got.info.canonical ? [pageKey(got.info.canonical)] : [])]),
-    });
-    log(`  ${new URL(got.nav.url).pathname} (${why})`);
+    const { keys, named } = identity(url, got.nav.url, got.info.canonical);
+    kept.push({ url: got.nav.url, kind, why, title: got.info.title, slug: slugOf(named, home), textHash: got.info.textHash, keys });
+    log(`  ${pathOf(got.nav.url)} (${why})`);
   };
   const check = { site: siteOf(home), homeKey, kept };
   // The page given and the ones asked for come whatever they are, unless
-  // they fail to open.
+  // they fail to open; one the tour has already is said so.
   for (const [url, why] of [...(given ? [[given, "the address given"]] : []), ...asks.map((url) => [url, "asked for with --page"])]) {
-    if (kept.length >= Math.max(wanted, 1 + asks.length + (given ? 1 : 0)) || kept.some((page) => page.keys.has(pageKey(url)))) continue;
+    const same = kept.find((page) => page.keys.has(viewKey(url)));
+    if (same) {
+      skipped.push({ url, reason: `the same page as ${same.slug}` });
+      continue;
+    }
     const got = await probe(chrome, url, { site: check.site, homeKey: "", kept: [] }, ctx);
     if (got.rejected) skipped.push({ url, reason: got.rejected });
     else keep(url, (kindOf(new URL(url), "") || { kind: "other" }).kind, why, got);
@@ -110,12 +112,15 @@ async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = 
       robots: index.robots,
       alternates: (info.alternates || []).map((alt) => alt.href),
       exclude: kept.map((page) => page.url),
+      keys: kept.flatMap((page) => [...page.keys]),
     });
+    // The views of an app the tour does not open are said, after the rest.
+    routes.push(...ranked.skipped.filter((skip) => skip.reason === ROUTE_LINK));
     const queue = visitOrder(ranked.candidates);
     let visits = 0;
     while (queue.length && kept.length < wanted && visits < wanted * 3 && timeLeft() > 240_000) {
       const candidate = queue.shift();
-      if (kept.some((page) => page.keys.has(pageKey(candidate.url)))) continue;
+      if (kept.some((page) => page.keys.has(viewKey(candidate.url)))) continue;
       visits++;
       let got;
       try {
@@ -131,7 +136,7 @@ async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = 
   // A visitor's order: what the product is first, what it costs last.
   const [first, ...rest] = kept;
   const ordered = [first, ...rest.filter((page) => page.kind !== "pricing"), ...rest.filter((page) => page.kind === "pricing")];
-  return { pages: ordered.map(({ url, kind, why, title, slug }) => ({ url, kind, why, title, slug })), skipped, site: siteName(info, nav.url) };
+  return { pages: ordered.map(({ url, kind, why, title, slug }) => ({ url, kind, why, title, slug })), skipped: [...skipped, ...routes], site: siteName(info, nav.url) };
 }
 
 // Where a page is worth stopping on the way down: the tops of its first
@@ -224,9 +229,9 @@ async function* tourSteps(recorder, pages) {
       yield { action: "scroll", to: "top", label: "Back to the top" };
       link = await linkOnScreen(recorder, next.url);
     }
-    const path = new URL(next.url).pathname;
-    if (link) yield { action: "click", target: { href: next.url }, label: link.text ? `Click ${quote(link.text)}` : `Open ${path}`, text: link.text, expect: next.url };
-    else yield { action: "visit", url: next.url, label: `Open ${path}` };
+    const where = `${new URL(next.url).pathname}${routeOf(next.url)}`;
+    if (link) yield { action: "click", target: { href: next.url }, label: link.text ? `Click ${quote(link.text)}` : `Open ${where}`, text: link.text, expect: next.url };
+    else yield { action: "visit", url: next.url, label: `Open ${where}` };
   }
 }
 

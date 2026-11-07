@@ -146,6 +146,11 @@ test("layout, backdrop and the address in the title bar", () => {
   assert.equal(addressOf("https://www.acme.com/"), "acme.com");
   assert.equal(addressOf("https://acme.com/pricing/"), "acme.com/pricing");
   assert.equal(addressOf("http://localhost:3000/app?x=1"), "localhost:3000/app");
+  // A view of a single page app shows its route after its path, as written;
+  // an anchor on the page does not show.
+  assert.equal(addressOf("http://127.0.0.1:18761/app/#/plants"), "127.0.0.1:18761/app/#/plants");
+  assert.equal(addressOf("https://www.acme.com/#/plant/Fern"), "acme.com/#/plant/Fern");
+  assert.equal(addressOf("https://acme.com/pricing#faq"), "acme.com/pricing");
 });
 
 test("each frame of the video: the right recorded frame, the crossfade at a cut, the pointer under the zoom", () => {

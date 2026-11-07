@@ -55,7 +55,7 @@ steps:
   - wait: 1.5
 ```
 
-The actions are visit, scroll, click, type, key, hover and wait. A target is a CSS selector or `text=` with the words on it; quote a selector that starts with `#`. Use only what is on the public site: a step behind a login fails.
+The actions are visit, scroll, click, type, key, hover and wait. A target is a CSS selector or `text=` with the words on it; quote a selector that starts with `#`. Use only what is on the public site: a step behind a login fails. A visit opens a view of a web app by its route (`- visit: /app/#/plants`), the address given to the demo keeps its route too, and `steps.json` counts every view shown as a page of its own.
 
 What comes back:
 

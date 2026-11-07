@@ -23,10 +23,11 @@
 
 const fs = require("fs");
 const path = require("path");
-const { openTab, closeTab, navigate } = require("./chrome");
-const { metrics, walk, waitForContent, settle, waitForFonts, resetPictureWait, waitForPictures } = require("./page");
+const { openTab, closeTab, navigate, currentUrl } = require("./chrome");
+const { metrics, walk, waitForContent, settle, watchRequests, networkQuiet, quietNetwork, waitForFonts, resetPictureWait, waitForPictures } = require("./page");
 const { clean } = require("./clean");
 const { readInfo } = require("./shots");
+const { routeOf, viewOf } = require("./pick");
 const { ease, clamp, moveDuration, scrollDuration, curve, pointAt } = require("./motion");
 const { lightnessOf } = require("./compose");
 const { sleep } = require("./time");
@@ -44,7 +45,9 @@ const WALK_SCREENS = 6;
 // ─── in the page ───────────────────────────────────────────────────────────
 // Finds what a step points at: a CSS selector, the words on it, or a link to
 // an address. Interactive elements win over plain text, then the first in
-// the page's order. Returns its box on the screen, or null.
+// the page's order. A link to an address with a #route is a link to that
+// view; for one without, a link to the page itself goes before a link to a
+// view of it. Returns its box on the screen, or null.
 const LOCATE = `((spec) => {
   const norm = (s) => String(s || "").replace(/\\s+/g, " ").trim().toLowerCase();
   const shown = (el) => {
@@ -52,17 +55,23 @@ const LOCATE = `((spec) => {
     if (r.width < 2 || r.height < 2) return false;
     return el.checkVisibility ? el.checkVisibility({ opacityProperty: true, visibilityProperty: true }) : true;
   };
+  const routeOf = (u) => { const m = /^#(?:\\/|!\\/?)(.*)$/.exec(u.hash); return m && m[1].replace(/^\\/+/, "") ? u.hash.replace(/\\/+$/, "") : ""; };
   const keyOf = (href) => {
-    try { const u = new URL(href, location.href); return u.hostname.replace(/^www\\./, "").toLowerCase() + (u.pathname.replace(/\\/+$/, "").toLowerCase() || "/"); } catch (e) { return ""; }
+    try { const u = new URL(href, location.href); return { page: u.hostname.replace(/^www\\./, "").toLowerCase() + (u.pathname.replace(/\\/+$/, "").toLowerCase() || "/"), route: routeOf(u) }; } catch (e) { return null; }
   };
   let found = [];
   if (spec.css) {
     try { found = [...document.querySelectorAll(spec.css)].filter(shown); } catch (e) { return { error: "is not a CSS selector the browser can read" }; }
   } else if (spec.href) {
     const want = keyOf(spec.href);
-    const links = [...document.querySelectorAll("a[href]")].filter((a) => keyOf(a.href) === want && shown(a));
+    const links = [];
+    for (const a of document.querySelectorAll("a[href]")) {
+      const key = keyOf(a.href);
+      if (want && key && key.page === want.page && (!want.route || key.route === want.route) && shown(a)) links.push([a, key]);
+    }
     const top = (a) => (a.closest("header, nav, [role=banner], [role=navigation]") ? 0 : 1);
-    found = links.sort((a, b) => top(a) - top(b));
+    const view = (key) => (want.route || !key.route ? 0 : 1);
+    found = links.sort((a, b) => view(a[1]) - view(b[1]) || top(a[0]) - top(b[0])).map(([a]) => a);
   } else {
     const want = norm(spec.text);
     const label = (el) => norm(el.innerText || el.value || el.getAttribute("aria-label") || el.title || "");
@@ -265,6 +274,9 @@ class Recorder {
   async open() {
     this.tab = await openTab(this.chrome, { width: this.viewport.width, height: this.viewport.height, scale: 0, mobile: false, touch: false, agent: "desktop" }, { lang: this.lang, theme: this.theme, reducedMotion: this.reducedMotion });
     const tab = this.tab;
+    // A view of a single page app is recorded once the data it asks for has
+    // come.
+    await watchRequests(tab);
     const { frameTree } = await tab.send("Page.getFrameTree");
     this.frameId = frameTree.frame.id;
     tab.on("Page.screencastFrame", (p) => this.onFrame(p));
@@ -282,12 +294,13 @@ class Recorder {
     });
     tab.on("Page.loadEventFired", () => (this.loadedAt = Date.now()));
     // An app that changes its address without loading a page (its own
-    // router): the title bar follows. A new #hash alone is the same page.
+    // router): the title bar follows. A new #route is another page; a new
+    // anchor (a page that marks the section scrolled to) is the same page.
     tab.on("Page.navigatedWithinDocument", (p) => {
       if (p.frameId !== this.frameId) return;
       this.sameAt = Date.now();
       this.sameUrl = p.url;
-      const same = p.url.split("#")[0] === String(this.url).split("#")[0];
+      const same = viewOf(p.url) === viewOf(this.url);
       this.url = p.url;
       if (!same) this.take.urls.push({ t: this.now(), url: p.url });
     });
@@ -414,6 +427,7 @@ class Recorder {
   async ready(depth = 0) {
     const tab = this.tab;
     const began = Date.now();
+    if (routeOf(await currentUrl(tab))) await quietNetwork(tab);
     const loaded = await waitForContent(tab, 20_000);
     await settle(tab, 6_000);
     const info = await readInfo(tab);
@@ -803,20 +817,28 @@ class Recorder {
 
   // An app that swapped its content in place after a click (a new address,
   // no new page): it is given a moment on camera to draw it, then the rest
-  // off camera. Nothing is cleaned up here: the clean-up's rules for the
+  // off camera: the data the view asked for (10 s at most), then its
+  // drawing. Nothing is cleaned up here: the clean-up's rules for the
   // known tools and the watch for late boxes are still on, and what the
   // click opened (a dialog on a route of its own) is meant to be seen.
   async redrawn() {
     const started = Date.now();
     let away = false;
-    for (let waited = 0, last = "", same = 0; waited < 6_000 && same < 3; waited += 250) {
-      const now = String(await this.eval("document.getElementsByTagName('*').length + ':' + document.documentElement.scrollHeight"));
-      same = now === last ? same + 1 : 0;
-      last = now;
+    const offCamera = () => {
       if (!away && Date.now() - started > this.real(LIVE_WAIT)) {
         this.stopLive();
         away = true;
       }
+    };
+    while (!networkQuiet(this.tab) && Date.now() - started < 10_000) {
+      offCamera();
+      await sleep(100);
+    }
+    for (let waited = 0, last = "", same = 0; waited < 6_000 && same < 3; waited += 250) {
+      const now = String(await this.eval("document.getElementsByTagName('*').length + ':' + document.documentElement.scrollHeight"));
+      same = now === last ? same + 1 : 0;
+      last = now;
+      offCamera();
       await sleep(250);
     }
     if (away) {
@@ -877,9 +899,12 @@ class Recorder {
       const page = await this.follow();
       if (page) Object.assign(record, { end: Math.max(record.start, left), opened: page.url });
     }
-    if (!record.opened && this.url.split("#")[0] !== before.split("#")[0] && ["click", "key", "type"].includes(step.action)) {
+    if (!record.opened && viewOf(this.url) !== viewOf(before) && ["click", "key", "type"].includes(step.action)) {
       await this.redrawn();
       Object.assign(record, { end: this.now(), opened: this.url });
+      // Its title, for steps.json, as a page that was opened has one.
+      const title = await this.eval("document.title");
+      this.pages.push({ url: this.url, title: typeof title === "string" ? title.trim() : "", heading: "", siteName: "", description: "", loaded: true, hidden: 0 });
     }
     return record;
   }
