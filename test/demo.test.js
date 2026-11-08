@@ -212,6 +212,12 @@ test("a demo never writes into a folder that holds someone else's files, and its
     // A screenshots run is not a demo.
     fs.writeFileSync(path.join(dir, "steps.json"), JSON.stringify({ version: 1, tool: "easyscreenshotkit 0.1.0" }));
     assert.throws(() => openDemo(dir), /no earlier easyscreenshotkit demo/);
+    // A file where the folder goes, or a folder above it, is refused by
+    // what it is and stays as it was.
+    assert.throws(() => openDemo(path.join(dir, "keep-me.txt")), /^Error: .*keep-me\.txt is a file, and this run saves its files in a folder of that name\. Move it, or pick another folder with --out\.$/);
+    assert.throws(() => prepareDemoDir(path.join(dir, "keep-me.txt", "demo")), /keep-me\.txt\/demo cannot be made: .*keep-me\.txt is a file\. Move it, or pick another folder with --out\./);
+    assert.throws(() => openDemo(path.join(dir, "keep-me.txt", "demo")), /keep-me\.txt\/demo cannot be made: .*keep-me\.txt is a file\./);
+    assert.equal(read("keep-me.txt"), "mine");
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

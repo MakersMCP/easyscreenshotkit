@@ -138,9 +138,45 @@ function makeFolder(dir, target) {
   } catch (err) {
     const root = path.parse(target).root;
     if (err.code === "ENOENT" && root && !fs.existsSync(root)) throw new Error(`${dir} cannot be made: ${root} is not there. Check the drive, or pick another folder with --out.`);
+    // A link that leads nowhere fails as ENOENT.
+    const file = ["EEXIST", "ENOTDIR", "ENOENT"].includes(err.code) && inTheWay(target);
+    if (file) throw new Error(notAFolder(dir, target, file));
     if (refused(err)) throw new Error(`${dir} cannot be made: ${refused(err)}. Pick another folder with --out.`);
     throw err;
   }
+}
+
+// What stands where the folder a run saves in, or a folder above it, has
+// to be: the first path on the way that is there and is no folder, with
+// what it is, or null.
+function inTheWay(target) {
+  const way = [];
+  for (let at = target; ; at = path.dirname(at)) {
+    way.unshift(at);
+    if (path.dirname(at) === at) break;
+  }
+  for (const at of way) {
+    const s = lstat(at);
+    if (!s) return null;
+    if (s.isDirectory()) continue;
+    if (!s.isSymbolicLink()) return { at, what: "a file" };
+    let real;
+    try {
+      real = fs.statSync(at);
+    } catch {
+      return { at, what: "a link that leads nowhere" };
+    }
+    if (!real.isDirectory()) return { at, what: "a link to a file" };
+  }
+  return null;
+}
+
+// The refusal for a folder that a file stands in the way of. The path is
+// told the way dir is, from the current folder when dir is.
+function notAFolder(dir, target, { at, what }) {
+  if (at === target) return `${dir} is ${what}, and this run saves its files in a folder of that name. Move it, or pick another folder with --out.`;
+  const shown = path.isAbsolute(dir) ? at : path.relative(process.cwd(), at) || at;
+  return `${dir} cannot be made: ${shown} is ${what}. Move it, or pick another folder with --out.`;
 }
 
 // Files a file browser leaves in a folder it has shown (Finder, Windows
@@ -191,6 +227,8 @@ function claim(dir, target, spec) {
 // anything. A folder that is not there yet may.
 function checkDir(dir, spec) {
   const target = path.resolve(dir);
+  const file = inTheWay(target);
+  if (file) throw new Error(notAFolder(dir, target, file));
   if (!fs.existsSync(target)) return;
   check(dir, target, spec);
   claim(dir, target, spec);

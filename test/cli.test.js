@@ -402,8 +402,31 @@ test("a run's folder: refused when it holds someone else's files, and an earlier
     fs.rmSync(path.join(dir, "pwa"), { recursive: true });
     put("pwa", "a file");
     assert.throws(() => openShots(dir, { pwa: true }), /shots\/pwa is a file, and this run saves a folder of that name there\. Move it, or pick another folder with --out\./);
-    assert.throws(() => openShots(path.join(dir, "keep-me.txt")), /EEXIST|ENOTDIR/);
     fs.rmSync(path.join(dir, "pwa"));
+
+    // A file where the folder goes, or where a folder above it goes, is
+    // refused by what it is, and stays as it was; so is a link to a file
+    // or to nothing. The path is told the way --out was given.
+    const mine = path.join(dir, "keep-me.txt");
+    const untouched = snapshot(dir);
+    assert.throws(() => openShots(mine), /^Error: .*shots\/keep-me\.txt is a file, and this run saves its files in a folder of that name\. Move it, or pick another folder with --out\.$/);
+    assert.throws(() => prepareDir(mine), /keep-me\.txt is a file, and this run saves its files in a folder of that name\./);
+    assert.throws(() => openShots(path.join(mine, "a", "b")), /^Error: .*shots\/keep-me\.txt\/a\/b cannot be made: .*shots\/keep-me\.txt is a file\. Move it, or pick another folder with --out\.$/);
+    assert.throws(() => prepareDir(path.join(mine, "a")), /keep-me\.txt\/a cannot be made: .*shots\/keep-me\.txt is a file\./);
+    assert.throws(() => openShots(path.relative(process.cwd(), path.join(mine, "a"))), (err) => err.message === `${path.relative(process.cwd(), path.join(mine, "a"))} cannot be made: ${path.relative(process.cwd(), mine)} is a file. Move it, or pick another folder with --out.`);
+    if (process.platform !== "win32") {
+      fs.symlinkSync(path.join("shots", "keep-me.txt"), path.join(root, "to-file"));
+      fs.symlinkSync("nowhere", path.join(root, "to-nothing"));
+      assert.throws(() => openShots(path.join(root, "to-file")), /to-file is a link to a file, and this run saves its files in a folder of that name\./);
+      assert.throws(() => openShots(path.join(root, "to-nothing", "shots")), /to-nothing\/shots cannot be made: .*to-nothing is a link that leads nowhere\./);
+      fs.rmSync(path.join(root, "to-file"));
+      fs.rmSync(path.join(root, "to-nothing"));
+    }
+    // The command says it before it opens a browser.
+    const cli = spawnSync(process.execPath, [CLI, "http://127.0.0.1:9/", "--out", path.join("keep-me.txt", "sub"), "--json"], { cwd: dir, encoding: "utf8", timeout: 30_000 });
+    assert.equal(cli.status, 1);
+    assert.deepEqual(JSON.parse(cli.stdout), { ok: false, error: `${path.join("keep-me.txt", "sub")} cannot be made: keep-me.txt is a file. Move it, or pick another folder with --out.` });
+    assert.deepEqual(snapshot(dir), untouched);
 
     // A pwa that is a link to a folder elsewhere: a run without --pwa ends
     // well and leaves the link and what it leads to alone; one with --pwa is
