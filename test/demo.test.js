@@ -148,6 +148,22 @@ test("demo.gif is made in a folder whose path holds a %, and nothing is written 
   }
 });
 
+// A demo from a steps file leaves the demo.yaml an earlier tour wrote in its
+// folder, as it may be the file it follows: that is not one of its files.
+test("the summary lists demo.yaml after a tour, which wrote it, not after a steps run that left an earlier tour's there", () => {
+  const { summary } = require("../skills/easyscreenshotkit/scripts/lib/demo");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-demo-summary-"));
+  try {
+    fs.writeFileSync(path.join(dir, "demo.yaml"), "steps:\n  - wait: 1\n");
+    fs.writeFileSync(path.join(dir, "demo.mp4"), "video");
+    const manifest = { url: "https://acme.com/", video: { width: 1920, height: 1080, fps: 30, duration: 4 }, gif: null, poster: { width: 1920, height: 1080 }, steps: [{ start: 0, label: "Open acme.com" }], notes: [] };
+    assert.doesNotMatch(summary({ dir, manifest, tour: false }), /demo\.yaml/);
+    assert.match(summary({ dir, manifest, tour: true }), /\n {2}demo\.yaml {3}the tour as steps: edit it and record again with --steps\n/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("the CLI hands demo to its own command, with its own help", () => {
   const help = spawnSync(process.execPath, [CLI, "demo", "--help"], { encoding: "utf8" });
   assert.equal(help.status, 0);

@@ -447,10 +447,13 @@ async function makeDemo(rawUrl, options = {}) {
   // The run has ended well: its files take the place of the earlier demo's,
   // and the frames go with the part folder.
   run.commit(["demo.mp4", ...(gifInfo ? ["demo.gif"] : []), "poster.png", ...(tour ? [TOUR_FILE] : []), "steps.json"]);
-  return { dir: target, manifest };
+  return { dir: target, manifest, tour: Boolean(tour) };
 }
 
-function summary({ dir, manifest }) {
+// The files a run saved, and what it did. tour: whether it was a tour,
+// which writes demo.yaml; a run from a steps file leaves an earlier tour's
+// demo.yaml in the folder as it was, and it is not this run's.
+function summary({ dir, manifest, tour = false }) {
   const mb = (bytes) => `${(bytes / 1048576).toFixed(1)} MB`;
   const size = (file) => {
     try {
@@ -464,7 +467,7 @@ function summary({ dir, manifest }) {
   if (manifest.gif) lines.push(`  demo.gif    ${manifest.gif.width}x${manifest.gif.height}, ${manifest.gif.fps} fps, ${mb(manifest.gif.bytes)}`);
   lines.push(`  poster.png  ${manifest.poster.width}x${manifest.poster.height}`);
   lines.push(`  steps.json  ${manifest.steps.length} steps with their start and end, in seconds and frames`);
-  if (fs.existsSync(path.join(dir, "demo.yaml"))) lines.push("  demo.yaml   the tour as steps: edit it and record again with --steps");
+  if (tour) lines.push("  demo.yaml   the tour as steps: edit it and record again with --steps");
   lines.push("");
   for (const step of manifest.steps) lines.push(`  ${clock(step.start).padStart(5)}  ${step.label}`);
   for (const note of manifest.notes) lines.push("", `  Note: ${note}`);
