@@ -44,8 +44,8 @@ async function probe(chrome, url, check, ctx, { links = false } = {}) {
 
 // The pages of the tour, the home page first: [{url, kind, why, title}],
 // with the ones opened and left out and why (skipped), and the #route links
-// on the home page, the address given and each --page, which the tour does
-// not follow (routes).
+// on the home page, the address given and each --page, and the #routes the
+// sitemap lists, which the tour does not follow (routes).
 async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = "", theme = "light", reducedMotion = false, log = () => {} } = {}) {
   const ctx = { lang, theme, reducedMotion };
   let home = homeOf(asked);
@@ -112,8 +112,8 @@ async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = 
       namedLinks.push(...got.links);
     }
   }
+  const index = await indexing;
   if (wanted > kept.length) {
-    const index = await indexing;
     const ranked = rankLinks(links, index.urls || [], {
       home: nav.url,
       robots: index.robots,
@@ -139,8 +139,10 @@ async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = 
     }
   }
   // The views of an app that the home page, the address given and each
-  // --page link to by #route, whether the tour still needed pages or not.
-  const routes = wanted > 1 ? routeLinks([...links, ...namedLinks], { home: nav.url, keys: kept.flatMap((page) => [...page.keys]) }) : [];
+  // --page link to by #route, and those the sitemap lists, whether the
+  // tour still needed pages or not.
+  const listed = (index.urls || []).map((href) => ({ href }));
+  const routes = wanted > 1 ? routeLinks([...links, ...namedLinks, ...listed], { home: nav.url, keys: kept.flatMap((page) => [...page.keys]) }) : [];
   // A visitor's order: what the product is first, what it costs last.
   const [first, ...rest] = kept;
   const ordered = [first, ...rest.filter((page) => page.kind !== "pricing"), ...rest.filter((page) => page.kind === "pricing")];

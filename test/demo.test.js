@@ -316,12 +316,16 @@ const APP_VIEWS = {
   растения: ["Растения", "rgb(0,200,200)", '<p class="plants">Cacti</p>'],
 };
 
-async function fixture() {
+// sitemap: the addresses the site's sitemap lists, as paths; it has none
+// without.
+async function fixture({ sitemap = null } = {}) {
   const seen = [];
-  const { server, origin } = await serve((req, res) => {
+  let origin = "";
+  const { server, origin: base } = await serve((req, res) => {
     seen.push(req.url);
     const html = (body) => res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(body);
     const url = new URL(req.url, "http://x");
+    if (url.pathname === "/sitemap.xml" && sitemap) return res.writeHead(200, { "Content-Type": "application/xml" }).end(`<urlset>${sitemap.map((at) => `<url><loc>${origin}${at}</loc></url>`).join("")}</urlset>`);
     if (url.pathname === "/") return html(HOME);
     if (url.pathname === "/features") return html(plain("Features", "rgb(0,200,200)"));
     if (url.pathname === "/pricing") return html(plain("Pricing", "rgb(0,120,255)"));
@@ -332,6 +336,7 @@ async function fixture() {
     if (view) return setTimeout(() => res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ title: view[0], color: view[1], body: view[2] })), view[3] || 800);
     res.writeHead(404).end("not found");
   });
+  origin = base;
   return { server, origin, seen };
 }
 
@@ -611,8 +616,8 @@ test("a tour with #routes asked for with --page: clicked to through their links,
   }
 });
 
-test("a tour lists the #route links of the home page and the address given in one note, also when it needs no more pages", { skip: !findChrome() && "no Chrome, Chromium, Edge or Brave installed", timeout: 120_000 }, async () => {
-  const { server, origin } = await fixture();
+test("a tour lists the #route links of the home page and the address given, and the #routes its sitemap lists, in one note, also when it needs no more pages", { skip: !findChrome() && "no Chrome, Chromium, Edge or Brave installed", timeout: 120_000 }, async () => {
+  const { server, origin } = await fixture({ sitemap: ["/", "/app/#/x", "/app/#/plants"] });
   setTimeLimit(110_000);
   const chrome = await launch();
   try {
@@ -621,9 +626,9 @@ test("a tour lists the #route links of the home page and the address given in on
     assert.deepEqual(tour.skipped, []);
     assert.deepEqual(
       tour.routes.map((r) => decodeURI(r.url.slice(origin.length))),
-      ["/app/#/plant/Fern", "/app/#/today", "/app/#/plants", "/app/#/light", "/app/#/растения", "/app/#/report"],
+      ["/app/#/plant/Fern", "/app/#/today", "/app/#/plants", "/app/#/light", "/app/#/растения", "/app/#/report", "/app/#/x"],
     );
-    assert.equal(routesNote(tour.routes), "Left out /app/#/plant/Fern, /app/#/today, /app/#/plants, /app/#/light, /app/#/растения and /app/#/report: #routes, which the tour does not follow: give one with --page.");
+    assert.equal(routesNote(tour.routes), "Left out /app/#/plant/Fern, /app/#/today, /app/#/plants, /app/#/light, /app/#/растения, /app/#/report and /app/#/x: #routes, which the tour does not follow: give one with --page.");
   } finally {
     await chrome.close();
     server.close();

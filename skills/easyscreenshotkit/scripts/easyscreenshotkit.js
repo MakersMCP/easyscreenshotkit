@@ -50,7 +50,8 @@ is named after it, 02-app-plants-desktop.png for /app/#/plants. A --page
 that is only a route, such as '#/plants', is that view of the address
 given. Any other fragment, such as #pricing, is left out, with a note. The
 tour follows paths only: the #route links on the home page, the address
-given and each --page are listed with the pages it left out.
+given and each --page, and the #routes in the site's sitemap, are listed
+with the pages it left out.
 
 The folder has to be new, empty or hold an earlier run. A run builds its
 files in a folder whose name starts with a dot, inside the folder it saves

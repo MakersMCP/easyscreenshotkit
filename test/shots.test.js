@@ -420,10 +420,13 @@ const APP = (root, { hit = false } = {}) =>
     { style: "nav{height:60px;background:rgb(30,30,30)} nav a{color:#fff;margin:0 10px} h1{margin:0;height:60px} .band{height:1200px;background:rgb(240,240,240)}" },
   );
 
-async function appFixture({ delay = 5_000, early = false } = {}) {
-  const { server, origin } = await serve((req, res) => {
+async function appFixture({ delay = 5_000, early = false, sitemap = null } = {}) {
+  let origin = "";
+  const { server, origin: base } = await serve((req, res) => {
     const url = new URL(req.url, "http://x");
     const html = (body) => res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(body);
+    // sitemap: the addresses it lists, as paths.
+    if (url.pathname === "/sitemap.xml" && sitemap) return res.writeHead(200, { "Content-Type": "application/xml" }).end(`<urlset>${sitemap.map((at) => `<url><loc>${origin}${at}</loc></url>`).join("")}</urlset>`);
     if (url.pathname === "/") return html(APP(true));
     if (url.pathname === "/app/") return html(APP(false));
     if (url.pathname === "/hit/") return html(APP(false, { hit: true }));
@@ -440,6 +443,7 @@ async function appFixture({ delay = 5_000, early = false } = {}) {
     if (view) return setTimeout(() => res.writeHead(200, { "Content-Type": "application/json" }).end(answer), delay);
     res.writeHead(404).end("not found");
   });
+  origin = base;
   return { server, origin };
 }
 
@@ -747,6 +751,27 @@ test("the #route links of the address given are listed with the pages left out, 
       ["/#/today", "/#/plants", "/#/light", "/#/settings", "/app/#/today", "/app/#/plants", "/app/#/light", "/app/#/settings"].map((view) => [view, ROUTE]),
     );
     assert.match(fs.readFileSync(path.join(dir, "SCREENSHOTS.md"), "utf8"), /- http:\/\/127\.0\.0\.1:\d+\/app\/#\/plants: a #route, which the tour does not follow: give it with --page/);
+  } finally {
+    server.close();
+    fs.rmSync(path.dirname(dir), { recursive: true, force: true });
+  }
+});
+
+// A sitemap can list views of an app by #route, as sites made for the old
+// AJAX crawling scheme list their #! addresses: the tour does not follow
+// those either, and they are listed after the links on its pages, each
+// view once.
+test("the #routes a site's sitemap lists are listed with the pages left out too", { skip: noBrowser, timeout: 120_000 }, async () => {
+  const { server, origin } = await appFixture({ delay: 300, sitemap: ["/", "/app/#/x", "/app/#!/inbox", "/app/#/plants"] });
+  const dir = path.join(tempDir(), "shots");
+  try {
+    const { manifest } = await takeShots(`${origin}/app/`, { dir, pages: 2, sizes: "desktop", timeLimit: 100_000 });
+    assert.deepEqual(manifest.pages.map((p) => p.url.slice(origin.length)), ["/#/dashboard", "/app/"]);
+    const ROUTE = "a #route, which the tour does not follow: give it with --page";
+    assert.deepEqual(
+      manifest.skipped.map((s) => [s.url.slice(origin.length), s.reason]),
+      ["/#/today", "/#/plants", "/#/light", "/#/settings", "/app/#/today", "/app/#/plants", "/app/#/light", "/app/#/settings", "/app/#/x", "/app/#!/inbox"].map((view) => [view, ROUTE]),
+    );
   } finally {
     server.close();
     fs.rmSync(path.dirname(dir), { recursive: true, force: true });

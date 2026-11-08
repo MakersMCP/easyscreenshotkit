@@ -1011,9 +1011,10 @@ async function takeShots(rawUrl, options = {}) {
       }
       leftover = queue.slice(0, 20).map(({ url, kind, score, why }) => ({ url, kind, score, why }));
       // The views of an app that the home page, the address given and each
-      // --page link to by #route: the tour does not follow them, so they
-      // are listed for --page.
-      routes = routeLinks([...(result.links || []), ...namedLinks], { home: kept[0].url, keys: kept.flatMap((page) => [...page.keys]) });
+      // --page link to by #route, and those the sitemap lists: the tour
+      // does not follow them, so they are listed for --page.
+      const listed = (index.urls || []).map((href) => ({ href }));
+      routes = routeLinks([...(result.links || []), ...namedLinks, ...listed], { home: kept[0].url, keys: kept.flatMap((page) => [...page.keys]) });
     }
 
     await pool.drain();

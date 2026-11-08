@@ -69,7 +69,8 @@ steps.json. A --page that is only a route, such as '#/plants', is that view
 of the address given. Any other fragment in the address or in --page, such
 as #pricing, is left out, with a note; a visit step keeps it. A tour
 follows paths only: the notes in steps.json name the #route links on the
-home page, the address given and each --page.
+home page, the address given and each --page, and the #routes in the
+site's sitemap.
 
 A demo builds its files inside the folder it saves in and moves them into
 place once it has ended well, replacing an earlier demo's. One that fails or
