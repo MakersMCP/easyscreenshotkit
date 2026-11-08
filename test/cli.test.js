@@ -98,13 +98,40 @@ test("addresses, page names and the site's name", () => {
   ]);
   assert.deepEqual(fragmentNotes("acme.com/app/#/plants", ["/pricing"], "https://acme.com/app/#/plants", "https://acme.com/"), []);
   // A fragment that reads as a key or a token is not repeated, however
-  // plain its letters: a hex or base64 string, or one long word.
+  // plain its letters: a hex or base64 string, a UUID, a short key of
+  // letters and digits mixed, or one long word.
   const shown = (fragment) => fragmentNotes(`app.acme.com/${fragment}`, [], "https://app.acme.com/", "https://app.acme.com/")[0].split(" ends in ")[1].split(", which")[0];
-  assert.deepEqual(
-    ["#3f9a2c71d0b84e5fa6c2d9e1b7f04a6c", "#a1b2c3d4e5f6", "#Xy_9kLmN0pQrStUv", "#abcdefghijklmnopqrstuvwxyz"].map(shown),
-    ["a fragment", "a fragment", "a fragment", "a fragment"],
-  );
-  assert.deepEqual(["#getting-started", "#section-2", "#L42", "#2024-recap", "#Installation"].map(shown), ["#getting-started", "#section-2", "#L42", "#2024-recap", "#Installation"]);
+  const keys = [
+    "#3f9a2c71d0b84e5fa6c2d9e1b7f04a6c",
+    "#a1b2c3d4e5f6",
+    "#Xy_9kLmN0pQrStUv",
+    "#abcdefghijklmnopqrstuvwxyz",
+    "#550e8400-e29b-41d4-a716-446655440000",
+    "#k3J9xQ2mW8",
+    "#invite-7f3a9c2e1b",
+    "#invite-7f3a9c2e-reset",
+    "#KaN_ZrbkKQoIsSfSUpD_xG",
+    "#k3J9-x8Qz_P2mN-7vB4",
+  ];
+  assert.deepEqual(keys.map(shown), keys.map(() => "a fragment"));
+  // The shapes keys and tokens come in, made the same way each time: a
+  // 22-character base64url key (a nanoid, 128 bits), a 16-character one, a
+  // UUID, each 2,000 times.
+  const { createHash } = require("node:crypto");
+  const made = (i, shape) => {
+    const bytes = createHash("sha256").update(`${shape}${i}`).digest();
+    if (shape === "uuid") {
+      const hex = bytes.toString("hex");
+      return `#${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+    }
+    return `#${bytes.toString("base64url").slice(0, shape === "key22" ? 22 : 16)}`;
+  };
+  for (const shape of ["key22", "key16", "uuid"]) {
+    const repeated = Array.from({ length: 2_000 }, (_, i) => made(i, shape)).filter((fragment) => shown(fragment) !== "a fragment");
+    assert.deepEqual(repeated, [], shape);
+  }
+  const names = ["#getting-started", "#section-2", "#L42", "#2024-recap", "#Installation", "#FAQ", "#h2", "#v1.2.3", "#internationalization"];
+  assert.deepEqual(names.map(shown), names);
   assert.throws(() => normalizeUrl("ftp://acme.com"), /Not a web address/);
   assert.throws(() => normalizeUrl(""), /Give a website address/);
   const home = "https://acme.com/";

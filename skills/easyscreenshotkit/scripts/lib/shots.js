@@ -144,16 +144,19 @@ function normalizeUrl(raw) {
   return url.href;
 }
 
-// Whether a fragment reads as a plain name (#pricing, #step-2, #inbox),
-// which a note may repeat, and not as a key or a token: a sign-in's
-// access_token=…, or a long run of letters and digits such as a hex or
-// base64 string.
-const plainName = (fragment) =>
-  /^#[A-Za-z0-9._~-]{1,40}$/.test(fragment) &&
-  fragment
-    .slice(1)
-    .split(/[._~-]/)
-    .every((word) => word.length < 12 || (word.length < 24 && !(/\d/.test(word) && /[A-Za-z]/.test(word))));
+// Whether a fragment reads as a plain name (#pricing, #section-2, #L42,
+// #2024-recap, #Installation), which a note may repeat, and not as a key or
+// a token: a sign-in's access_token=…, a UUID, a hex or base64 string. Each
+// of its words, between the - . _ and ~ in it, is letters in one case or
+// capitalized, with at most three digits after them, or a number of at most
+// four digits, and 20 characters at most. A key mixes the case of its
+// letters, or its digits and letters, within a word.
+const PLAIN_WORD = /^(?:(?:[a-z]+|[A-Z][a-z]*|[A-Z]+)\d{0,3}|\d{1,4})$/;
+const plainName = (fragment) => {
+  if (!/^#[A-Za-z0-9._~-]{1,40}$/.test(fragment)) return false;
+  const words = fragment.slice(1).split(/[._~-]/).filter(Boolean);
+  return words.length > 0 && words.every((word) => word.length <= 20 && PLAIN_WORD.test(word));
+};
 
 // A note for the address and for each --page that came with a fragment
 // left out (see normalizeUrl): the page opens at its top. The fragment is
