@@ -145,15 +145,20 @@ const GIF_TRIES = [
   { width: 480, fps: 8 },
 ];
 
+// The palette is a PNG file of its own, written as one picture and read
+// back as one: ffmpeg otherwise reads a % in its path as a frame number
+// (frame%03d.png), so a folder named like "Q3 100%" or "run%dx" failed the
+// GIF, and ffmpeg 4 wrote the palette outside the folder, at the path cut
+// short at its %.
 async function makeGif(binary, video, file, { budget = 8 * 1024 * 1024, dir }) {
   const palette = path.join(dir, "palette.png");
   let last = null;
   try {
     for (const { width, fps } of GIF_TRIES) {
       const scale = `fps=${fps},scale=${width}:-2:flags=lanczos`;
-      const made = await run(binary, ["-hide_banner", "-loglevel", "error", "-y", "-i", video, "-vf", `${scale},palettegen=max_colors=256:stats_mode=full`, palette]);
+      const made = await run(binary, ["-hide_banner", "-loglevel", "error", "-y", "-i", video, "-vf", `${scale},palettegen=max_colors=256:stats_mode=full`, "-update", "1", palette]);
       if (made.code !== 0) throw new Error(`ffmpeg could not make the GIF's palette: ${lastLine(made.stderr)}`);
-      const gif = await run(binary, ["-hide_banner", "-loglevel", "error", "-y", "-i", video, "-i", palette, "-lavfi", `${scale}[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle`, "-loop", "0", file]);
+      const gif = await run(binary, ["-hide_banner", "-loglevel", "error", "-y", "-i", video, "-f", "png_pipe", "-i", palette, "-lavfi", `${scale}[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle`, "-loop", "0", file]);
       if (gif.code !== 0) throw new Error(`ffmpeg could not write ${path.basename(file)}: ${lastLine(gif.stderr)}`);
       const head = fs.readFileSync(file).subarray(0, 10);
       last = { width: head.readUInt16LE(6), height: head.readUInt16LE(8), fps, bytes: fs.statSync(file).size };

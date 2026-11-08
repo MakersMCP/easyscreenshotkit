@@ -17,7 +17,7 @@ const { pickPages } = require("../skills/easyscreenshotkit/scripts/lib/tour");
 const { setTimeLimit } = require("../skills/easyscreenshotkit/scripts/lib/time");
 const { readSteps } = require("../skills/easyscreenshotkit/scripts/lib/steps");
 const { findChrome, launch, openTab, closeTab, navigate } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
-const { findFfmpeg } = require("../skills/easyscreenshotkit/scripts/lib/ffmpeg");
+const { findFfmpeg, makeGif } = require("../skills/easyscreenshotkit/scripts/lib/ffmpeg");
 const { readPng, serve, near } = require("./helpers");
 
 const CLI = path.resolve(__dirname, "../skills/easyscreenshotkit/scripts/easyscreenshotkit.js");
@@ -92,6 +92,30 @@ test("frames that cannot be saved are told by the folder the demo saves in, not 
     const err = new Error(`ffmpeg could not write demo.mp4: ${run.file("demo.mp4")}: No space left on device`);
     run.abort();
     assert.equal(run.told(err).message, `ffmpeg could not write demo.mp4: ${path.join(root, "demo", "demo.mp4")}: No space left on device`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ffmpeg reads a % in the path of a picture as a frame number: the GIF's
+// palette, made in the run's folder, failed under a folder named like
+// these, and ffmpeg 4 wrote it outside, at the path cut short at its %.
+test("demo.gif is made in a folder whose path holds a %, and nothing is written outside it", { skip: !ffmpeg && "no ffmpeg installed", timeout: 120_000 }, async () => {
+  const root = tempDir();
+  try {
+    for (const name of ["Q3 100%", "run%dx", "a%20b%dx"]) {
+      const frames = path.join(root, name, "frames");
+      fs.mkdirSync(frames, { recursive: true });
+      const video = path.join(root, name, "demo.mp4");
+      const made = spawnSync(ffmpeg, ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=320x180:rate=10:duration=1", "-pix_fmt", "yuv420p", video], { encoding: "utf8" });
+      assert.equal(made.status, 0, made.stderr);
+      const before = fs.readdirSync(root).sort();
+      const gif = await makeGif(ffmpeg, video, path.join(root, name, "demo.gif"), { dir: frames });
+      assert.equal(fs.readFileSync(path.join(root, name, "demo.gif")).subarray(0, 6).toString(), "GIF89a", name);
+      assert.deepEqual([gif.width, gif.height], [960, 540], name);
+      assert.deepEqual(fs.readdirSync(frames), [], `${name}: the palette is gone`);
+      assert.deepEqual(fs.readdirSync(root).sort(), before, `${name}: nothing was written next to the folder`);
+    }
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
