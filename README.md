@@ -245,7 +245,7 @@ It tells you which screenshots a desktop and a phone would show and what to fix.
 
 - A site that answers with a bot check gets no screenshots: easyscreenshotkit stops and says so, and does not try to get past it.
 - Pages behind a login are not reached.
-- A view of a web app is reached by its address, a `#/` or `#!` route such as `/app/#/plants`. Any other fragment, such as `#pricing`, is a place on the page and leaves it the same page. A view that only a click opens, with no address of its own, is not reached; a demo with `--steps` can click its way there.
+- A view of a web app is reached by its address, a `#/` or `#!` route such as `/app/#/plants`. Any other fragment, such as `#pricing`, is a place on the page: it is left out, with a note, and the page is taken from its top. So a view whose address has no slash after the `#`, such as `#inbox`, or that only a click opens, is not reached; a demo with `--steps` can visit it or click its way there.
 - A menu that only exists while the mouse is over it, and links made of buttons with no address, are not seen; the sitemap and `--page` fill in.
 - A consent wall that blurs the page or loads nothing until you agree can not be hidden away.
 - Dark captures use the site's own dark theme. A site without one looks the same in both.

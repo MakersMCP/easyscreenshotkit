@@ -10,7 +10,7 @@ const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const test = require("node:test");
 const { parse, summary } = require("../skills/easyscreenshotkit/scripts/easyscreenshotkit");
-const { parseSizes, normalizeUrl, prepareDir, openShots, slugOf, identity, movedOn, pagesAsked, leftOut, siteName } = require("../skills/easyscreenshotkit/scripts/lib/shots");
+const { parseSizes, normalizeUrl, fragmentNotes, prepareDir, openShots, slugOf, identity, movedOn, pagesAsked, leftOut, siteName } = require("../skills/easyscreenshotkit/scripts/lib/shots");
 const { sheetHtml } = require("../skills/easyscreenshotkit/scripts/lib/sheet");
 
 const CLI = path.resolve(__dirname, "../skills/easyscreenshotkit/scripts/easyscreenshotkit.js");
@@ -81,8 +81,22 @@ test("sizes: devices with their scales, whole pages on the first desktop size or
 
 test("addresses, page names and the site's name", () => {
   assert.equal(normalizeUrl("acme.com"), "https://acme.com/");
-  assert.equal(normalizeUrl("http://acme.com/pricing#plans"), "http://acme.com/pricing#plans");
+  // A #route stays; any other fragment goes, as an anchor always did, and
+  // so does what a sign-in leaves there.
   assert.equal(normalizeUrl("acme.com/app/#/plants"), "https://acme.com/app/#/plants");
+  assert.equal(normalizeUrl("acme.com/mail/#!/inbox"), "https://acme.com/mail/#!/inbox");
+  assert.equal(normalizeUrl("http://acme.com/pricing#plans"), "http://acme.com/pricing");
+  assert.equal(normalizeUrl("app.acme.com/#access_token=SECRET&token_type=bearer"), "https://app.acme.com/");
+  assert.equal(normalizeUrl("acme.com/#/"), "https://acme.com/");
+  // Each one left out is said so, by its name when it is a plain one.
+  const ROUTELESS = "which is no #route (#/ or #!): it was left out, and the page opens at its top.";
+  assert.deepEqual(fragmentNotes("app.acme.com/#access_token=SECRET", ["/docs#intro", "#inbox", "/app/#/plants", "/x#a=b", "#/", "/y#"], "https://app.acme.com/", "https://app.acme.com/"), [
+    `The address given ends in a fragment, ${ROUTELESS}`,
+    `--page /docs ends in #intro, ${ROUTELESS}`,
+    `--page / ends in #inbox, ${ROUTELESS}`,
+    `--page /x ends in a fragment, ${ROUTELESS}`,
+  ]);
+  assert.deepEqual(fragmentNotes("acme.com/app/#/plants", ["/pricing"], "https://acme.com/app/#/plants", "https://acme.com/"), []);
   assert.throws(() => normalizeUrl("ftp://acme.com"), /Not a web address/);
   assert.throws(() => normalizeUrl(""), /Give a website address/);
   const home = "https://acme.com/";
@@ -110,7 +124,7 @@ test("addresses, page names and the site's name", () => {
   assert.equal(slugOf("https://acme.com/uygulama%20%C3%A7al%C4%B1%C5%9Fma/#/%C5%9Fehir/%C4%B0zmir", home), "uygulama-calisma-sehir-izmir");
   // The pages asked for with --page keep their route; a fragment alone is a
   // view of the address given.
-  assert.deepEqual(pagesAsked(["/app/#/plants", "#/light", "/pricing?plan=pro"], "https://acme.com/app/#/today", home), ["https://acme.com/app/#/plants", "https://acme.com/app/#/light", "https://acme.com/pricing"]);
+  assert.deepEqual(pagesAsked(["/app/#/plants", "#/light", "/pricing?plan=pro", "/docs#intro"], "https://acme.com/app/#/today", home), ["https://acme.com/app/#/plants", "https://acme.com/app/#/light", "https://acme.com/pricing", "https://acme.com/docs"]);
   assert.throws(() => pagesAsked(["https://other.com/#/x"], "https://acme.com/", home), /is not a page of acme\.com/);
   // Asked with a route, a page is the view it ended on; asked without, its
   // page, whatever route the app went to by itself.

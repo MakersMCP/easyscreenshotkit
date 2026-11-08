@@ -297,7 +297,8 @@ function linkUrl(raw, base) {
 }
 
 // The address to open for a page asked for by name: as for a link, but
-// with its fragment, so a #route opens its view.
+// with its #route, so it opens that view. Any other fragment goes, as for
+// a link: an anchor is a place on the page.
 function pageUrl(raw, base) {
   let url;
   try {
@@ -307,7 +308,17 @@ function pageUrl(raw, base) {
   }
   if (!/^https?:$/.test(url.protocol)) return null;
   url.search = "";
+  if (!routeOf(url.href)) url.hash = "";
   return url;
+}
+
+// The fragment of an address (a URL) that is left out because it is no
+// #route: an anchor such as #pricing, a view's name such as #inbox, or
+// what a sign-in leaves there. #/ and #! alone, the first view of an app,
+// are not counted. "" when there is none.
+function anchorOf(url) {
+  const hash = url.hash;
+  return hash.length > 1 && !routeOf(url.href) && !/^#(?:\/|!)\/*$/.test(hash) ? hash : "";
 }
 
 // Why a link to a view of a single page app is not in the tour.
@@ -617,6 +628,7 @@ module.exports = {
   pathOf,
   linkUrl,
   pageUrl,
+  anchorOf,
   ROUTE_LINK,
   localeOf,
   siteOf,

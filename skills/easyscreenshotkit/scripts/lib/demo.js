@@ -17,8 +17,8 @@
 const fs = require("fs");
 const path = require("path");
 const { launch } = require("./chrome");
-const { normalizeUrl } = require("./shots");
-const { siteOf, routeOf, viewKey, viewOf, pathOf, readable, printable } = require("./pick");
+const { normalizeUrl, fragmentNotes } = require("./shots");
+const { homeOf, siteOf, routeOf, viewKey, viewOf, pathOf, readable, printable } = require("./pick");
 const { Recorder } = require("./record");
 const { readSteps, toYaml, targetText } = require("./steps");
 const { pickPages, tourSteps } = require("./tour");
@@ -65,8 +65,9 @@ Options:
 
 A #route in the address, in --page or in a visit step is kept, and every
 view the video shows, one a click opened included, is a page of its own in
-steps.json. A tour follows paths only: the notes in steps.json name the
-#route links on its pages.
+steps.json. Any other fragment in the address or in --page, such as
+#pricing, is left out, with a note; a visit step keeps it. A tour follows
+paths only: the notes in steps.json name the #route links on its pages.
 
 A demo builds its files inside the folder it saves in and moves them into
 place once it has ended well, replacing an earlier demo's. One that fails or
@@ -267,7 +268,9 @@ async function makeDemo(rawUrl, options = {}) {
   // Drawn at least as sharp as the zoom goes deep, so a zoomed-in view is
   // not blown up: 1.5 pixels per CSS pixel for the default zoom.
   const density = Math.min(2, Math.max(zoom, frame ? 1 : 1.2));
-  const notes = [];
+  // A fragment that is no #route, in the address or in --page, is left
+  // out, and said so; a visit step keeps whatever it is given.
+  const notes = fragmentNotes(rawUrl || (script && script.url) || "", script ? [] : extra, asked, homeOf(asked));
   const records = [];
   let take;
   let tour = null;

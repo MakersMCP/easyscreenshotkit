@@ -452,6 +452,27 @@ test("a #route in the address and in a steps file: each view opened on its route
   }
 });
 
+// An address copied from the browser after a sign-in can end in what the
+// sign-in left there. Kept, it would open the app on a view that is not
+// there (Loading… for good, here) and be written into steps.json.
+test("a fragment that is no #route is left out of the address, with a note that does not repeat it", { skip: missing, timeout: 120_000 }, async () => {
+  const { server, origin } = await fixture();
+  const root = tempDir();
+  const dir = path.join(root, "demo");
+  const steps = path.join(root, "rest.yaml");
+  fs.writeFileSync(steps, "steps:\n  - wait: 0.5\n");
+  try {
+    const { manifest } = await makeDemo(`${origin}/app/#sid=SECRET&next=%2F`, { dir, steps, gif: false, timeLimit: 100_000 });
+    assert.equal(manifest.url, `${origin}/app/`);
+    assert.equal(manifest.notes[0], "The address given ends in a fragment, which is no #route (#/ or #!): it was left out, and the page opens at its top.");
+    assert.deepEqual(manifest.pages.map((p) => p.title), ["Today | Plants"]);
+    for (const name of fs.readdirSync(dir)) assert.ok(!fs.readFileSync(path.join(dir, name)).includes("SECRET"), name);
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a click to a #route whose data comes late shows the view drawn before the next page or the end", { skip: missing, timeout: 300_000 }, async () => {
   const { server, origin } = await fixture();
   const root = tempDir();

@@ -478,6 +478,36 @@ test("a #route in the address and in --page: each view opened, waited for and na
   }
 });
 
+// An address copied from the browser after a sign-in can end in what the
+// sign-in left there, and a --page in an anchor. Kept, the first would open
+// the app on a view that is not there (Loading… for good, here) and be
+// written into every file; each is left out, with a note that names the
+// anchor and not the rest.
+test("a fragment that is no #route is left out of the address and of --page, with a note", { skip: noBrowser, timeout: 120_000 }, async () => {
+  const { server, origin } = await appFixture({ delay: 300 });
+  const dir = path.join(tempDir(), "shots");
+  try {
+    const { manifest } = await takeShots(`${origin}/app/#sid=SECRET&next=%2F`, { dir, pages: 1, sizes: "desktop", extra: ["#light-check", "/app/#/plants"], timeLimit: 100_000 });
+    assert.equal(manifest.url, `${origin}/app/`);
+    assert.deepEqual(
+      manifest.pages.map((p) => [p.slug, p.url, p.heading]),
+      [
+        ["app", `${origin}/app/`, "Today"],
+        ["app-plants", `${origin}/app/#/plants`, "Your plants"],
+      ],
+    );
+    assert.deepEqual(manifest.notes, [
+      "The address given ends in a fragment, which is no #route (#/ or #!): it was left out, and the page opens at its top.",
+      "--page /app/ ends in #light-check, which is no #route (#/ or #!): it was left out, and the page opens at its top.",
+      `${origin}/app/ was asked for but not taken: the same page as app.`,
+    ]);
+    for (const name of fs.readdirSync(dir)) assert.ok(!fs.readFileSync(path.join(dir, name)).includes("SECRET"), name);
+  } finally {
+    server.close();
+    fs.rmSync(path.dirname(dir), { recursive: true, force: true });
+  }
+});
+
 // What the browser says of each request, played to the network wait by
 // hand. A request is done once the browser says it ended. Chrome never
 // says so of a fetch sent with keepalive, so one whose whole answer came

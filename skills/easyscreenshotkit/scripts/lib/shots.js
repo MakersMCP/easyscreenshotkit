@@ -25,7 +25,7 @@ const crypto = require("crypto");
 const { launch, openTab, closeTab, navigate, currentUrl } = require("./chrome");
 const { metrics, scrollTo, walk, waitForContent, settle, watchRequests, quietNetwork, waitForFonts, clearHover, resetPictureWait, capture, captureScreen, capturePage } = require("./page");
 const { clean } = require("./clean");
-const { homeOf, pageKey, routeOf, viewKey, pathOf, pageUrl, siteOf, fold, kindOf, rankLinks, routeLinks, visitOrder, readSiteIndex, localeOf, ROUTE_LINK } = require("./pick");
+const { homeOf, pageKey, routeOf, viewKey, pathOf, pageUrl, anchorOf, siteOf, fold, kindOf, rankLinks, routeLinks, visitOrder, readSiteIndex, localeOf, ROUTE_LINK } = require("./pick");
 const { pngSize, tagPng } = require("./png");
 const { PWA_SHOTS, LOOKED_AT, planPwa, checkManifest } = require("./pwa");
 const { renderSheet } = require("./sheet");
@@ -120,9 +120,8 @@ function addPwaShots(groups) {
 }
 
 // "acme.com", "www.acme.com/pricing" and "https://acme.com" all mean a web
-// address; anything that is not http(s) is refused. A fragment stays: a
-// #route opens a view of a single page app.
-function normalizeUrl(raw) {
+// address; anything that is not http(s) is refused.
+function parseAddress(raw) {
   const text = String(raw || "").trim();
   if (!text) throw new Error("Give a website address, for example: easyscreenshotkit acme.com");
   let url;
@@ -132,7 +131,38 @@ function normalizeUrl(raw) {
     throw new Error(`Not a web address: ${text}`);
   }
   if (!/^https?:$/.test(url.protocol) || !url.hostname) throw new Error(`Not a web address: ${text}`);
+  return url;
+}
+
+// The address to open. A #route stays: it opens a view of a single page
+// app. Any other fragment goes, as it always did: an anchor is a place on
+// the page, and what a sign-in leaves there (#access_token=…) is not for
+// the files a run writes. fragmentNotes() says so.
+function normalizeUrl(raw) {
+  const url = parseAddress(raw);
+  if (!routeOf(url.href)) url.hash = "";
   return url.href;
+}
+
+// A note for the address and for each --page that came with a fragment
+// left out (see normalizeUrl): the page opens at its top. The fragment is
+// shown when it is a plain name (#pricing, #inbox), never otherwise, so a
+// token is not written into the report.
+function fragmentNotes(rawUrl, extra, asked, home) {
+  const notes = [];
+  const note = (where, url) => {
+    const fragment = anchorOf(url);
+    if (!fragment) return;
+    const shown = /^#[A-Za-z0-9._~-]{1,40}$/.test(fragment) ? fragment : "a fragment";
+    notes.push(`${where} ends in ${shown}, which is no #route (#/ or #!): it was left out, and the page opens at its top.`);
+  };
+  note("The address given", parseAddress(rawUrl));
+  for (const raw of extra) {
+    const base = String(raw).trim().startsWith("#") ? asked : home;
+    const url = pageUrl(raw, base);
+    if (url) note(`--page ${pathOf(url.href)}`, new URL(String(raw).trim(), base));
+  }
+  return notes;
 }
 
 // Files a run writes, by name: a manifest someone edited cannot point the
@@ -726,13 +756,14 @@ async function takeShots(rawUrl, options = {}) {
   // its own to take.
   const given = viewKey(asked) !== viewKey(home) ? asked : "";
   const asks = pagesAsked(extra, asked, home);
+  const fragments = fragmentNotes(rawUrl, extra, asked, home);
   const target = dir || `easyscreenshotkit-${siteOf(asked)}`;
   // Every file is made in the run's part folder and put in place once the
   // run has ended well (see outdir.js).
   const run = openShots(target, { pwa });
   // The screenshots for a manifest are taken in the first theme only.
   const ctx = { lang, hide, reducedMotion, clean: tidy, pwaTheme: pwa ? themes[0] : "" };
-  const notes = [];
+  const notes = [...fragments];
   // Pages opened and left out come first in the manifest's list, then the
   // links left out without opening.
   const rejected = [];
@@ -1037,4 +1068,4 @@ function leftOut(rejected, routes, links) {
   return { skipped: all.slice(0, LEFT_OUT), routesPast: all.slice(LEFT_OUT).filter((skip) => skip.reason === ROUTE_LINK).length };
 }
 
-module.exports = { takeShots, parseSizes, addPwaShots, normalizeUrl, prepareDir, openShots, slugOf, identity, movedOn, pagesAsked, waitForView, leftOut, siteName, readInfo, readLinks, rejectAtOnce, rejectReason, DEVICES, MAX_HEIGHT };
+module.exports = { takeShots, parseSizes, addPwaShots, normalizeUrl, fragmentNotes, prepareDir, openShots, slugOf, identity, movedOn, pagesAsked, waitForView, leftOut, siteName, readInfo, readLinks, rejectAtOnce, rejectReason, DEVICES, MAX_HEIGHT };

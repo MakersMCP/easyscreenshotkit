@@ -123,10 +123,18 @@ test("a #route is a view of its own; #/, #! and an anchor are not", () => {
   assert.equal(pick.viewOf("https://acme.com/app/?tab=2#/plants"), "https://acme.com/app/?tab=2#/plants");
   assert.equal(pick.viewOf("https://acme.com/app/?tab=2#faq"), "https://acme.com/app/?tab=2");
   assert.equal(pick.pathOf("https://acme.com/app/?tab=2#/plants"), "/app/?tab=2#/plants");
-  // A page asked for by name keeps its fragment, not its query.
+  // A page asked for by name keeps its #route, not its query nor any other
+  // fragment, which anchorOf() names.
   assert.equal(pick.pageUrl("/app/?x=1#/plants", HOME).href, "https://acme.com/app/#/plants");
   assert.equal(pick.pageUrl("#/plants", "https://acme.com/app/").href, "https://acme.com/app/#/plants");
+  assert.equal(pick.pageUrl("/pricing#faq", HOME).href, "https://acme.com/pricing");
   assert.equal(pick.pageUrl("mailto:hi@acme.com", HOME), null);
+  const anchor = (raw) => pick.anchorOf(new URL(raw));
+  assert.deepEqual(
+    ["https://acme.com/pricing#faq", "https://acme.com/#inbox", "https://acme.com/cb#access_token=x&y=z"].map(anchor),
+    ["#faq", "#inbox", "#access_token=x&y=z"],
+  );
+  for (const none of ["https://acme.com/app/#/plants", "https://acme.com/#!inbox", "https://acme.com/#/", "https://acme.com/#!", "https://acme.com/#!/", "https://acme.com/#//", "https://acme.com/#", "https://acme.com/"]) assert.equal(anchor(none), "", none);
 });
 
 test("ranking: a #route link is never a candidate; routeLinks lists each view once, unless it is taken", () => {
