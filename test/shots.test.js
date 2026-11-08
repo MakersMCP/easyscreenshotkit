@@ -647,6 +647,63 @@ test("a view whose data sends its headers first and its body seconds later is ta
   }
 });
 
+// A view's other windows: another size, the dark theme, a capture for a web
+// app manifest. Chrome sends a second request for the same address only
+// once the answer to the first has begun to come, so with data that takes
+// 8 s, two windows of the view at once had the second one's after 16 s,
+// past the 10 s wait and past the moment it was taken: it showed its
+// loading screen, with no note. Each is taken once its data has come. A
+// view whose data takes longer than any window waits says so for each
+// window, by its size, and its captures for a manifest are left out of it,
+// not labelled "Loading…".
+test("each window of a #route view waits for its data, and one taken before it came says so", { skip: noBrowser, timeout: 280_000 }, async () => {
+  const slow = await appFixture({ delay: 8_000 });
+  const never = await appFixture({ delay: 30_000 });
+  const root = tempDir();
+  const plants = VIEWS.plants[1];
+  const headingsOf = (manifest) => manifest.pages[0].shots.filter((s) => !s.full).map((s) => [s.file, s.headings.map((h) => h.text)]);
+  try {
+    const phones = (await takeShots(`${slow.origin}/app/#/plants`, { dir: path.join(root, "phones"), pages: 1, sizes: "iphone,mobile", pwa: true, timeLimit: 200_000 })).manifest;
+    assert.deepEqual(phones.pages[0].notes, []);
+    assert.deepEqual(headingsOf(phones), [
+      ["01-app-plants-iphone.png", ["Your plants"]],
+      ["01-app-plants-mobile.png", ["Your plants"]],
+    ]);
+    assert.deepEqual(phones.pwa.screenshots.map((s) => [s.file, s.label]), [
+      ["pwa/screenshots/wide-01.png", "Your plants"],
+      ["pwa/screenshots/narrow-01.png", "Your plants"],
+    ]);
+
+    const both = (await takeShots(`${slow.origin}/app/#/plants`, { dir: path.join(root, "both"), pages: 1, sizes: "mobile,full", theme: "both", timeLimit: 200_000 })).manifest;
+    assert.deepEqual(both.pages[0].notes, []);
+    assert.deepEqual(headingsOf(both), [
+      ["01-app-plants-mobile.png", ["Your plants"]],
+      ["01-app-plants-mobile-dark.png", ["Your plants"]],
+    ]);
+    for (const file of ["01-app-plants-full.png", "01-app-plants-full-dark.png"]) {
+      const png = readPng(path.join(root, "both", file));
+      assert.ok(near(png.pixel(800, 400), plants), `${file}: ${png.pixel(800, 400)}`);
+    }
+
+    const late = (await takeShots(`${never.origin}/app/#/plants`, { dir: path.join(root, "late"), pages: 1, sizes: "desktop,mobile", pwa: true, timeLimit: 200_000 })).manifest;
+    assert.deepEqual(late.pages[0].notes, ["still loading data after 10 s", "mobile: still loading data after 2 s"]);
+    assert.equal(late.pwa.file, "");
+    // No word of screenshots in pwa/ that are not there.
+    assert.equal(late.pwa.note, "The home page links no web app manifest, so Chrome does not offer to install the site yet.");
+    assert.deepEqual(late.pwa.leftOut, [
+      { page: 1, form_factor: "wide", reason: "still loading data after 10 s" },
+      { page: 1, form_factor: "narrow", reason: "still loading data after 2 s" },
+    ]);
+    assert.equal(fs.existsSync(path.join(root, "late", "pwa")), false);
+  } finally {
+    for (const { server } of [slow, never]) {
+      server.close();
+      server.closeAllConnections();
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("an app at the site's root: the home page is home whatever route it opens on, and the #route links are listed", { skip: noBrowser, timeout: 120_000 }, async () => {
   const { server, origin } = await appFixture({ delay: 1_500 });
   const dir = path.join(tempDir(), "shots");

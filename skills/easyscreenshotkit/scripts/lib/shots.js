@@ -494,16 +494,31 @@ const CAPTURE_MS = 20_000;
 const BEFORE_CAPTURE_MS = 7_000;
 
 // A view of a single page app, the address asked or the one the app went
-// to, draws once its data has come: up to 10 s for that, but never into
-// the time its screenshots need, then the address it shows by then. busy:
-// the page had requests going all that time on an earlier visit, so this
-// one waits 2 s at most. Returns "quiet", "busy" when it was still loading
-// at the limit, or "short" when it still was as the run's time ran short.
+// to, draws once its data has come: up to VIEW_WAIT_MS for that, but never
+// into the time its screenshots need, then the address it shows by then.
+// busy: the page still had requests going when an earlier window of it was
+// taken, so this one waits BUSY_WAIT_MS at most. Returns "quiet", "busy"
+// when it was still loading at the limit, or "short" when it still was as
+// the run's time ran short.
+const VIEW_WAIT_MS = 10_000;
+const BUSY_WAIT_MS = 2_000;
+
 async function waitForView(tab, nav, asked, busy) {
   if (!routeOf(asked) && !routeOf(nav.url)) return "quiet";
-  const state = await quietNetwork(tab, { limitMs: busy ? 2_000 : 10_000, reserveMs: FIRST_CAPTURE_MS + BEFORE_CAPTURE_MS });
+  const state = await quietNetwork(tab, { limitMs: busy ? BUSY_WAIT_MS : VIEW_WAIT_MS, reserveMs: FIRST_CAPTURE_MS + BEFORE_CAPTURE_MS });
   nav.url = await currentUrl(tab, nav.url);
   return state;
+}
+
+// What the waits for a window of a page saw by the time it was taken, as
+// notes, and only what they waited for: a run short of time waits less.
+function waitNotes(result) {
+  const notes = [];
+  if (result.loaded === false) notes.push("still showed a loading screen after 20 s");
+  if (result.busy) notes.push(`still loading data after ${result.waited / 1000} s`);
+  if (result.short) notes.push("taken before its data had come: time ran short; give more with --timeout");
+  else if (result.loaded === null) notes.push("taken while it still showed a loading screen: time ran short; give more with --timeout");
+  return notes;
 }
 
 // Opens one page on one device in one theme and takes the captures the
@@ -547,13 +562,17 @@ async function visit(chrome, page, group, theme, ctx, { check = null, links = fa
     await waitForFonts(tab);
     await scrollTo(tab, 0);
     await sleep(400);
-    // A page whose waits the run's time cut short may have had its data
-    // and drawn its content since: it is taken before them only when it
-    // still has requests out, or still shows a bare loading screen, and its
-    // title and heading are read again, as it is taken.
+    // A page whose waits ended before it was ready, at their limit or as the
+    // run's time ran short, may have had its data and drawn its content
+    // since: it is taken before them only when it still has requests out,
+    // or still shows a bare loading screen, and its title and heading are
+    // read again, as it is taken.
     let short = false;
-    if (view === "short" || loaded === null) {
-      short = view === "short" && !networkQuiet(tab, 0);
+    let busy = false;
+    if (view !== "quiet" || loaded === null) {
+      const out = !networkQuiet(tab, 0);
+      short = view === "short" && out;
+      busy = view === "busy" && out;
       if (loaded === null && (await showsContent(tab).catch(() => false))) loaded = true;
       const now = await readInfo(tab);
       Object.assign(info, { title: now.title, heading: now.heading });
@@ -595,7 +614,7 @@ async function visit(chrome, page, group, theme, ctx, { check = null, links = fa
         shots.push({ size: shot.size, full: true, png: whole.png, scale: shot.scale, cssWidth: m.width, cssHeight: whole.height, truncated: whole.truncated, sections });
       }
     }
-    return { nav, info, loaded, busy: view === "busy", short, links: found, shots, cleaned };
+    return { nav, info, loaded, busy, waited: page.busy ? BUSY_WAIT_MS : VIEW_WAIT_MS, short, links: found, shots, cleaned };
   } finally {
     await closeTab(chrome, tab);
   }
@@ -605,9 +624,10 @@ async function visit(chrome, page, group, theme, ctx, { check = null, links = fa
 function saveShots(page, result, theme, run, written) {
   for (const shot of result.shots) {
     // A capture for a web app manifest waits for the end of the run, when
-    // the ones that go in are picked and numbered.
+    // the ones that go in are picked and numbered. One taken before its
+    // view was ready is left out then, with the reason (see planPwa).
     if (shot.pwa) {
-      page.pwa[shot.pwa] = { png: shot.png, headings: shot.headings };
+      page.pwa[shot.pwa] = { png: shot.png, headings: shot.headings, unready: waitNotes(result)[0] || "" };
       continue;
     }
     const file = `${String(page.n).padStart(2, "0")}-${page.slug}-${shot.size}${theme === "dark" ? "-dark" : ""}.png`;
@@ -659,7 +679,7 @@ function savePwa(kept, run) {
 // goes in the summary. added: how many screenshots the run made for it.
 async function checkSite(href, home, added) {
   if (!href) {
-    return { site: null, note: "The home page links no web app manifest, so Chrome does not offer to install the site yet. The screenshots in pwa/ are ready for when it has one." };
+    return { site: null, note: `The home page links no web app manifest, so Chrome does not offer to install the site yet.${added ? " The screenshots in pwa/ are ready for when it has one." : ""}` };
   }
   let report;
   try {
@@ -671,10 +691,10 @@ async function checkSite(href, home, added) {
   const folder = new URL(".", report.manifest);
   const where = folder.origin === new URL(home).origin ? `${folder.pathname} on the site` : folder.href;
   if (!site.screenshots) {
-    return { site, note: `The site's manifest, ${report.manifest}, lists no screenshots yet. Put pwa/screenshots next to it, in ${where}, and add the entries of pwa/manifest-screenshots.json to it.` };
+    return { site, note: `The site's manifest, ${report.manifest}, lists no screenshots yet.${added ? ` Put pwa/screenshots next to it, in ${where}, and add the entries of pwa/manifest-screenshots.json to it.` : ""}` };
   }
   // Added after the ones there, the new ones could fall past the first 8.
-  const room = site.screenshots + added > LOOKED_AT ? ` Chrome looks at the first ${LOOKED_AT} entries of the list only, so put the new ones before the old ones, or in their place.` : "";
+  const room = added && site.screenshots + added > LOOKED_AT ? ` Chrome looks at the first ${LOOKED_AT} entries of the list only, so put the new ones before the old ones, or in their place.` : "";
   return {
     site,
     note: `The site's manifest, ${report.manifest}, lists ${site.screenshots === 1 ? "1 screenshot" : `${site.screenshots} screenshots`} already: Chrome shows ${site.desktop.length} on desktops and ${site.phone.length} on phones.${room}`,
@@ -818,11 +838,12 @@ async function takeShots(rawUrl, options = {}) {
     const [first] = groups;
     const firstTheme = themes[0];
     const others = (page) => {
+      const windows = [];
       for (const themeName of themes) {
         for (const group of groups) {
           if (group === first && themeName === firstTheme) continue;
           if (group.shots.every((shot) => shot.pwa && themeName !== ctx.pwaTheme)) continue;
-          pool.add(async () => {
+          windows.push(async () => {
             const label = `${group.key}${themeName === "dark" ? " (dark)" : ""}`;
             if (timeLeft() < 30_000) {
               page.notes.push(`${label} not taken: time ran out`);
@@ -832,6 +853,9 @@ async function takeShots(rawUrl, options = {}) {
             try {
               const got = await visit(chrome, { ...page }, group, themeName, ctx);
               if (got.info.challenge || got.nav.status >= 400) page.notes.push(`${label} not taken: ${got.info.challenge ? "the site answered with a bot check" : `the page answered ${got.nav.status}`}`);
+              // What this window's waits saw, by its size and theme: the
+              // page's own notes tell of its first window.
+              else for (const note of waitNotes(got)) page.notes.push(`${label}: ${note}`);
               saveShots(page, got, themeName, run, written);
             } catch (err) {
               page.notes.push(`${label} could not be taken: ${err.message}`);
@@ -839,6 +863,16 @@ async function takeShots(rawUrl, options = {}) {
           });
         }
       }
+      // A view of an app draws once its data has come, and the browser
+      // sends a second request for the same address only once the answer
+      // to the first has begun to come: two windows of the view at once
+      // would each wait for both answers. So its windows are taken one
+      // after another.
+      if (routeOf(page.asked) || routeOf(page.url)) {
+        pool.add(async () => {
+          for (const take of windows) await take();
+        });
+      } else for (const take of windows) pool.add(take);
     };
     const keep = (page, result) => {
       page.n = kept.length + 1;
@@ -858,12 +892,7 @@ async function takeShots(rawUrl, options = {}) {
         keys,
         busy: result.busy,
       });
-      // What the waits for the page saw at their end, and only what they
-      // waited for: a run short of time waits less.
-      if (result.loaded === false) page.notes.push("still showed a loading screen after 20 s");
-      if (result.busy) page.notes.push("still loading data after 10 s");
-      if (result.short) page.notes.push("taken before its data had come: time ran short; give more with --timeout");
-      else if (result.loaded === null) page.notes.push("taken while it still showed a loading screen: time ran short; give more with --timeout");
+      page.notes.push(...waitNotes(result));
       if (movedOn(page.asked, result.nav.url)) page.notes.push(`opened ${page.asked} and landed on ${result.nav.url}`);
       kept.push(page);
       saveShots(page, result, firstTheme, run, written);

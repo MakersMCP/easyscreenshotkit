@@ -177,6 +177,13 @@ test("a run's screenshots: checked, labelled from the screen's main heading, 4 w
   assert.equal(plan.check.ok, true, plan.check.problems.join("\n"));
   assert.deepEqual([plan.check.desktop, plan.check.phone], [[1, 2, 3, 4], [5, 6, 7, 8]]);
 
+  // A capture taken before its view had its data is left out, with why.
+  const loading = planPwa([
+    { n: 1, slug: "app-plants", captures: { wide: { ...capture(1920, 1080, "Loading…"), unready: "still loading data after 10 s" }, narrow: capture(1080, 1920, "Your plants") } },
+  ]);
+  assert.deepEqual(loading.entries.map((e) => [e.src, e.label]), [["screenshots/narrow-01.png", "Your plants"]]);
+  assert.deepEqual(loading.leftOut, [{ page: 1, form: "wide", reason: "still loading data after 10 s" }]);
+
   // The room one form factor leaves goes to the other.
   const wideOnly = planPwa(Array.from({ length: 12 }, (_, i) => ({ n: i + 1, slug: "p", captures: { wide: capture(1920, 1080, "W") } })));
   assert.equal(wideOnly.entries.length, 8);

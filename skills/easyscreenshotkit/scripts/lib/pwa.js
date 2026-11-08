@@ -274,8 +274,9 @@ function labelOf(headings, page) {
 }
 
 // The screenshots a run hands over for a manifest. pages: [{n, slug,
-// heading, title, captures: {wide, narrow}}], each capture {png, headings}.
-// Every capture is checked with Chrome's rules first. Chrome looks at the
+// heading, title, captures: {wide, narrow}}], each capture {png, headings,
+// unready}, unready saying why it was taken before its view was ready, or
+// "". Every capture is checked with Chrome's rules first. Chrome looks at the
 // first 8 entries only, wide and narrow together, so at most 8 go in: 4 of
 // each when there are, the room one leaves going to the other, and no more
 // than 5 narrow ones. Returns {files: [{name, form, page, png, entry}],
@@ -288,6 +289,12 @@ function planPwa(pages) {
     for (const page of pages) {
       const capture = page.captures && page.captures[form];
       if (!capture) continue;
+      // Taken while its view still loaded: a loading screen is no
+      // screenshot to put in a manifest.
+      if (capture.unready) {
+        leftOut.push({ page: page.n, form, reason: capture.unready });
+        continue;
+      }
       const size = pngSize(capture.png);
       const image = size ? { format: "png", ...size } : { format: "", width: 0, height: 0 };
       const reason = unusable({ src: "file", error: "", image });

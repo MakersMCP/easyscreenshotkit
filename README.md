@@ -29,7 +29,7 @@ easyscreenshotkit-linear.app/
 - Pictures that load late, sections that fade in on scroll, counters that count up and videos are there in full, on the first screen and on the whole page.
 - Every heading on a first screen comes with its box in the image's own pixels, and every section of a whole page with where it starts and ends, so a crop or a zoom does not have to guess.
 - Each PNG carries the address it came from, when it was taken and by what, in its own metadata.
-- A view of a web app with a `#/` route, such as `/app/#/plants`, is taken when you give it as the address or with `--page`. The page opens on that view, waits until the view's data has come (10 s at most, and a note says so when the run's time cut that short), and its files are named after it: `02-app-plants-desktop.png`. A `--page` that is only a route, such as `--page '#/plants'`, is that view of the address given. File names keep a to z and digits only, so a route in other letters, such as `#/растения`, gets `view-` and six characters of its own, the same on every run. The tour itself follows paths only: a link to `/docs/#/install` offers it `/docs/`, and the `#/` links it finds on the home page, on the address given and on each `--page` are listed with the pages it left out.
+- A view of a web app with a `#/` route, such as `/app/#/plants`, is taken when you give it as the address or with `--page`. The page opens on that view and waits until the view's data has come, 10 s at most, in each window it is taken in, one window after another. When the data had not come by then, or the run's time cut the wait short, a note on the page says so, with the size when it was not the first one taken, and `--pwa` leaves that window's capture out. Its files are named after it: `02-app-plants-desktop.png`. A `--page` that is only a route, such as `--page '#/plants'`, is that view of the address given. File names keep a to z and digits only, so a route in other letters, such as `#/растения`, gets `view-` and six characters of its own, the same on every run. The tour itself follows paths only: a link to `/docs/#/install` offers it `/docs/`, and the `#/` links it finds on the home page, on the address given and on each `--page` are listed with the pages it left out.
 
 ## Record a demo
 
@@ -209,7 +209,7 @@ pwa/
   screenshots/narrow-01.png   the same page on a phone, 1080x1920
 ```
 
-Put the `screenshots` folder next to your manifest and add the entries from `manifest-screenshots.json` to it. Each label is the main heading on that screen, so read them and change any that does not say what the screen shows. The run also reads the manifest your home page links and tells you what it is missing.
+Put the `screenshots` folder next to your manifest and add the entries from `manifest-screenshots.json` to it. Each label is the main heading on that screen, so read them and change any that does not say what the screen shows. A view of a web app that was still loading its data when it was taken is left out, with the reason. The run also reads the manifest your home page links and tells you what it is missing.
 
 Every screenshot is checked against Chrome's rules before it goes in:
 
@@ -238,7 +238,7 @@ It tells you which screenshots a desktop and a phone would show and what to fix.
 3. Opens the candidates in that order and keeps a page only when it is a page of its own: not a redirect to a sign-in page or to the home page, not a bot check, not an error, and not the same page under another address (the same final address, canonical link or text).
 4. On each page, hides what floats over it: everything fixed to the screen except the page's own top bar and sidebar, plus the consent and chat tools seen most (OneTrust, Cookiebot, Didomi, Usercentrics, Intercom, Crisp, Drift, HubSpot, Zendesk and more). When a consent dialog had stopped the page from scrolling, it lets the page scroll again.
 5. Takes the first screen once its pictures, videos and fade-ins are done, and the whole page a screen at a time, each screen as the browser shows it, joined into one image with sticky headers and fixed bars shown once.
-6. Opens every page again as a phone (or an iPhone, or in the dark theme) in windows of its own while it looks for the next pages.
+6. Opens every page again as a phone (or an iPhone, or in the dark theme) in windows of its own while it looks for the next pages. A view of a web app gets one such window at a time: the browser sends a second window's request for the same data only once the answer to the first has begun to come.
 7. Writes `manifest.json`, `SCREENSHOTS.md` and `sheet.png`.
 
 ## Limits
