@@ -7,7 +7,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { spawnSync } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 const test = require("node:test");
 const { parse, summary } = require("../skills/easyscreenshotkit/scripts/easyscreenshotkit");
 const { parseSizes, normalizeUrl, prepareDir, openShots, slugOf, identity, movedOn, pagesAsked, leftOut, siteName } = require("../skills/easyscreenshotkit/scripts/lib/shots");
@@ -172,6 +172,58 @@ test("the pages left out: those opened first, then the #route links, then the ot
   // More #route links than the list holds: counted, for a note.
   const many = Array.from({ length: 50 }, (_, i) => ({ url: `https://acme.com/app/#/item/${i}`, reason: ROUTE }));
   assert.deepEqual([leftOut(rejected, many, posts).skipped.length, leftOut(rejected, many, posts).routesPast], [40, 12]);
+});
+
+test("two runs that put their files in one folder at the same moment take turns, and the later one's replace the earlier one's whole", async () => {
+  const { LOCK } = require("../skills/easyscreenshotkit/scripts/lib/outdir");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-dir-"));
+  const dir = path.join(root, "shots");
+  const lock = path.join(dir, LOCK);
+  const runOf = (id, pictures) => {
+    const run = openShots(dir);
+    const files = pictures.map((n) => `0${n}-p${n}-desktop.png`);
+    for (const file of files) run.write(file, id);
+    run.write("manifest.json", JSON.stringify({ version: 1, tool: "easyscreenshotkit 0.1.2", id }));
+    return { run, files: [...files, "manifest.json"] };
+  };
+  const names = () => fs.readdirSync(dir).sort();
+  try {
+    const earlier = runOf("earlier", [1, 2, 3, 4, 5]);
+    earlier.run.commit(earlier.files);
+    // Another run holds the lock for a second: this one waits for it, then
+    // its files take the place of what that run left.
+    const other = spawn(process.execPath, ["-e", `const fs = require("fs");
+      fs.mkdirSync(${JSON.stringify(lock)});
+      fs.writeFileSync(${JSON.stringify(path.join(lock, "holder.json"))}, JSON.stringify({ host: require("os").hostname(), pid: process.pid }));
+      fs.writeFileSync(${JSON.stringify(path.join(dir, "06-p6-desktop.png"))}, "other");
+      console.log("held");
+      setTimeout(() => fs.rmSync(${JSON.stringify(lock)}, { recursive: true }), 1000);`]);
+    await new Promise((resolve) => other.stdout.once("data", resolve));
+    const later = runOf("later", [1, 2]);
+    const started = Date.now();
+    later.run.commit(later.files);
+    assert.ok(Date.now() - started >= 800, `waited ${Date.now() - started} ms`);
+    await new Promise((resolve) => (other.exitCode === null ? other.once("exit", resolve) : resolve()));
+    assert.deepEqual(names(), ["01-p1-desktop.png", "02-p2-desktop.png", "manifest.json"]);
+    // A lock left by a process that is gone is taken over at once.
+    fs.mkdirSync(lock);
+    fs.writeFileSync(path.join(lock, "holder.json"), JSON.stringify({ host: os.hostname(), pid: 99999999 }));
+    const next = runOf("next", [1]);
+    const at = Date.now();
+    next.run.commit(next.files);
+    assert.ok(Date.now() - at < 1_000, `took ${Date.now() - at} ms`);
+    assert.deepEqual(names(), ["01-p1-desktop.png", "manifest.json"]);
+    // One whose process runs on is waited for 5 s, and then the run fails
+    // and adds nothing.
+    fs.mkdirSync(lock);
+    fs.writeFileSync(path.join(lock, "holder.json"), JSON.stringify({ host: os.hostname(), pid: process.pid }));
+    const held = snapshot(dir);
+    const blocked = runOf("blocked", [1, 2, 3]);
+    assert.throws(() => blocked.run.commit(blocked.files), /^Error: Could not move this run's files into .*shots: another run was still putting its files there after 5 s\. This run added nothing to the folder\.$/);
+    assert.deepEqual(snapshot(dir), held);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("the folders a run makes for its folder: up to the first that is there, never a drive or share that is not", () => {

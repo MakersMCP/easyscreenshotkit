@@ -129,7 +129,7 @@ const SHOWN = new Set([".ds_store", "thumbs.db", "desktop.ini"]);
 
 // The folder holds nothing, or an earlier run of the same kind.
 function check(dir, target, spec) {
-  const names = fs.readdirSync(target).filter((name) => !PART.test(name) && !SHOWN.has(name.toLowerCase()) && !(spec.ignore && spec.ignore(name, target)));
+  const names = fs.readdirSync(target).filter((name) => !PART.test(name) && name !== LOCK && !SHOWN.has(name.toLowerCase()) && !(spec.ignore && spec.ignore(name, target)));
   if (!names.length) return;
   let earlier = null;
   try {
@@ -225,6 +225,7 @@ const WHY = {
   EBUSY: "it is held open by another program",
   EPERM: "it is held open by another program, or may not be changed",
   EACCES: "it may not be changed",
+  ENOENT: "it is not there any more",
   ENOTDIR: "a file is in the way",
   EISDIR: "a folder of that name is in the way",
   ENOTEMPTY: "a folder of that name is in the way",
@@ -246,7 +247,13 @@ function commit(run, outputs) {
   const { target, part, spec } = run;
   const marker = spec.marker;
   const fresh = [...new Set(outputs)].filter((rel) => rel !== marker);
-  const before = spec.earlier(target).filter((rel) => rel !== marker);
+  let held;
+  try {
+    held = lock(run);
+  } catch (err) {
+    abort(run);
+    throw err;
+  }
   const aside = path.join(part, "earlier");
   const moved = [];
   const madeHere = [];
@@ -259,6 +266,9 @@ function commit(run, outputs) {
     moved.push([from, to]);
   };
   try {
+    // Read once the lock is held: a run that put its files in place a
+    // moment ago left them, not the ones there when this run began.
+    const before = spec.earlier(target).filter((rel) => rel !== marker);
     fs.mkdirSync(aside);
     for (const rel of before) {
       folders(aside, path.dirname(rel));
@@ -277,7 +287,11 @@ function commit(run, outputs) {
     // The commit point: the new manifest takes the old one's place.
     move(path.join(part, marker), path.join(target, marker), marker);
   } catch (err) {
-    undo(run, moved, madeHere, err);
+    try {
+      undo(run, moved, madeHere, err);
+    } finally {
+      remove(held);
+    }
   }
   end(run);
   saved = run.dir;
@@ -292,7 +306,56 @@ function commit(run, outputs) {
       // Not empty: what is left there is not a run's.
     }
   }
+  remove(held);
   sweep(target, spec);
+}
+
+// The lock a run holds in its folder while it puts its files in place, so
+// that two runs ending at the same moment do not mix their files there: a
+// folder, made in one step, that names the machine and the process holding
+// it. A run that finds it waits; one left by a process that is gone, on
+// this machine, or older than LOCK_STALE (a process elsewhere, or a number
+// used again since), is taken over.
+const LOCK = ".easyscreenshotkit-commit";
+const LOCK_WAIT = 5_000;
+const LOCK_STALE = 60_000;
+
+function lock(run) {
+  const at = path.join(run.target, LOCK);
+  for (const started = Date.now(); ; pause(50)) {
+    try {
+      fs.mkdirSync(at);
+      try {
+        fs.writeFileSync(path.join(at, "holder.json"), JSON.stringify({ host: os.hostname(), pid: process.pid }) + "\n");
+      } catch {
+        // The folder is the lock; the name in it only tells who holds it.
+      }
+      return at;
+    } catch (err) {
+      if (err.code !== "EEXIST") throw new Error(`Could not move this run's files into ${run.dir}: ${reasonOf(run, Object.assign(err, { rel: LOCK }))}. What the folder held before this run is as it was.`);
+    }
+    if (stale(at)) {
+      remove(at);
+      continue;
+    }
+    if (Date.now() - started >= LOCK_WAIT) throw new Error(`Could not move this run's files into ${run.dir}: another run was still putting its files there after ${LOCK_WAIT / 1000} s. This run added nothing to the folder.`);
+  }
+}
+
+// Whether a lock is left over from a process that cannot release it.
+function stale(at) {
+  const s = lstat(at);
+  if (!s) return false;
+  const age = Date.now() - s.mtimeMs;
+  if (age > LOCK_STALE) return true;
+  let holder;
+  try {
+    holder = JSON.parse(fs.readFileSync(path.join(at, "holder.json"), "utf8"));
+  } catch {
+    // Made a moment ago, or by a process killed before it named itself.
+    return age > LOCK_WAIT;
+  }
+  return Boolean(holder) && holder.host === os.hostname() && Number.isInteger(holder.pid) && !running(holder.pid);
 }
 
 // Puts back what a commit moved before it failed, and throws.
@@ -508,4 +571,4 @@ function stopOnSignals({ name, json = false }) {
   }
 }
 
-module.exports = { begin, checkDir, stopAll, stopOnSignals, sweep, toMake, realFolder, PART, STALE };
+module.exports = { begin, checkDir, stopAll, stopOnSignals, sweep, toMake, realFolder, PART, STALE, LOCK };
