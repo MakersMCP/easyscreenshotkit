@@ -189,6 +189,12 @@ function prepareDemoDir(dir, { steps = "", tour = false } = {}) {
 
 const round = (value, places = 3) => Math.round(value * 10 ** places) / 10 ** places;
 
+// The frame of the video a moment falls on, counted from the seconds
+// steps.json writes for it, so the two always agree: counted from the
+// moment itself, one half a frame from the next could name the frame before
+// the one its seconds say.
+const frameAt = (t, fps) => Math.round(round(t) * fps);
+
 function what(step) {
   if (step.label) return step.label;
   if (step.action === "visit") return `Open ${readable(step.url)}`;
@@ -351,7 +357,7 @@ async function makeDemo(rawUrl, options = {}) {
     }
 
     // Where each step lands in the video.
-    const frameOf = (t) => Math.round(t * fps);
+    const frameOf = (t) => frameAt(t, fps);
     const toVideo = (t, point) => {
       const cam = cameraAt(drawn.regions, t, viewport);
       const k = layout.scale * cam.z;
@@ -486,4 +492,4 @@ async function main(argv) {
   }
 }
 
-module.exports = { main, makeDemo, parseDemo, prepareDemoDir, openDemo, routesNote, what, summary, USAGE };
+module.exports = { main, makeDemo, parseDemo, prepareDemoDir, openDemo, routesNote, what, frameAt, summary, USAGE };

@@ -12,7 +12,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const test = require("node:test");
-const { parseDemo, prepareDemoDir, openDemo, makeDemo, routesNote, what } = require("../skills/easyscreenshotkit/scripts/lib/demo");
+const { parseDemo, prepareDemoDir, openDemo, makeDemo, routesNote, what, frameAt } = require("../skills/easyscreenshotkit/scripts/lib/demo");
 const { pickPages } = require("../skills/easyscreenshotkit/scripts/lib/tour");
 const { setTimeLimit } = require("../skills/easyscreenshotkit/scripts/lib/time");
 const { readSteps } = require("../skills/easyscreenshotkit/scripts/lib/steps");
@@ -65,6 +65,16 @@ test("a visit's label reads its address as a person does, the visit a steps file
   assert.equal(what({ action: "visit", url: "/uygulama çalışma/#/ayarlar" }), "Open /uygulama çalışma/#/ayarlar");
   assert.equal(what({ action: "visit", url: "/100%-cotton" }), "Open /100%-cotton");
   assert.equal(what({ action: "visit", url: "/pricing", label: "Prices" }), "Prices");
+});
+
+test("a step's frame is the one its seconds in steps.json say, also half a frame from the next", () => {
+  // 5.6166 s is frame 168.498 at 30 frames a second, written as 5.617 s,
+  // which is frame 168.51.
+  assert.equal(frameAt(5.6166, 30), 169);
+  assert.equal(frameAt(5.6166, 30), Math.round(5.617 * 30));
+  assert.equal(frameAt(2, 30), 60);
+  assert.equal(frameAt(0, 24), 0);
+  for (let t = 0; t < 30; t += 0.0137) assert.equal(frameAt(t, 30), Math.round((Math.round(t * 1000) / 1000) * 30), String(t));
 });
 
 test("frames that cannot be saved are told by the folder the demo saves in, not the part of it that is gone by then", async () => {
