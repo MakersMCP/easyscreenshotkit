@@ -305,6 +305,35 @@ test("two runs that put their files in one folder at the same moment take turns,
     const alone = path.join(root, "alone");
     fs.mkdirSync(path.join(alone, path.basename(aside)), { recursive: true });
     openShots(alone).abort();
+    // Only a folder of its own is a lock. A link or a file of that name is
+    // refused before the run, and stays as it is, with what a link leads to.
+    const elsewhere = path.join(root, "elsewhere");
+    fs.mkdirSync(elsewhere);
+    fs.writeFileSync(path.join(elsewhere, "holder.json"), "the user's own holder.json\n");
+    const LINKED = /shots\/\.easyscreenshotkit-commit is a link, and this run makes a folder of that name there while it puts its files in place\./;
+    if (process.platform !== "win32") {
+      fs.symlinkSync(elsewhere, lock);
+      fs.lutimesSync(lock, new Date(Date.now() - 3_600_000), new Date(Date.now() - 3_600_000));
+      assert.throws(() => openShots(dir), new RegExp(`${LINKED.source} Move it, or pick another folder with --out\\.$`));
+      assert.throws(() => prepareDir(dir), LINKED);
+      assert.ok(fs.lstatSync(lock).isSymbolicLink());
+      // One that comes while a run works fails the run at its end, which
+      // adds nothing.
+      fs.rmSync(lock);
+      const during = runOf("during", [1, 2]);
+      fs.symlinkSync(elsewhere, lock);
+      fs.lutimesSync(lock, new Date(Date.now() - 3_600_000), new Date(Date.now() - 3_600_000));
+      assert.throws(() => during.run.commit(during.files), new RegExp(`^Error: Could not move this run's files into .*shots: .*${LINKED.source} What the folder held before this run is as it was\\.$`));
+      assert.deepEqual(names(), [LOCK, "01-p1-desktop.png", "manifest.json"]);
+      assert.deepEqual(fs.readdirSync(elsewhere), ["holder.json"]);
+      fs.rmSync(lock);
+    }
+    fs.writeFileSync(lock, "a file of the user's\n");
+    fs.utimesSync(lock, new Date(Date.now() - 10_000), new Date(Date.now() - 10_000));
+    assert.throws(() => openShots(dir), /shots\/\.easyscreenshotkit-commit is a file, and this run makes a folder of that name there while it puts its files in place\. Move it, or pick another folder with --out\.$/);
+    assert.equal(fs.readFileSync(lock, "utf8"), "a file of the user's\n");
+    fs.rmSync(lock);
+    assert.deepEqual(fs.readdirSync(elsewhere), ["holder.json"]);
     // One whose process runs on is waited for 5 s, and then the run fails
     // and adds nothing.
     fs.mkdirSync(lock);

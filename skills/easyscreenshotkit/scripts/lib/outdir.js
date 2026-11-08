@@ -209,9 +209,17 @@ function realFolder(root, rel) {
   return true;
 }
 
+// The refusal for something of the lock's name that is no folder of its
+// own (see lock()): a run never takes it for a lock, nor goes through it.
+function notALock(dir, s) {
+  return `${path.join(dir, LOCK)} is ${s.isSymbolicLink() ? "a link" : "a file"}, and this run makes a folder of that name there while it puts its files in place.`;
+}
+
 // Checked before any work, so a run does not fail at its end over a name it
 // cannot save under.
 function claim(dir, target, spec) {
+  const held = lstat(path.join(target, LOCK));
+  if (held && !held.isDirectory()) throw new Error(`${notALock(dir, held)} Move it, or pick another folder with --out.`);
   for (const name of spec.folders || []) {
     const s = lstat(path.join(target, name));
     if (s && !s.isDirectory()) throw new Error(`${path.join(dir, name)} is ${s.isSymbolicLink() ? "a link" : "a file"}, and this run saves a folder of that name there. Move it, or pick another folder with --out.`);
@@ -397,6 +405,9 @@ function lock(run) {
     } catch (err) {
       if (err.code !== "EEXIST") throw new Error(`Could not move this run's files into ${run.dir}: ${reasonOf(run, Object.assign(err, { rel: LOCK }))}. What the folder held before this run is as it was.`);
     }
+    // A link or a file of that name that came while the run worked.
+    const s = lstat(at);
+    if (s && !s.isDirectory()) throw new Error(`Could not move this run's files into ${run.dir}: ${notALock(run.dir, s)} What the folder held before this run is as it was.`);
     const found = staleLock(at);
     if (found && takeOver(at, found)) continue;
     if (Date.now() - started >= LOCK_WAIT) throw new Error(`Could not move this run's files into ${run.dir}: another run was still putting its files there after ${LOCK_WAIT / 1000} s. This run added nothing to the folder.`);
@@ -405,14 +416,16 @@ function lock(run) {
 
 // A lock left over from a process that cannot release it, as {text}: its
 // holder.json as read, null when it has none. null when the lock is not
-// stale, or not there.
+// stale, or not there, or is not a folder of its own: nothing is read or
+// moved through a link of that name.
 function staleLock(at) {
   const s = lstat(at);
-  if (!s) return null;
+  if (!s || !s.isDirectory()) return null;
   const age = Date.now() - s.mtimeMs;
   let text = null;
   try {
-    text = fs.readFileSync(path.join(at, "holder.json"), "utf8");
+    const named = lstat(path.join(at, "holder.json"));
+    if (named && named.isFile()) text = fs.readFileSync(path.join(at, "holder.json"), "utf8");
   } catch {
     // Made a moment ago, or by a process killed before it named itself.
   }
