@@ -111,9 +111,29 @@ function parse(argv) {
   return { ...options, url: rest[0] };
 }
 
+// What --pwa-check reads: a manifest file on this machine, else a web
+// address. A path whose file is not there is still a path, not an address
+// on a host named after its first folder: one that starts with /, ., ~ or
+// a drive letter, holds a backslash, starts with a folder name with no dot
+// in it (public/manifest.json), or is a file's name alone
+// (manifest.json). Any other value with no scheme, such as acme.com,
+// acme.com/manifest.json or localhost:3000, is an address.
+function manifestTarget(value) {
+  if (fs.existsSync(value) && fs.statSync(value).isFile()) return { file: value };
+  const text = String(value);
+  let local = false;
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(text)) {
+    const first = text.split("/")[0];
+    if (/^([/.~\\]|[a-z]:)/i.test(text) || text.includes("\\")) local = true;
+    else if (first === text) local = /\.(json|webmanifest)$/i.test(text);
+    else local = !first.includes(".") && !first.includes(":") && first.toLowerCase() !== "localhost";
+  }
+  return local ? { file: value } : { url: normalizeUrl(value) };
+}
+
 // --pwa-check: a manifest file on this machine, else a web address.
 async function pwaCheck(options) {
-  const target = fs.existsSync(options.pwaCheck) && fs.statSync(options.pwaCheck).isFile() ? { file: options.pwaCheck } : { url: normalizeUrl(options.pwaCheck) };
+  const target = manifestTarget(options.pwaCheck);
   let report;
   try {
     report = await checkManifest(target);
@@ -200,4 +220,4 @@ async function main() {
 
 if (require.main === module) main();
 
-module.exports = { parse, summary };
+module.exports = { parse, summary, manifestTarget };

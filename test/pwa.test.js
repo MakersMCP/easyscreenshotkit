@@ -281,8 +281,34 @@ test("--pwa-check: a manifest file and its screenshots next to it, on the comman
     const none = spawnSync(process.execPath, [CLI, "--pwa-check", path.join(dir, "screenshots", "wide-01.png")], { encoding: "utf8" });
     assert.equal(none.status, 1);
     assert.match(none.stderr, /is not JSON, so it is not a web app manifest/);
+
+    // A path to a file that is not there is still a path, not a web
+    // address on a host named after its first folder.
+    for (const missing of [path.join(dir, "nope ğ", "manifest.webmanifest"), "./nope/manifest.webmanifest", "public/manifest.json", "app.webmanifest"]) {
+      const gone = spawnSync(process.execPath, [CLI, "--pwa-check", missing], { cwd: dir, encoding: "utf8" });
+      assert.equal(gone.status, 1, missing);
+      assert.equal(gone.stderr, `easyscreenshotkit: Could not read ${missing}: there is no such file\n`);
+    }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("--pwa-check: a path is a file, also when nothing is there, and an address is read from the web", () => {
+  const { manifestTarget } = require("../skills/easyscreenshotkit/scripts/easyscreenshotkit");
+  const where = (value) => Object.entries(manifestTarget(value))[0];
+  for (const file of ["/srv/www/manifest.json", "./manifest.webmanifest", "../site/manifest.json", "~/site/manifest.json", "public/manifest.json", "manifest.json", "site.webmanifest", "C:\\site\\manifest.json", "public\\manifest.json"]) {
+    assert.deepEqual(where(file), ["file", file]);
+  }
+  for (const [value, url] of [
+    ["acme.com", "https://acme.com/"],
+    ["acme.com/manifest.json", "https://acme.com/manifest.json"],
+    ["www.acme.com/static/app.webmanifest", "https://www.acme.com/static/app.webmanifest"],
+    ["localhost:3000/manifest.json", "https://localhost:3000/manifest.json"],
+    ["127.0.0.1:8080/app.webmanifest", "https://127.0.0.1:8080/app.webmanifest"],
+    ["http://localhost/manifest.json", "http://localhost/manifest.json"],
+  ]) {
+    assert.deepEqual(where(value), ["url", url]);
   }
 });
 

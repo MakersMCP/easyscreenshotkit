@@ -386,7 +386,8 @@ async function loadManifest(target) {
     try {
       text = fs.readFileSync(target.file, "utf8");
     } catch (err) {
-      throw new Error(`Could not read ${target.file}: ${reasonOf(err)}`);
+      const why = err.code === "ENOENT" ? "there is no such file" : err.code === "EISDIR" ? "it is a folder; give the manifest's file in it" : reasonOf(err);
+      throw new Error(`Could not read ${target.file}: ${why}`);
     }
     return { where: target.file, base: { dir: path.dirname(path.resolve(target.file)) }, json: parseJson(text, target.file) };
   }
