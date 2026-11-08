@@ -611,7 +611,7 @@ test("a tour with #routes asked for with --page: clicked to through their links,
   }
 });
 
-test("a tour lists the #route links of the pages it takes in one note, also when it needs no more pages", { skip: !findChrome() && "no Chrome, Chromium, Edge or Brave installed", timeout: 120_000 }, async () => {
+test("a tour lists the #route links of the home page and the address given in one note, also when it needs no more pages", { skip: !findChrome() && "no Chrome, Chromium, Edge or Brave installed", timeout: 120_000 }, async () => {
   const { server, origin } = await fixture();
   setTimeLimit(110_000);
   const chrome = await launch();

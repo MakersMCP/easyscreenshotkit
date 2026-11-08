@@ -29,7 +29,7 @@ easyscreenshotkit-linear.app/
 - Pictures that load late, sections that fade in on scroll, counters that count up and videos are there in full, on the first screen and on the whole page.
 - Every heading on a first screen comes with its box in the image's own pixels, and every section of a whole page with where it starts and ends, so a crop or a zoom does not have to guess.
 - Each PNG carries the address it came from, when it was taken and by what, in its own metadata.
-- A view of a web app with a `#/` route, such as `/app/#/plants`, is taken when you give it as the address or with `--page`. The page opens on that view, waits until the view's data has come (10 s at most, and a note says so when the run's time cut that short), and its files are named after it: `02-app-plants-desktop.png`. File names keep a to z and digits only, so a route in other letters, such as `#/растения`, gets `view-` and six characters of its own, the same on every run. The tour itself follows paths only: a link to `/docs/#/install` offers it `/docs/`, and the `#/` links it finds on the home page, on the address given and on each `--page` are listed with the pages it left out.
+- A view of a web app with a `#/` route, such as `/app/#/plants`, is taken when you give it as the address or with `--page`. The page opens on that view, waits until the view's data has come (10 s at most, and a note says so when the run's time cut that short), and its files are named after it: `02-app-plants-desktop.png`. A `--page` that is only a route, such as `--page '#/plants'`, is that view of the address given. File names keep a to z and digits only, so a route in other letters, such as `#/растения`, gets `view-` and six characters of its own, the same on every run. The tour itself follows paths only: a link to `/docs/#/install` offers it `/docs/`, and the `#/` links it finds on the home page, on the address given and on each `--page` are listed with the pages it left out.
 
 ## Record a demo
 
@@ -105,7 +105,7 @@ The demo needs ffmpeg, the one on your machine (`brew install ffmpeg`, `sudo apt
 
 How a demo is made:
 
-1. A tour takes the pages the screenshots would: the home page, then features, pricing and the like, each opened first to check it. On each page it rests on the first screen, scrolls down to a section or two, and goes on to the next page through the link in the site's own menu, or with a crossfade when the menu has none. Pricing comes last. It follows paths only: the notes in steps.json name the `#/` links on its pages, which `--page` can add.
+1. A tour takes the pages the screenshots would: the home page, then features, pricing and the like, each opened first to check it. On each page it rests on the first screen, scrolls down to a section or two, and goes on to the next page through the link in the site's own menu, or with a crossfade when the menu has none. Pricing comes last. It follows paths only: the notes in steps.json name the `#/` links it finds on the home page, on the address given and on each `--page`, which `--page` can add.
 2. Every page loads off camera. The recording pauses while the page opens, scrolls through it once so lazy pictures load, hides what floats over it and waits for its fonts and pictures. Then it comes in with a crossfade.
 3. Chrome draws the page at 1.5 pixels per CSS pixel, so a zoomed-in view stays sharp, and streams its screen. A scroll is taken a frame at a time, the page moved to exactly where each frame of the video needs it, so it is even however slowly the machine draws. A page that draws slowly is recorded in slow motion and played back at speed.
 4. The pointer, the zoom, the rings around clicks and the window are not drawn into the page. They are added afterwards from what was recorded, every frame drawn in a second browser window, and ffmpeg encodes the result.
@@ -181,10 +181,10 @@ Some runs:
 npx easyscreenshotkit@latest stripe.com --pages 3 --sizes desktop
 npx easyscreenshotkit@latest cal.com --page /pricing --sizes 1270x760@2 --out gallery
 npx easyscreenshotkit@latest yourapp.com --sizes iphone,mobile --theme both --out store
-npx easyscreenshotkit@latest 'yourapp.com/app/#/today' --pages 1 --page '/app/#/plants' --page '/app/#/settings' --sizes iphone,mobile --out store
+npx easyscreenshotkit@latest 'yourapp.com/app/#/today' --pages 1 --page '/app/#/plants' --page '/app/#/settings' --sizes iphone,mobile --no-clean --out store
 ```
 
-The last one takes three views of a web app and nothing else: with `--pages 1` there is no tour, only the address and the `--page` ones.
+The last one takes three views of a web app and nothing else: with `--pages 1` there is no tour, only the address and the `--page` ones. `--no-clean` keeps the app's own tab bar at the bottom of a phone's screen, which the clean-up would hide: it hides everything fixed to the screen but a bar along the top or down one side.
 
 The folder a run saves in has to be new, empty or hold an earlier run; the `.DS_Store`, `Thumbs.db` or `desktop.ini` a file browser leaves there does not count. A run builds its files in a folder whose name starts with `.easyscreenshotkit-part-`, inside the folder it saves in, and moves them into place only once it has ended well, replacing the earlier run's files. A run that fails, or is stopped with Ctrl-C or a TERM signal, leaves the earlier run's files as they were and adds nothing. Two runs that end at the same moment in one folder take turns, and the files of the one that ends later replace the other's. A run killed outright, with `kill -9` or with `taskkill /F` on Windows, cannot clean up after itself. It leaves its part folder, which the next run to end well in that folder removes once it is half an hour old, its browser profile in the temp folder and, on Linux and macOS, the browser's lock folder there (`com.google.Chrome.XXXXXX` and the like), and its browser goes on running unless the kill reached its whole process group (`/T` for `taskkill`).
 

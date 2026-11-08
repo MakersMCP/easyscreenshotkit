@@ -44,7 +44,8 @@ async function probe(chrome, url, check, ctx, { links = false } = {}) {
 
 // The pages of the tour, the home page first: [{url, kind, why, title}],
 // with the ones opened and left out and why (skipped), and the #route links
-// on the pages taken, which the tour does not follow (routes).
+// on the home page, the address given and each --page, which the tour does
+// not follow (routes).
 async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = "", theme = "light", reducedMotion = false, log = () => {} } = {}) {
   const ctx = { lang, theme, reducedMotion };
   let home = homeOf(asked);
@@ -137,8 +138,8 @@ async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = 
       else keep(candidate.url, candidate.kind, candidate.why, got);
     }
   }
-  // The views of an app that the pages taken link to by #route, whether the
-  // tour still needed pages or not.
+  // The views of an app that the home page, the address given and each
+  // --page link to by #route, whether the tour still needed pages or not.
   const routes = wanted > 1 ? routeLinks([...links, ...namedLinks], { home: nav.url, keys: kept.flatMap((page) => [...page.keys]) }) : [];
   // A visitor's order: what the product is first, what it costs last.
   const [first, ...rest] = kept;

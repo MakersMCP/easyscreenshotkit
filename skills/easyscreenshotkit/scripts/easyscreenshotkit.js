@@ -46,10 +46,11 @@ phone page at 2x. 1270x760@2 is a Product Hunt gallery image.
 A #route in the address or in --page is kept: the page opens on that view,
 waits until the view's data has come (10 s at most, and a note says so when
 the run's time cut that short) and is named after it,
-02-app-plants-desktop.png for /app/#/plants. Any other fragment, such as
-#pricing, is left out, with a note. The tour follows paths only: the #route
-links on the home page, the address given and each --page are listed with
-the pages it left out.
+02-app-plants-desktop.png for /app/#/plants. A --page that is only a route,
+such as '#/plants', is that view of the address given. Any other fragment,
+such as #pricing, is left out, with a note. The tour follows paths only:
+the #route links on the home page, the address given and each --page are
+listed with the pages it left out.
 
 The folder has to be new, empty or hold an earlier run. A run builds its
 files in a folder whose name starts with a dot, inside the folder it saves
