@@ -263,48 +263,32 @@ test("two runs that put their files in one folder at the same moment take turns,
     assert.ok(Date.now() - at < 1_000, `took ${Date.now() - at} ms`);
     assert.deepEqual(names(), ["01-p1-desktop.png", "manifest.json"]);
     // Two runs can find that lock stale at the same moment. The first takes
-    // it over and makes its own; the second then takes nothing away, not the
-    // first one's lock either.
+    // it over where it is, naming itself in it; the second then takes
+    // nothing, not the first one's lock either. No lock is moved aside, so
+    // no third run can make one of its own meanwhile.
+    const holder = () => fs.readFileSync(path.join(lock, "holder.json"), "utf8");
     const takers = () => {
       const first = staleLock(lock);
       const second = staleLock(lock);
       assert.ok(first && second);
       assert.equal(takeOver(lock, first), true);
-      assert.equal(fs.existsSync(lock), false);
-      return second;
+      const mine = holder();
+      assert.equal(JSON.parse(mine).pid, process.pid);
+      assert.equal(staleLock(lock), null);
+      assert.equal(takeOver(lock, second), false);
+      assert.equal(holder(), mine);
+      assert.deepEqual(fs.readdirSync(dir).filter((name) => name.startsWith(LOCK)), [LOCK]);
+      fs.rmSync(lock, { recursive: true });
     };
     fs.mkdirSync(lock);
     fs.writeFileSync(path.join(lock, "holder.json"), JSON.stringify({ host: os.hostname(), pid: 99999999, token: "0123456789abcdef" }));
-    let second = takers();
-    fs.mkdirSync(lock);
-    const live = JSON.stringify({ host: os.hostname(), pid: process.pid, token: "fedcba9876543210" });
-    fs.writeFileSync(path.join(lock, "holder.json"), live);
-    assert.equal(staleLock(lock), null);
-    assert.equal(takeOver(lock, second), false);
-    assert.deepEqual(fs.readdirSync(lock), ["holder.json"]);
-    assert.equal(fs.readFileSync(path.join(lock, "holder.json"), "utf8"), live);
-    fs.rmSync(lock, { recursive: true });
-    // The same with a lock whose process was killed before it named itself,
-    // and the lock the first taker made, not named yet either.
+    takers();
+    // The same with a lock whose process was killed before it named itself.
     fs.mkdirSync(lock);
     fs.utimesSync(lock, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
-    second = takers();
-    fs.mkdirSync(lock);
-    assert.equal(takeOver(lock, second), false);
-    assert.deepEqual(fs.readdirSync(lock), []);
-    assert.deepEqual(names(), [LOCK, "01-p1-desktop.png", "manifest.json"]);
-    fs.rmSync(lock, { recursive: true });
-    // A lock a taker killed outright had moved aside is no file of anyone's,
-    // and goes once a run ends well and it is half an hour old.
-    const aside = `${lock}-99999999-0123abcd`;
-    fs.mkdirSync(aside);
-    fs.utimesSync(aside, new Date(Date.now() - 3_600_000), new Date(Date.now() - 3_600_000));
-    const swept = runOf("swept", [1]);
-    swept.run.commit(swept.files);
+    takers();
     assert.deepEqual(names(), ["01-p1-desktop.png", "manifest.json"]);
-    const alone = path.join(root, "alone");
-    fs.mkdirSync(path.join(alone, path.basename(aside)), { recursive: true });
-    openShots(alone).abort();
+
     // Only a folder of its own is a lock. A link or a file of that name is
     // refused before the run, and stays as it is, with what a link leads to.
     const elsewhere = path.join(root, "elsewhere");

@@ -185,7 +185,7 @@ const SHOWN = new Set([".ds_store", "thumbs.db", "desktop.ini"]);
 
 // The folder holds nothing, or an earlier run of the same kind.
 function check(dir, target, spec) {
-  const names = fs.readdirSync(target).filter((name) => !PART.test(name) && name !== LOCK && !LOCK_ASIDE.test(name) && !SHOWN.has(name.toLowerCase()) && !(spec.ignore && spec.ignore(name, target)));
+  const names = fs.readdirSync(target).filter((name) => !PART.test(name) && name !== LOCK && !SHOWN.has(name.toLowerCase()) && !(spec.ignore && spec.ignore(name, target)));
   if (!names.length) return;
   let earlier = null;
   try {
@@ -381,36 +381,49 @@ function commit(run, outputs) {
 // folder, made in one step, that names the machine and the process holding
 // it. A run that finds it waits; one left by a process that is gone, on
 // this machine, or older than LOCK_STALE (a process elsewhere, or a number
-// used again since), is taken over.
+// used again since), is taken over where it is (see takeOver()).
 const LOCK = ".easyscreenshotkit-commit";
 const LOCK_WAIT = 5_000;
 const LOCK_STALE = 60_000;
-// A lock moved aside to be taken over (see takeOver()), left there by a
-// run killed in that moment.
-const LOCK_ASIDE = /^\.easyscreenshotkit-commit-(\d+)-[0-9a-f]{8}$/;
 
 function lock(run) {
   const at = path.join(run.target, LOCK);
   for (const started = Date.now(); ; pause(50)) {
+    let made = false;
     try {
       fs.mkdirSync(at);
-      try {
-        // The token tells this lock from any other, one of a process that
-        // had the same number before included.
-        fs.writeFileSync(path.join(at, "holder.json"), JSON.stringify({ host: os.hostname(), pid: process.pid, token: crypto.randomBytes(8).toString("hex") }) + "\n");
-      } catch {
-        // The folder is the lock; the name in it only tells who holds it.
-      }
-      return at;
+      made = true;
     } catch (err) {
       if (err.code !== "EEXIST") throw new Error(`Could not move this run's files into ${run.dir}: ${reasonOf(run, Object.assign(err, { rel: LOCK }))}. What the folder held before this run is as it was.`);
+    }
+    // The lock just made is this run's, unless a run that found it stale
+    // named itself in it first, as one held up for that long can find.
+    if (made) {
+      if (name(at) !== "taken") return at;
+      continue;
     }
     // A link or a file of that name that came while the run worked.
     const s = lstat(at);
     if (s && !s.isDirectory()) throw new Error(`Could not move this run's files into ${run.dir}: ${notALock(run.dir, s)} What the folder held before this run is as it was.`);
     const found = staleLock(at);
-    if (found && takeOver(at, found)) continue;
+    if (found && takeOver(at, found)) return at;
     if (Date.now() - started >= LOCK_WAIT) throw new Error(`Could not move this run's files into ${run.dir}: another run was still putting its files there after ${LOCK_WAIT / 1000} s. This run added nothing to the folder.`);
+  }
+}
+
+// Names this run in the lock at at, as the one holding it, in a file only
+// one run can make, as it is made only where there is none. Returns
+// "named", "taken" when another run's name was there first, or "unnamed"
+// when the file could not be written (a full disk): the folder is the lock,
+// and the name in it only tells who holds it.
+function name(at) {
+  try {
+    // The token tells this lock from any other, one of a process that had
+    // the same number before included.
+    fs.writeFileSync(path.join(at, "holder.json"), JSON.stringify({ host: os.hostname(), pid: process.pid, token: crypto.randomBytes(8).toString("hex") }) + "\n", { flag: "wx" });
+    return "named";
+  } catch (err) {
+    return err.code === "EEXIST" ? "taken" : "unnamed";
   }
 }
 
@@ -440,59 +453,39 @@ function staleLock(at) {
   return holder.host === os.hostname() && Number.isInteger(holder.pid) && !running(holder.pid) ? { text } : null;
 }
 
-// Takes away the stale lock found at at. Two runs can find it stale at
-// once, and the one that comes second must not take away the lock the
-// first one made a moment later in its place. So a taker first moves the
-// holder.json it found to a name of its own, which only one of them can
-// do, and takes the lock away only when what it moved is that holder.json,
-// as read: else it puts it back. A lock with no holder.json is moved aside
-// whole, and taken away when it still has none and is still old enough to
-// be stale. True when this run took the lock away.
+// Takes over the stale lock found at at, where it is: it never leaves its
+// place, so no other run can make a lock of its own meanwhile, and of two
+// runs that find it stale at once only one can have it. The holder.json
+// found in it, when there is one, is first moved to a name of this run's
+// own, which only one of them can do, and kept aside only when it is the
+// one read, else put back. Then this run names itself in the lock, which
+// also only one run can do (see name()). True when this run holds the lock.
 function takeOver(at, found) {
-  const mine = `${process.pid}-${crypto.randomBytes(4).toString("hex")}`;
-  if (found.text === null) {
-    const aside = `${at}-${mine}`;
+  if (found.text !== null) {
+    const holder = path.join(at, "holder.json");
+    const taken = path.join(at, `holder-${process.pid}-${crypto.randomBytes(4).toString("hex")}.json`);
     try {
-      rename(at, aside);
+      rename(holder, taken);
     } catch {
+      // Another run took it first.
       return false;
     }
-    const s = lstat(aside);
-    if (!fs.existsSync(path.join(aside, "holder.json")) && s && Date.now() - s.mtimeMs > LOCK_WAIT) {
-      remove(aside);
-      return true;
-    }
+    let text = null;
     try {
-      rename(aside, at);
+      text = fs.readFileSync(taken, "utf8");
     } catch {
-      // A lock made in that moment is there now: this one is swept later.
+      // Taken away with its lock meanwhile.
     }
-    return false;
+    if (text !== found.text) {
+      try {
+        rename(taken, holder);
+      } catch {
+        // Its lock was released meanwhile.
+      }
+      return false;
+    }
   }
-  const holder = path.join(at, "holder.json");
-  const taken = path.join(at, `holder-${mine}.json`);
-  try {
-    rename(holder, taken);
-  } catch {
-    // Another run took it first.
-    return false;
-  }
-  let text = null;
-  try {
-    text = fs.readFileSync(taken, "utf8");
-  } catch {
-    // Taken away with its lock meanwhile.
-  }
-  if (text === found.text) {
-    remove(at);
-    return true;
-  }
-  try {
-    rename(taken, holder);
-  } catch {
-    // Its lock was released meanwhile.
-  }
-  return false;
+  return name(at) === "named";
 }
 
 // Puts back what a commit moved before it failed, and throws.
@@ -646,9 +639,9 @@ function touched(folder) {
   return newest;
 }
 
-// Removes the part folders of runs killed outright in this folder, and the
-// locks such runs had moved aside, once their process is gone and they have
-// not changed for STALE, and an older version's leftovers once stale.
+// Removes the part folders of runs killed outright in this folder, once
+// their process is gone and they have not changed for STALE, and an older
+// version's leftovers once stale.
 function sweep(target, spec) {
   let entries = [];
   try {
@@ -660,7 +653,7 @@ function sweep(target, spec) {
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const at = path.join(target, entry.name);
-    const m = PART.exec(entry.name) || LOCK_ASIDE.exec(entry.name);
+    const m = PART.exec(entry.name);
     if (m) {
       // One under this process's own number that is not one of its runs is
       // a leftover of an earlier process that had the same number.
