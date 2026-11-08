@@ -147,9 +147,10 @@ const GIF_TRIES = [
 
 // The palette is a PNG file of its own, written as one picture and read
 // back as one: ffmpeg otherwise reads a % in its path as a frame number
-// (frame%03d.png), so a folder named like "Q3 100%" or "run%dx" failed the
-// GIF, and ffmpeg 4 wrote the palette outside the folder, at the path cut
-// short at its %.
+// (frame%03d.png), so a folder named like "run%dx", with a d or a digit
+// after its %, failed the GIF with any ffmpeg, and ffmpeg 4 failed under
+// any % ("Q3 100%") and wrote the palette outside the folder, at the path
+// cut short at its %.
 async function makeGif(binary, video, file, { budget = 8 * 1024 * 1024, dir }) {
   const palette = path.join(dir, "palette.png");
   let last = null;

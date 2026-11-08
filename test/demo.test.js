@@ -126,7 +126,8 @@ test("frames that cannot be saved are told by the folder the demo saves in, not 
 
 // ffmpeg reads a % in the path of a picture as a frame number: the GIF's
 // palette, made in the run's folder, failed under a folder named like
-// these, and ffmpeg 4 wrote it outside, at the path cut short at its %.
+// these, "Q3 100%" with ffmpeg 4 only, and ffmpeg 4 wrote it outside, at
+// the path cut short at its %.
 test("demo.gif is made in a folder whose path holds a %, and nothing is written outside it", { skip: !ffmpeg && "no ffmpeg installed", timeout: 120_000 }, async () => {
   const root = tempDir();
   try {
