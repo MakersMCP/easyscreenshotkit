@@ -25,7 +25,7 @@ const crypto = require("crypto");
 const { launch, openTab, closeTab, navigate, currentUrl } = require("./chrome");
 const { metrics, scrollTo, walk, showsContent, waitForContent, settle, watchRequests, networkQuiet, quietNetwork, waitForFonts, clearHover, resetPictureWait, capture, captureScreen, capturePage } = require("./page");
 const { clean } = require("./clean");
-const { homeOf, pageKey, routeOf, viewKey, pathOf, pageUrl, anchorOf, siteOf, fold, kindOf, rankLinks, routeLinks, visitOrder, readSiteIndex, localeOf, ROUTE_LINK } = require("./pick");
+const { homeOf, pageKey, routeOf, viewKey, pathOf, pageUrl, anchorOf, siteOf, fold, kindOf, rankLinks, routeLinks, visitOrder, readSiteIndex, localeOf, alternateFor, ROUTE_LINK } = require("./pick");
 const { pngSize, tagPng } = require("./png");
 const { PWA_SHOTS, LOOKED_AT, planPwa, checkManifest } = require("./pwa");
 const { renderSheet } = require("./sheet");
@@ -913,7 +913,7 @@ async function takeShots(rawUrl, options = {}) {
     let result = await visit(chrome, start, first, firstTheme, ctx, { links: wanted > 1 });
     // The site's own page in the language asked for, when it names one.
     if (lang && wanted > 1) {
-      const alternate = (result.info.alternates || []).find((alt) => fold(alt.lang) === fold(lang) || fold(alt.lang).split("-")[0] === fold(lang).split("-")[0]);
+      const alternate = alternateFor(result.info.alternates, lang);
       if (alternate && pageKey(alternate.href) !== pageKey(result.nav.url) && siteOf(alternate.href) === siteOf(home)) {
         log(`Opening its ${alternate.lang} version, ${alternate.href}`);
         home = homeOf(alternate.href);

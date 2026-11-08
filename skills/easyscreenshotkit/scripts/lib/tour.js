@@ -13,7 +13,7 @@
 const { openTab, closeTab, navigate } = require("./chrome");
 const { waitForContent, settle, walk, watchRequests } = require("./page");
 const { readInfo, readLinks, rejectAtOnce, rejectReason, slugOf, siteName, identity, pagesAsked, waitForView } = require("./shots");
-const { fold, homeOf, pageKey, routeOf, viewKey, pathOf, readable, siteOf, rankLinks, routeLinks, visitOrder, readSiteIndex, kindOf } = require("./pick");
+const { homeOf, pageKey, routeOf, viewKey, pathOf, readable, siteOf, rankLinks, routeLinks, visitOrder, readSiteIndex, kindOf, alternateFor } = require("./pick");
 const { TOP_COVER } = require("./record");
 const { timeLeft } = require("./time");
 
@@ -69,7 +69,7 @@ async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = 
     info = await readInfo(tab);
     if (info.challenge) throw new Error(`${nav.url} answered with a bot check ("${info.title || "a challenge page"}") instead of its page, so no demo was recorded. Open the site in a normal browser to check it.`);
     // The site's own home page in the language asked for, when it names one.
-    const alternate = lang && (info.alternates || []).find((alt) => fold(alt.lang) === fold(lang) || fold(alt.lang).split("-")[0] === fold(lang).split("-")[0]);
+    const alternate = alternateFor(info.alternates, lang);
     if (alternate && pageKey(alternate.href) !== pageKey(nav.url) && siteOf(alternate.href) === siteOf(home)) {
       log(`Opening its ${alternate.lang} version, ${alternate.href}`);
       home = homeOf(alternate.href);

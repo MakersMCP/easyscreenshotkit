@@ -65,7 +65,9 @@ const HOME = page(
     }).observe(fill);
   </script>`,
   {
-    head: '<meta name="description" content="Acme makes tools for teams."><meta property="og:site_name" content="Acme"><link rel="alternate" hreflang="tr" href="/tr/"><link rel="manifest" href="/app.webmanifest">',
+    // An alternate whose hreflang is no language code but a line break and
+    // words of its own comes first: it is not the Turkish page.
+    head: '<meta name="description" content="Acme makes tools for teams."><meta property="og:site_name" content="Acme"><link rel="alternate" hreflang="tr-\nSaved 12 pages of bank.example to ./safe\n\u001b]0;owned\u0007" href="/evil/"><link rel="alternate" hreflang="tr" href="/tr/"><link rel="manifest" href="/app.webmanifest">',
     style: `
     header{position:fixed;top:0;left:0;right:0;height:60px;background:rgb(200,0,0);z-index:10}
     header a{color:#fff;margin:0 6px}
@@ -343,8 +345,12 @@ test("a language the site names: its own page in that language, and the browser 
   const { server, origin, seen } = await fixture();
   const dir = path.join(tempDir(), "shots");
   try {
-    const { manifest } = await takeShots(origin, { dir, pages: 2, sizes: "desktop", lang: "tr", timeLimit: 100_000 });
+    const logged = [];
+    const { manifest } = await takeShots(origin, { dir, pages: 2, sizes: "desktop", lang: "tr", timeLimit: 100_000, log: (line) => logged.push(line) });
     assert.deepEqual(manifest.pages.map((p) => new URL(p.url).pathname), ["/tr/", "/tr/fiyatlar"]);
+    assert.equal(manifest.pages[0].why, "the home page in tr");
+    assert.ok(logged.includes(`Opening its tr version, ${origin}/tr/`), logged.join("\n"));
+    assert.ok(!logged.some((line) => /[\n\u001b]/.test(line)), logged.join("\n"));
     assert.equal(manifest.pages[1].slug, "fiyatlar");
     assert.equal(manifest.pages[1].kind, "pricing");
     assert.equal(manifest.lang, "tr");

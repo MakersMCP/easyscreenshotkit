@@ -202,6 +202,21 @@ function localeOf(pathname) {
   return LOCALE.test(first) ? first.toLowerCase() : "";
 }
 
+// A language code as --lang takes it, and as hreflang should be: tr, pt-BR.
+const LANG_CODE = /^[a-z]{2,3}(-[a-z0-9]{2,8})*$/i;
+
+// The site's own page in the language asked for, of the alternates a page
+// names (<link rel="alternate" hreflang="tr" href="/tr/">): the first whose
+// hreflang is a language code for that language, or for the language
+// without its region, or null. Any other hreflang is not taken: it is the
+// page's own words, which would go into the log, the summary and the
+// report as they are, a line break of their own included.
+function alternateFor(alternates, lang) {
+  if (!lang) return null;
+  const want = fold(lang);
+  return (alternates || []).find((alt) => LANG_CODE.test(String(alt.lang)) && (fold(alt.lang) === want || fold(alt.lang).split("-")[0] === want.split("-")[0])) || null;
+}
+
 // The home page for an address: the site's root, or its language root
 // (/tr/) when the address is under one.
 function homeOf(raw) {
@@ -618,6 +633,7 @@ async function readSiteIndex(origin, { max = 500, sitemapFiles = 4 } = {}) {
 module.exports = {
   fold,
   KINDS,
+  alternateFor,
   homeOf,
   pageKey,
   routeOf,

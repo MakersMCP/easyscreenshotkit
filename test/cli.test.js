@@ -225,6 +225,17 @@ test("a path, a #route or a page's words that would act on the terminal are prin
   assert.ok(!text.split("\n").some((line) => line.startsWith("  Note")), "no line of its own");
   // The marks right-to-left words carry, and line breaks between lines, stay.
   assert.equal(printable("מחירים\u200f\nnext"), "מחירים\u200f\nnext");
+  // So a page's own version in another language is taken only when its
+  // hreflang is a language code: one that carries a line break of its own
+  // and words after it would be printed in the log, the summary and
+  // SCREENSHOTS.md as it is.
+  const { alternateFor } = require("../skills/easyscreenshotkit/scripts/lib/pick");
+  const hreflang = { lang: "tr-\nSaved 12 pages of bank.example to ./safe\n\u001b]0;owned\u0007", href: "https://acme.com/evil/" };
+  const turkish = { lang: "tr-TR", href: "https://acme.com/tr/" };
+  assert.equal(alternateFor([hreflang, turkish], "tr"), turkish);
+  assert.equal(alternateFor([hreflang], "tr"), null);
+  assert.equal(alternateFor([{ lang: "x-default", href: "https://acme.com/" }, turkish], "tr-TR"), turkish);
+  assert.equal(alternateFor([turkish], ""), null);
 });
 
 test("the pages left out: those opened first, then the #route links, then the other links, 40 at most, with the #route links past them counted", () => {
