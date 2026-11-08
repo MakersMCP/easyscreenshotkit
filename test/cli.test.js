@@ -97,6 +97,14 @@ test("addresses, page names and the site's name", () => {
     `--page /x ends in a fragment, ${ROUTELESS}`,
   ]);
   assert.deepEqual(fragmentNotes("acme.com/app/#/plants", ["/pricing"], "https://acme.com/app/#/plants", "https://acme.com/"), []);
+  // A fragment that reads as a key or a token is not repeated, however
+  // plain its letters: a hex or base64 string, or one long word.
+  const shown = (fragment) => fragmentNotes(`app.acme.com/${fragment}`, [], "https://app.acme.com/", "https://app.acme.com/")[0].split(" ends in ")[1].split(", which")[0];
+  assert.deepEqual(
+    ["#3f9a2c71d0b84e5fa6c2d9e1b7f04a6c", "#a1b2c3d4e5f6", "#Xy_9kLmN0pQrStUv", "#abcdefghijklmnopqrstuvwxyz"].map(shown),
+    ["a fragment", "a fragment", "a fragment", "a fragment"],
+  );
+  assert.deepEqual(["#getting-started", "#section-2", "#L42", "#2024-recap", "#Installation"].map(shown), ["#getting-started", "#section-2", "#L42", "#2024-recap", "#Installation"]);
   assert.throws(() => normalizeUrl("ftp://acme.com"), /Not a web address/);
   assert.throws(() => normalizeUrl(""), /Give a website address/);
   const home = "https://acme.com/";

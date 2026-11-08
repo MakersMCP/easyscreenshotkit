@@ -144,16 +144,27 @@ function normalizeUrl(raw) {
   return url.href;
 }
 
+// Whether a fragment reads as a plain name (#pricing, #step-2, #inbox),
+// which a note may repeat, and not as a key or a token: a sign-in's
+// access_token=…, or a long run of letters and digits such as a hex or
+// base64 string.
+const plainName = (fragment) =>
+  /^#[A-Za-z0-9._~-]{1,40}$/.test(fragment) &&
+  fragment
+    .slice(1)
+    .split(/[._~-]/)
+    .every((word) => word.length < 12 || (word.length < 24 && !(/\d/.test(word) && /[A-Za-z]/.test(word))));
+
 // A note for the address and for each --page that came with a fragment
 // left out (see normalizeUrl): the page opens at its top. The fragment is
-// shown when it is a plain name (#pricing, #inbox), never otherwise, so a
-// token is not written into the report.
+// shown only when it reads as a plain name, so what a sign-in or a shared
+// link left there is not written into the report.
 function fragmentNotes(rawUrl, extra, asked, home) {
   const notes = [];
   const note = (where, url) => {
     const fragment = anchorOf(url);
     if (!fragment) return;
-    const shown = /^#[A-Za-z0-9._~-]{1,40}$/.test(fragment) ? fragment : "a fragment";
+    const shown = plainName(fragment) ? fragment : "a fragment";
     notes.push(`${where} ends in ${shown}, which is no #route (#/ or #!): it was left out, and the page opens at its top.`);
   };
   note("The address given", parseAddress(rawUrl));
