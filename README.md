@@ -190,7 +190,7 @@ The folder a run saves in has to be new, empty or hold an earlier run; the `.DS_
 
 Installed globally (`npm install -g easyscreenshotkit`), the command is `easyscreenshotkit`. npx keeps the copy an earlier run fetched, so `npx easyscreenshotkit@latest` is how you get a newer version.
 
-It needs Node 22 or newer and Chrome, Chromium, Edge or Brave. Set `CHROME_PATH` to pick the browser. There are no npm dependencies and nothing is downloaded: easyscreenshotkit drives the browser you already have over the Chrome DevTools Protocol, with a throwaway profile. On Linux and macOS the browser opens a socket in the temp folder and does not start when the temp folder's path is too long for one, over about 60 characters; the run says so, and `TMPDIR=/tmp` fixes it.
+It needs Node 22 or newer and Chrome, Chromium, Edge or Brave. Set `CHROME_PATH` to pick the browser. There are no npm dependencies and nothing is downloaded: easyscreenshotkit drives the browser you already have over the Chrome DevTools Protocol, with a throwaway profile. That browser refuses every download a page starts, such as a link or a redirect to a file, so a site cannot save a file on your machine. On Linux and macOS the browser opens a socket in the temp folder and does not start when the temp folder's path is too long for one, over about 60 characters; the run says so, and `TMPDIR=/tmp` fixes it.
 
 ## Screenshots for a web app manifest
 

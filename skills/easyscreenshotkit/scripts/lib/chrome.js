@@ -200,6 +200,12 @@ async function launch({ lang = "", args = [] } = {}) {
         base = `http://127.0.0.1:${port}`;
         const version = await (await fetch(`${base}/json/version`, { signal: AbortSignal.timeout(5_000) })).json();
         browser = await connect(version.webSocketDebuggerUrl);
+        // A page cannot make the browser save a file: a download it starts
+        // (a link to an attachment, a redirect to one) is refused before
+        // anything is written, in the Downloads folder or anywhere else.
+        // Each tab is told the same (see openTab), for a browser that does
+        // not know this command.
+        await browser.send("Browser.setDownloadBehavior", { behavior: "deny" }, 5_000).catch(() => {});
         // Read now: a browser that is quitting removes the link to it
         // before the folder, and a stop can land in between.
         started.lock = lockFolderOf(profile);
@@ -285,6 +291,8 @@ async function openTab(chrome, device, { lang = "", theme = "light", reducedMoti
   cdp.targetId = targetId;
   try {
     await cdp.send("Page.enable");
+    // No download either, as the browser is told in launch().
+    await cdp.send("Page.setDownloadBehavior", { behavior: "deny" }, 5_000).catch(() => {});
     await cdp.send("Emulation.setDeviceMetricsOverride", {
       width: device.width,
       height: device.height,

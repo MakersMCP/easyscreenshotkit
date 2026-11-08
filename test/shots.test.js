@@ -162,9 +162,9 @@ async function fixture() {
 
 // The CLI in a child process. Not spawnSync: the test's own server must go on
 // answering while the child runs.
-function runCli(args) {
+function runCli(args, { env = process.env } = {}) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [CLI, ...args]);
+    const child = spawn(process.execPath, [CLI, ...args], { env });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (d) => (stdout += d));
@@ -996,6 +996,53 @@ test("a bot check instead of the home page stops the run and leaves nothing behi
   try {
     await assert.rejects(takeShots(`${origin}/docs`, { dir, pages: 1, timeLimit: 50_000 }), /bot check \("Just a moment\.\.\."\)/);
     assert.equal(fs.existsSync(dir), false);
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// The files under dir, as paths inside it, that test(name, bytes) picks.
+function filesUnder(dir, test) {
+  const found = [];
+  const walk = (at) => {
+    for (const entry of fs.readdirSync(at, { withFileTypes: true })) {
+      const file = path.join(at, entry.name);
+      if (entry.isDirectory()) walk(file);
+      else if (entry.isFile() && test(entry.name, fs.readFileSync(file))) found.push(path.relative(dir, file));
+    }
+  };
+  walk(dir);
+  return found;
+}
+
+// A page that sends the browser to a file served as an attachment, as a
+// download link does, a moment after it loads. Chrome on Linux saves a
+// download in the Downloads folder of the home it runs with; the run's
+// browser saves nothing, there or anywhere else.
+const DOWNLOAD = "written by the site\n";
+const fromTheSite = (name, bytes) => /from-the-site|\.crdownload$/.test(name) || bytes.toString() === DOWNLOAD;
+
+test("a site cannot make the browser save a file", { skip: noBrowser || (process.platform !== "linux" && "Chrome reads where it saves a download from HOME on Linux only"), timeout: 120_000 }, async () => {
+  const seen = [];
+  const { server, origin } = await serve((req, res) => {
+    seen.push(req.url);
+    if (req.url === "/") return res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Download", '<h1>Download</h1><div style="height:1400px"><a href="/file.bin">Get the file</a></div><script>setTimeout(() => { location.href = "/file.bin"; }, 300);</script>'));
+    if (req.url === "/file.bin") return res.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Disposition": 'attachment; filename="from-the-site.txt"' }).end(DOWNLOAD);
+    res.writeHead(404).end("not found");
+  });
+  const root = tempDir();
+  const home = path.join(root, "home");
+  fs.mkdirSync(home);
+  const env = { ...process.env, HOME: home };
+  delete env.XDG_CONFIG_HOME;
+  delete env.XDG_DOWNLOAD_DIR;
+  try {
+    const run = await runCli([origin, "--pages", "1", "--sizes", "desktop", "--out", path.join(root, "shots")], { env });
+    assert.equal(run.status, 0, run.stderr);
+    assert.ok(seen.includes("/file.bin"), "the page sent the browser to the file");
+    assert.deepEqual(filesUnder(root, fromTheSite), []);
+    assert.deepEqual(fs.readdirSync(path.join(root, "shots")).sort(), ["01-home-desktop.png", "SCREENSHOTS.md", "manifest.json", "sheet.png"]);
   } finally {
     server.close();
     fs.rmSync(root, { recursive: true, force: true });

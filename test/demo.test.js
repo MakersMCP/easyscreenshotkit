@@ -724,6 +724,53 @@ test("a demo that fails or is stopped leaves an earlier demo as it was and adds 
   }
 });
 
+// A step that clicks a link to a file served as an attachment. Chrome on
+// Linux saves a download in the Downloads folder of the home it runs with;
+// the demo's browser saves nothing, there or anywhere else.
+test("a click on a download link saves no file", { skip: missing || (process.platform !== "linux" && "Chrome reads where it saves a download from HOME on Linux only"), timeout: 180_000 }, async () => {
+  const seen = [];
+  const { server, origin } = await serve((req, res) => {
+    seen.push(req.url);
+    if (req.url === "/") return res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Get it | Acme", '<h1>Get it</h1><p style="font-size:32px;padding:0 40px"><a href="/file.bin">Get the file</a></p><div style="height:1400px;background:rgb(0,160,0)"></div>'));
+    if (req.url === "/file.bin") return res.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Disposition": 'attachment; filename="from-the-site.txt"' }).end("written by the site\n");
+    res.writeHead(404).end("not found");
+  });
+  const root = tempDir();
+  const home = path.join(root, "home");
+  fs.mkdirSync(home);
+  const steps = path.join(root, "get.yaml");
+  fs.writeFileSync(steps, 'steps:\n  - visit: /\n  - click: "text=Get the file"\n    zoom: false\n  - wait: 1\n');
+  const env = { ...process.env, HOME: home };
+  delete env.XDG_CONFIG_HOME;
+  delete env.XDG_DOWNLOAD_DIR;
+  // Every file under root that the site sent, by its name or its bytes.
+  const fromTheSite = () => {
+    const found = [];
+    const walk = (at) => {
+      for (const entry of fs.readdirSync(at, { withFileTypes: true })) {
+        const file = path.join(at, entry.name);
+        if (entry.isDirectory()) walk(file);
+        else if (entry.isFile() && (/from-the-site|\.crdownload$/.test(entry.name) || fs.readFileSync(file, "utf8") === "written by the site\n")) found.push(path.relative(root, file));
+      }
+    };
+    walk(root);
+    return found;
+  };
+  try {
+    const child = spawn(process.execPath, [CLI, "demo", origin, "--steps", steps, "--out", path.join(root, "demo"), "--no-gif"], { env });
+    let stderr = "";
+    child.stderr.on("data", (d) => (stderr += d));
+    const status = await new Promise((resolve) => child.on("close", resolve));
+    assert.equal(status, 0, stderr);
+    assert.ok(seen.includes("/file.bin"), "the click sent the browser to the file");
+    assert.deepEqual(fromTheSite(), []);
+    assert.deepEqual(fs.readdirSync(path.join(root, "demo")).sort(), ["demo.mp4", "poster.png", "steps.json"]);
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a step that points at nothing stops the run with its number and leaves nothing behind", { skip: missing, timeout: 120_000 }, async () => {
   const { server, origin } = await fixture();
   const root = tempDir();
