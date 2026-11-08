@@ -217,11 +217,17 @@ test("a run's folder: refused when it holds someone else's files, and an earlier
     fs.writeFileSync(path.join(dir, rel), text);
   };
   try {
+    // A new folder that Finder or Explorer has shown is still new; what they
+    // left there stays.
+    put(".DS_Store", "finder");
+    put("Thumbs.db", "explorer");
+    openShots(dir).abort();
+    assert.deepEqual(fs.readdirSync(dir).sort(), [".DS_Store", "Thumbs.db"]);
     put("notes.txt", "mine");
     assert.throws(() => openShots(dir), /not empty and holds no earlier easyscreenshotkit run\. Pick another folder with --out\./);
     assert.throws(() => prepareDir(dir), /not empty/);
-    assert.deepEqual(fs.readdirSync(dir), ["notes.txt"]);
-    fs.rmSync(path.join(dir, "notes.txt"));
+    assert.deepEqual(fs.readdirSync(dir).sort(), [".DS_Store", "Thumbs.db", "notes.txt"]);
+    for (const name of [".DS_Store", "Thumbs.db", "notes.txt"]) fs.rmSync(path.join(dir, name));
     // A run from 0.1.1, with files of the user's next to it and in pwa/.
     put("manifest.json", JSON.stringify({ version: 1, tool: "easyscreenshotkit 0.1.1" }));
     for (const file of ["01-home-desktop.png", "02-pricing-desktop.png", "sheet.png", "SCREENSHOTS.md", "pwa/manifest-screenshots.json", "pwa/screenshots/wide-01.png"]) put(file, `old ${file}`);

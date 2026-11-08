@@ -115,11 +115,13 @@ test("a demo never writes into a folder that holds someone else's files, and its
     fs.mkdirSync(path.join(dir, "inner"));
     fs.writeFileSync(path.join(dir, "inner", "steps.json"), JSON.stringify({ steps: [{ wait: 1 }] }));
     assert.throws(() => openDemo(path.join(dir, "inner"), { steps: path.join(dir, "inner", "steps.json") }), /inner\/steps\.json is the steps file this demo follows, and the demo saves its own steps\.json in its place\./);
-    // A folder that holds only the steps file is the run's to use.
+    // A folder that holds only the steps file is the run's to use, and so is
+    // one that Explorer has shown.
     fs.rmSync(path.join(dir, "inner", "steps.json"));
     fs.writeFileSync(path.join(dir, "inner", "flow.yaml"), "steps:\n  - wait: 1\n");
+    fs.writeFileSync(path.join(dir, "inner", "desktop.ini"), "[.ShellClassInfo]");
     openDemo(path.join(dir, "inner"), { steps: path.join(dir, "inner", "flow.yaml") }).abort();
-    assert.deepEqual(fs.readdirSync(path.join(dir, "inner")), ["flow.yaml"]);
+    assert.deepEqual(fs.readdirSync(path.join(dir, "inner")).sort(), ["desktop.ini", "flow.yaml"]);
     fs.rmSync(path.join(dir, "inner"), { recursive: true });
     // A demo from when the tool was called easyscreenshot counts too.
     fs.writeFileSync(path.join(dir, "steps.json"), JSON.stringify({ version: 1, kind: "demo", tool: "easyscreenshot 0.1.0" }));

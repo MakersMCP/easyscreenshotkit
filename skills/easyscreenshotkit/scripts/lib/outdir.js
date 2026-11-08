@@ -123,9 +123,13 @@ function makeFolder(dir, target) {
   }
 }
 
+// Files a file browser leaves in a folder it has shown (Finder, Windows
+// Explorer): they make no folder anyone's, and a run leaves them be.
+const SHOWN = new Set([".ds_store", "thumbs.db", "desktop.ini"]);
+
 // The folder holds nothing, or an earlier run of the same kind.
 function check(dir, target, spec) {
-  const names = fs.readdirSync(target).filter((name) => !PART.test(name) && !(spec.ignore && spec.ignore(name, target)));
+  const names = fs.readdirSync(target).filter((name) => !PART.test(name) && !SHOWN.has(name.toLowerCase()) && !(spec.ignore && spec.ignore(name, target)));
   if (!names.length) return;
   let earlier = null;
   try {
