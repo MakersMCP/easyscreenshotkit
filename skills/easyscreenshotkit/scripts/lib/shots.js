@@ -29,7 +29,7 @@ const { homeOf, pageKey, routeOf, viewKey, pathOf, pageUrl, siteOf, fold, kindOf
 const { pngSize, tagPng } = require("./png");
 const { PWA_SHOTS, LOOKED_AT, planPwa, checkManifest } = require("./pwa");
 const { renderSheet } = require("./sheet");
-const { begin, checkDir } = require("./outdir");
+const { begin, checkDir, realFolder } = require("./outdir");
 const { setTimeLimit, timeLeft, sleep } = require("./time");
 const version = require("./version");
 
@@ -145,9 +145,12 @@ const PWA_FILES = [
   [PWA_DIR, /^manifest-screenshots\.json$/],
 ];
 
-// An earlier run's files in dir, as paths inside it.
+// An earlier run's files in dir, as paths inside it. Those in pwa/ only
+// when pwa and pwa/screenshots are folders of their own: through a link,
+// they would be someone's files elsewhere.
 function earlierFiles(dir) {
   const files = (sub, name) => {
+    if (sub && !realFolder(dir, sub)) return [];
     try {
       return fs.readdirSync(path.join(dir, sub), { withFileTypes: true }).filter((entry) => !entry.isDirectory() && name.test(entry.name)).map((entry) => path.join(sub, entry.name));
     } catch {

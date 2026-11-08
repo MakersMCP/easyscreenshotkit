@@ -293,6 +293,32 @@ test("a run's folder: refused when it holds someone else's files, and an earlier
     assert.throws(() => openShots(path.join(dir, "keep-me.txt")), /EEXIST|ENOTDIR/);
     fs.rmSync(path.join(dir, "pwa"));
 
+    // A pwa that is a link to a folder elsewhere: a run without --pwa ends
+    // well and leaves the link and what it leads to alone; one with --pwa is
+    // refused before it starts.
+    const elsewhere = path.join(root, "elsewhere");
+    fs.mkdirSync(path.join(elsewhere, "screenshots"), { recursive: true });
+    fs.writeFileSync(path.join(elsewhere, "manifest-screenshots.json"), "mine");
+    fs.writeFileSync(path.join(elsewhere, "screenshots", "wide-01.png"), "mine");
+    let linked = true;
+    try {
+      fs.symlinkSync(elsewhere, path.join(dir, "pwa"), "junction");
+    } catch {
+      // Windows without the right to make links.
+      linked = false;
+    }
+    if (linked) {
+      const theirs = snapshot(elsewhere);
+      const through = openShots(dir);
+      through.write("01-home-desktop.png", "through");
+      through.write("manifest.json", JSON.stringify({ version: 1, tool: "easyscreenshotkit 0.1.2" }));
+      through.commit(["01-home-desktop.png", "manifest.json"]);
+      assert.deepEqual(snapshot(elsewhere), theirs);
+      assert.ok(fs.lstatSync(path.join(dir, "pwa")).isSymbolicLink());
+      assert.throws(() => openShots(dir, { pwa: true }), /shots\/pwa is a link, and this run saves a folder of that name there\./);
+      fs.rmSync(path.join(dir, "pwa"));
+    }
+
     // A run from when the tool was called easyscreenshot counts too, another
     // tool's does not.
     put("manifest.json", JSON.stringify({ version: 1, tool: "easyscreenshot 0.1.0" }));

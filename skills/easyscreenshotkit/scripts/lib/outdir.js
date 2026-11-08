@@ -136,12 +136,25 @@ function check(dir, target, spec) {
   if (!earlier || !spec.accepts(earlier)) throw new Error(spec.refusal(dir));
 }
 
+// Whether rel is a folder inside root, each folder on the way a folder of
+// its own and not a link to one elsewhere (or a Windows junction): a run
+// moves and removes nothing outside the folder it saves in.
+function realFolder(root, rel) {
+  let at = root;
+  for (const name of String(rel).split(/[\\/]/).filter(Boolean)) {
+    at = path.join(at, name);
+    const s = lstat(at);
+    if (!s || !s.isDirectory()) return false;
+  }
+  return true;
+}
+
 // Checked before any work, so a run does not fail at its end over a name it
 // cannot save under.
 function claim(dir, target, spec) {
   for (const name of spec.folders || []) {
     const s = lstat(path.join(target, name));
-    if (s && !s.isDirectory()) throw new Error(`${path.join(dir, name)} is a file, and this run saves a folder of that name there. Move it, or pick another folder with --out.`);
+    if (s && !s.isDirectory()) throw new Error(`${path.join(dir, name)} is ${s.isSymbolicLink() ? "a link" : "a file"}, and this run saves a folder of that name there. Move it, or pick another folder with --out.`);
   }
   for (const name of spec.files || []) {
     const s = lstat(path.join(target, name));
@@ -268,6 +281,7 @@ function commit(run, outputs) {
   // the run: what cannot be removed now, a later run removes.
   remove(part);
   for (const rel of spec.tidy || []) {
+    if (!realFolder(target, rel)) continue;
     try {
       fs.rmdirSync(path.join(target, rel));
     } catch {
@@ -490,4 +504,4 @@ function stopOnSignals({ name, json = false }) {
   }
 }
 
-module.exports = { begin, checkDir, stopAll, stopOnSignals, sweep, toMake, PART, STALE };
+module.exports = { begin, checkDir, stopAll, stopOnSignals, sweep, toMake, realFolder, PART, STALE };
