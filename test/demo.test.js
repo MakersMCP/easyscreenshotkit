@@ -122,7 +122,24 @@ test("a demo never writes into a folder that holds someone else's files, and its
     fs.writeFileSync(path.join(dir, "inner", "desktop.ini"), "[.ShellClassInfo]");
     openDemo(path.join(dir, "inner"), { steps: path.join(dir, "inner", "flow.yaml") }).abort();
     assert.deepEqual(fs.readdirSync(path.join(dir, "inner")).sort(), ["desktop.ini", "flow.yaml"]);
+    // The steps file is told by what the disk says it is, not by its path:
+    // reached through a link to its folder it is still the steps file, and
+    // under a name the demo saves (here a second name of the same file, as
+    // Steps.json is steps.json on a disk that ignores letter case) it is
+    // refused.
+    let linked = true;
+    try {
+      fs.symlinkSync(path.join(dir, "inner"), path.join(dir, "through"), "junction");
+    } catch {
+      // Windows without the right to make links.
+      linked = false;
+    }
+    if (linked) openDemo(path.join(dir, "inner"), { steps: path.join(dir, "through", "flow.yaml") }).abort();
+    fs.linkSync(path.join(dir, "inner", "flow.yaml"), path.join(dir, "inner", "steps.json"));
+    assert.throws(() => openDemo(path.join(dir, "inner"), { steps: path.join(dir, "inner", "flow.yaml") }), /inner\/flow\.yaml is the steps file this demo follows, and the demo saves its own steps\.json in its place\./);
+    assert.deepEqual(fs.readdirSync(path.join(dir, "inner")).sort(), ["desktop.ini", "flow.yaml", "steps.json"]);
     fs.rmSync(path.join(dir, "inner"), { recursive: true });
+    fs.rmSync(path.join(dir, "through"), { force: true });
     // A demo from when the tool was called easyscreenshot counts too.
     fs.writeFileSync(path.join(dir, "steps.json"), JSON.stringify({ version: 1, kind: "demo", tool: "easyscreenshot 0.1.0" }));
     openDemo(dir, { steps: path.join(dir, "demo.yaml") }).abort();

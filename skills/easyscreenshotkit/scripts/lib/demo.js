@@ -135,26 +135,41 @@ const isFile = (at) => {
   return Boolean(s) && !s.isDirectory();
 };
 
+// A file as the disk knows it, whatever path or name reaches it: on a disk
+// that ignores letter case (macOS, Windows) Steps.json is steps.json, and a
+// link or another spelling of the folder leads to the same file. "" when
+// nothing is there, or the disk numbers no files.
+function fileId(at) {
+  try {
+    const s = fs.statSync(at, { bigint: true });
+    return s.ino ? `${s.dev}:${s.ino}` : "";
+  } catch {
+    return "";
+  }
+}
+
 // The run's folder, for outdir.js: created when missing, used when it is
 // empty or an earlier demo made it, whose files the new run's replace once
 // it has ended well, refused when it holds anything else, so a run never
 // mixes into someone's own files. The steps file the run follows may sit in
-// it: it is never moved, nor replaced.
+// it, under any name the demo does not save: it is never moved, nor
+// replaced. It is told by what the disk says it is, not by its path.
 function demoSpec({ steps = "", tour = false } = {}) {
   const keep = steps ? path.resolve(steps) : "";
+  const keepId = keep ? fileId(keep) : "";
+  const isKeep = (at) => Boolean(keep) && (path.resolve(at) === keep || (keepId !== "" && fileId(at) === keepId));
   const names = [...RUN_FILES, ...(tour ? [TOUR_FILE] : [])];
   return {
     marker: "steps.json",
     // Demos from when the tool was called easyscreenshot count too.
     accepts: (old) => old.kind === "demo" && /^easyscreenshot(kit)? /.test(String(old.tool || "")),
     refusal: (dir) => `${dir} is not empty and holds no earlier easyscreenshotkit demo. Pick another folder with --out.`,
-    earlier: (target) => names.filter((name) => path.resolve(target, name) !== keep && isFile(path.join(target, name))),
-    ignore: (name, target) => FRAMES.test(name) || path.resolve(target, name) === keep,
+    earlier: (target) => names.filter((name) => isFile(path.join(target, name)) && !isKeep(path.join(target, name))),
+    ignore: (name, target) => FRAMES.test(name) || isKeep(path.join(target, name)),
     files: names,
     claim: (dir, target) => {
-      if (keep && path.dirname(keep) === target && names.includes(path.basename(keep))) {
-        throw new Error(`${steps} is the steps file this demo follows, and the demo saves its own ${path.basename(keep)} in its place. Give the steps file another name, or pick another folder with --out.`);
-      }
+      const name = names.find((name) => isKeep(path.join(target, name)));
+      if (name) throw new Error(`${steps} is the steps file this demo follows, and the demo saves its own ${name} in its place. Give the steps file another name, or pick another folder with --out.`);
     },
     leftovers: FRAMES,
   };
