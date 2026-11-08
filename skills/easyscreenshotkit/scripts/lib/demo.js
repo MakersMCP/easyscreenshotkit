@@ -195,6 +195,57 @@ const round = (value, places = 3) => Math.round(value * 10 ** places) / 10 ** pl
 // the one its seconds say.
 const frameAt = (t, fps) => Math.round(round(t) * fps);
 
+// steps.json's steps: each step the run took, with where it starts and
+// ends in seconds and in the frames those seconds fall on. toVideo(t,
+// point): where a point of the page is in the video at a moment.
+function stepEntries(records, { fps, toVideo }) {
+  const frameOf = (t) => frameAt(t, fps);
+  return records.map((record) => {
+    const { step } = record;
+    const written = asWritten(step);
+    const entry = { n: record.n, action: step.action, label: what(step) };
+    if (step.action === "visit") entry.url = record.url;
+    if (written.target) entry.target = targetText(written.target);
+    if (step.into) entry.target = targetText(step.into);
+    if (step.text !== undefined && step.action === "type") entry.text = step.text;
+    if (step.key) entry.key = step.key;
+    if (step.note) entry.note = step.note;
+    Object.assign(entry, { start: round(record.start), end: round(Math.max(record.start, record.end)), startFrame: frameOf(record.start), endFrame: frameOf(Math.max(record.start, record.end)) });
+    // Where and when the pointer pressed, in the video's pixels: for a
+    // callout, or a click sound laid on that frame.
+    if (record.at && record.pressed !== undefined) Object.assign(entry, { at: toVideo(record.pressed, record.at), pressedAt: round(record.pressed), pressedFrame: frameOf(record.pressed) });
+    else if (record.at) entry.at = toVideo(record.end, record.at);
+    if (record.opened) entry.opened = record.opened;
+    entry.page = record.url;
+    return entry;
+  });
+}
+
+// steps.json's pages: the pages in the order the video shows them, each
+// #route a page of its own, with where each starts and ends in seconds and
+// in frames; an address that comes again right after itself, or with
+// another anchor, is the same page. tour: the tour's pages, for why each
+// was taken.
+function pageEntries(take, { fps, tour = null }) {
+  const frameOf = (t) => frameAt(t, fps);
+  const changes = take.urls.filter((change, i) => i === 0 || viewOf(change.url) !== viewOf(take.urls[i - 1].url));
+  return changes.map((change, i) => {
+    const end = i + 1 < changes.length ? changes[i + 1].t : take.duration;
+    const known = take.pages.find((page) => page.url === change.url);
+    const picked = tour && tour.pages.find((page) => viewKey(page.url) === viewKey(change.url));
+    return {
+      n: i + 1,
+      url: change.url,
+      title: known ? known.title : "",
+      ...(picked ? { kind: picked.kind, why: picked.why } : {}),
+      start: round(change.t),
+      end: round(end),
+      startFrame: frameOf(change.t),
+      endFrame: frameOf(end),
+    };
+  });
+}
+
 function what(step) {
   if (step.label) return step.label;
   if (step.action === "visit") return `Open ${readable(step.url)}`;
@@ -357,50 +408,13 @@ async function makeDemo(rawUrl, options = {}) {
     }
 
     // Where each step lands in the video.
-    const frameOf = (t) => frameAt(t, fps);
     const toVideo = (t, point) => {
       const cam = cameraAt(drawn.regions, t, viewport);
       const k = layout.scale * cam.z;
       return [Math.round(layout.content.x + (point.x - cam.x) * k), Math.round(layout.content.y + (point.y - cam.y) * k)];
     };
-    const steps = records.map((record) => {
-      const { step } = record;
-      const written = asWritten(step);
-      const entry = { n: record.n, action: step.action, label: what(step) };
-      if (step.action === "visit") entry.url = record.url;
-      if (written.target) entry.target = targetText(written.target);
-      if (step.into) entry.target = targetText(step.into);
-      if (step.text !== undefined && step.action === "type") entry.text = step.text;
-      if (step.key) entry.key = step.key;
-      if (step.note) entry.note = step.note;
-      Object.assign(entry, { start: round(record.start), end: round(Math.max(record.start, record.end)), startFrame: frameOf(record.start), endFrame: frameOf(Math.max(record.start, record.end)) });
-      // Where and when the pointer pressed, in the video's pixels: for a
-      // callout, or a click sound laid on that frame.
-      if (record.at && record.pressed !== undefined) Object.assign(entry, { at: toVideo(record.pressed, record.at), pressedAt: round(record.pressed), pressedFrame: frameOf(record.pressed) });
-      else if (record.at) entry.at = toVideo(record.end, record.at);
-      if (record.opened) entry.opened = record.opened;
-      entry.page = record.url;
-      return entry;
-    });
-    // The pages in the order they were shown, each #route a page of its own;
-    // an address that comes again right after itself, or with another
-    // anchor, is the same page.
-    const changes = take.urls.filter((change, i) => i === 0 || viewOf(change.url) !== viewOf(take.urls[i - 1].url));
-    const pagesShown = changes.map((change, i) => {
-      const end = i + 1 < changes.length ? changes[i + 1].t : take.duration;
-      const known = take.pages.find((page) => page.url === change.url);
-      const picked = tour && tour.pages.find((page) => viewKey(page.url) === viewKey(change.url));
-      return {
-        n: i + 1,
-        url: change.url,
-        title: known ? known.title : "",
-        ...(picked ? { kind: picked.kind, why: picked.why } : {}),
-        start: round(change.t),
-        end: round(end),
-        startFrame: frameOf(change.t),
-        endFrame: frameOf(end),
-      };
-    });
+    const steps = stepEntries(records, { fps, toVideo });
+    const pagesShown = pageEntries(take, { fps, tour });
     const total = drawn.frames;
     manifest = {
       version: 1,
@@ -492,4 +506,4 @@ async function main(argv) {
   }
 }
 
-module.exports = { main, makeDemo, parseDemo, prepareDemoDir, openDemo, routesNote, what, frameAt, summary, USAGE };
+module.exports = { main, makeDemo, parseDemo, prepareDemoDir, openDemo, routesNote, what, frameAt, stepEntries, pageEntries, summary, USAGE };

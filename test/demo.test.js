@@ -12,7 +12,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const test = require("node:test");
-const { parseDemo, prepareDemoDir, openDemo, makeDemo, routesNote, what, frameAt } = require("../skills/easyscreenshotkit/scripts/lib/demo");
+const { parseDemo, prepareDemoDir, openDemo, makeDemo, routesNote, what, frameAt, stepEntries, pageEntries } = require("../skills/easyscreenshotkit/scripts/lib/demo");
 const { pickPages } = require("../skills/easyscreenshotkit/scripts/lib/tour");
 const { setTimeLimit } = require("../skills/easyscreenshotkit/scripts/lib/time");
 const { readSteps } = require("../skills/easyscreenshotkit/scripts/lib/steps");
@@ -75,6 +75,33 @@ test("a step's frame is the one its seconds in steps.json say, also half a frame
   assert.equal(frameAt(2, 30), 60);
   assert.equal(frameAt(0, 24), 0);
   for (let t = 0; t < 30; t += 0.0137) assert.equal(frameAt(t, 30), Math.round((Math.round(t * 1000) / 1000) * 30), String(t));
+  // steps.json as the demo writes it: every frame of a step and of a page
+  // is the one the seconds next to it say.
+  const records = [
+    { n: 1, step: { action: "visit", url: "https://acme.com/" }, url: "https://acme.com/", start: 0, end: 1.2 },
+    { n: 2, step: { action: "click", target: { text: "Pricing" } }, url: "https://acme.com/", start: 5.6166, end: 7.0166, at: { x: 10, y: 20 }, pressed: 5.6166, opened: "https://acme.com/pricing" },
+  ];
+  const steps = stepEntries(records, { fps: 30, toVideo: () => [100, 200] });
+  assert.deepEqual(
+    steps.map((s) => [s.start, s.startFrame, s.end, s.endFrame, s.pressedAt, s.pressedFrame]),
+    [
+      [0, 0, 1.2, 36, undefined, undefined],
+      [5.617, 169, 7.017, 211, 5.617, 169],
+    ],
+  );
+  const take = { urls: [{ t: 0, url: "https://acme.com/" }, { t: 5.6166, url: "https://acme.com/pricing" }], pages: [], duration: 9.98335 };
+  const pages = pageEntries(take, { fps: 30 });
+  assert.deepEqual(
+    pages.map((p) => [p.start, p.startFrame, p.end, p.endFrame]),
+    [
+      [0, 0, 5.617, 169],
+      [5.617, 169, 9.983, 299],
+    ],
+  );
+  for (const entry of [...steps, ...pages]) {
+    assert.equal(entry.startFrame, Math.round(entry.start * 30));
+    assert.equal(entry.endFrame, Math.round(entry.end * 30));
+  }
 });
 
 test("frames that cannot be saved are told by the folder the demo saves in, not the part of it that is gone by then", async () => {
