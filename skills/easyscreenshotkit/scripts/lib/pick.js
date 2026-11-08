@@ -245,15 +245,34 @@ function viewOf(raw) {
   return routeOf(text) ? text : text.split("#")[0];
 }
 
+// Characters that act on a terminal, or turn the text after them around,
+// instead of showing: control characters (ESC, BEL, a line break), the
+// marks and overrides that set the direction of text, and the line and
+// paragraph separators. MARKS are those that only nudge the direction of
+// the letters next to them, as right-to-left text uses them.
+const ACTING = /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g;
+const MARKS = /^[\u061c\u200e\u200f]$/;
+
 // An address or a part of one as a person reads it, its letters decoded:
 // /uygulama%20%C3%A7al%C4%B1%C5%9Fma/ is /uygulama çalışma/. An escape that
-// stands for /, ?, # or the like stays as it is.
+// stands for /, ?, # or the like stays as it is, and so does one for a
+// character that would act on the terminal it is printed on (%1B, %0A).
 function readable(text) {
+  let out = String(text);
   try {
-    return decodeURI(String(text));
+    out = decodeURI(out);
   } catch {
-    return String(text);
+    // An escape that is not one: the text as it is written.
   }
+  return out.replace(ACTING, encodeURIComponent);
+}
+
+// Text for the terminal: a page's words or an address in a summary, a log
+// line or an error. Each character that would act on the terminal is
+// escaped as in an address, except the line breaks between the lines and
+// the marks right-to-left words carry.
+function printable(text) {
+  return String(text).replace(ACTING, (c) => (c === "\n" || MARKS.test(c) ? c : encodeURIComponent(c)));
 }
 
 // What an address shows after its host, as a person reads it: the path,
@@ -594,6 +613,7 @@ module.exports = {
   viewKey,
   viewOf,
   readable,
+  printable,
   pathOf,
   linkUrl,
   pageUrl,

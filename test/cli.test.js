@@ -151,6 +151,33 @@ test("the summary and the sheet show a view's #route with its path", () => {
   assert.match(sheetHtml(manifest, "shots"), /<span>\/app\/#\/plants<\/span>/);
 });
 
+test("a path, a #route or a page's words that would act on the terminal are printed escaped", () => {
+  const { pathOf, printable } = require("../skills/easyscreenshotkit/scripts/lib/pick");
+  // An escape sequence that sets the terminal's title, then a line break
+  // and a line of its own, in a link's #route.
+  const evil = "https://acme.com/evil/#/%1B]0;owned%07%0A  Note    Every page was taken";
+  assert.equal(pathOf(evil), "/evil/#/%1B]0;owned%07%0A  Note    Every page was taken");
+  assert.equal(pathOf("https://acme.com/a%E2%80%AEb%0D/"), "/a%E2%80%AEb%0D/");
+  assert.equal(pathOf("https://acme.com/%C3%BCr%C3%BCnler/#/%D1%80%D0%B0"), "/ürünler/#/ра");
+  const shot = { file: "01-evil-desktop.png", size: "desktop", full: false, theme: "light", width: 3200, height: 1800 };
+  const manifest = {
+    url: "https://acme.com/",
+    site: "Acme",
+    pages: [{ n: 1, slug: "evil", url: "https://acme.com/evil/", why: 'menu link "\u001b]0;owned\u0007\u202eevil"', shots: [shot] }],
+    sheet: null,
+    pwa: null,
+    skipped: [{ url: evil, reason: "a #route, which the tour does not follow: give it with --page" }],
+    notes: [],
+  };
+  const text = printable(summary({ dir: "shots", manifest }));
+  assert.doesNotMatch(text, /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/);
+  assert.match(text, /\(menu link "%1B\]0;owned%07%E2%80%AEevil"\)/);
+  assert.match(text, /Skipped \/evil\/#\/%1B\]0;owned%07%0A {2}Note {4}Every page was taken \(a #route/);
+  assert.ok(!text.split("\n").some((line) => line.startsWith("  Note")), "no line of its own");
+  // The marks right-to-left words carry, and line breaks between lines, stay.
+  assert.equal(printable("מחירים\u200f\nnext"), "מחירים\u200f\nnext");
+});
+
 test("the pages left out: those opened first, then the #route links, then the other links, 40 at most, with the #route links past them counted", () => {
   const ROUTE = "a #route, which the tour does not follow: give it with --page";
   const rejected = [{ url: "https://acme.com/start", reason: "redirected to a sign-in page" }, { url: "https://acme.com/app/#/private", reason: "the page answered 404" }];

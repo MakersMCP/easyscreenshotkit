@@ -18,7 +18,7 @@ const fs = require("fs");
 const path = require("path");
 const { launch } = require("./chrome");
 const { normalizeUrl } = require("./shots");
-const { siteOf, routeOf, viewKey, viewOf, pathOf, readable } = require("./pick");
+const { siteOf, routeOf, viewKey, viewOf, pathOf, readable, printable } = require("./pick");
 const { Recorder } = require("./record");
 const { readSteps, toYaml, targetText } = require("./steps");
 const { pickPages, tourSteps } = require("./tour");
@@ -190,7 +190,7 @@ const round = (value, places = 3) => Math.round(value * 10 ** places) / 10 ** pl
 
 function what(step) {
   if (step.label) return step.label;
-  if (step.action === "visit") return `Open ${step.url}`;
+  if (step.action === "visit") return `Open ${readable(step.url)}`;
   if (step.action === "scroll") return step.by !== undefined ? `Scroll ${step.by > 0 ? "down" : "up"} ${Math.abs(step.by)} px` : typeof step.to === "object" ? `Scroll to ${targetText(step.to)}` : `Scroll to ${step.to}`;
   if (step.action === "click") return `Click ${targetText(step.target)}`;
   if (step.action === "hover") return `Point at ${targetText(step.target)}`;
@@ -473,14 +473,14 @@ async function main(argv) {
       clean: options.clean,
       gif: options.gif,
       timeLimit: options.timeout * 1000,
-      log: options.json ? () => {} : (line) => process.stderr.write(`${line}\n`),
+      log: options.json ? () => {} : (line) => process.stderr.write(`${printable(line)}\n`),
     });
-    process.stdout.write(options.json ? JSON.stringify(result.manifest, null, 2) + "\n" : summary(result) + "\n");
+    process.stdout.write(options.json ? JSON.stringify(result.manifest, null, 2) + "\n" : printable(summary(result)) + "\n");
   } catch (err) {
     if (options.json) process.stdout.write(JSON.stringify({ ok: false, error: err.message }) + "\n");
-    process.stderr.write(`easyscreenshotkit demo: ${err.message}\n`);
+    process.stderr.write(`easyscreenshotkit demo: ${printable(err.message)}\n`);
     process.exit(1);
   }
 }
 
-module.exports = { main, makeDemo, parseDemo, prepareDemoDir, openDemo, routesNote, summary, USAGE };
+module.exports = { main, makeDemo, parseDemo, prepareDemoDir, openDemo, routesNote, what, summary, USAGE };

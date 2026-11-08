@@ -3,7 +3,7 @@
 
 const fs = require("fs");
 const { takeShots, normalizeUrl } = require("./lib/shots");
-const { pathOf } = require("./lib/pick");
+const { pathOf, printable } = require("./lib/pick");
 const { stopOnSignals } = require("./lib/outdir");
 const { checkManifest, describeCheck } = require("./lib/pwa");
 const version = require("./lib/version");
@@ -115,10 +115,10 @@ async function pwaCheck(options) {
     report = await checkManifest(target);
   } catch (err) {
     if (options.json) process.stdout.write(JSON.stringify({ ok: false, error: err.message }) + "\n");
-    process.stderr.write(`easyscreenshotkit: ${err.message}\n`);
+    process.stderr.write(`easyscreenshotkit: ${printable(err.message)}\n`);
     process.exit(1);
   }
-  process.stdout.write(options.json ? JSON.stringify(report, null, 2) + "\n" : describeCheck(report) + "\n");
+  process.stdout.write(options.json ? JSON.stringify(report, null, 2) + "\n" : printable(describeCheck(report)) + "\n");
   process.exitCode = report.ok ? 0 : 1;
 }
 
@@ -184,12 +184,12 @@ async function main() {
       clean: options.clean,
       pwa: options.pwa,
       timeLimit: options.timeout * 1000,
-      log: options.json ? () => {} : (line) => process.stderr.write(`${line}\n`),
+      log: options.json ? () => {} : (line) => process.stderr.write(`${printable(line)}\n`),
     });
-    process.stdout.write(options.json ? JSON.stringify(result.manifest, null, 2) + "\n" : summary(result) + "\n");
+    process.stdout.write(options.json ? JSON.stringify(result.manifest, null, 2) + "\n" : printable(summary(result)) + "\n");
   } catch (err) {
     if (options.json) process.stdout.write(JSON.stringify({ ok: false, error: err.message }) + "\n");
-    process.stderr.write(`easyscreenshotkit: ${err.message}\n`);
+    process.stderr.write(`easyscreenshotkit: ${printable(err.message)}\n`);
     process.exit(1);
   }
 }

@@ -12,7 +12,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const test = require("node:test");
-const { parseDemo, prepareDemoDir, openDemo, makeDemo, routesNote } = require("../skills/easyscreenshotkit/scripts/lib/demo");
+const { parseDemo, prepareDemoDir, openDemo, makeDemo, routesNote, what } = require("../skills/easyscreenshotkit/scripts/lib/demo");
 const { pickPages } = require("../skills/easyscreenshotkit/scripts/lib/tour");
 const { setTimeLimit } = require("../skills/easyscreenshotkit/scripts/lib/time");
 const { readSteps } = require("../skills/easyscreenshotkit/scripts/lib/steps");
@@ -53,6 +53,18 @@ test("demo options: defaults, flags, and what is refused", () => {
   assert.throws(() => parseDemo(["acme.com", "--steps", "a.yaml", "--page", "/x"]), /a steps file says which pages/);
   assert.throws(() => parseDemo(["acme.com", "--theme", "both"]), /light or dark/);
   assert.throws(() => parseDemo(["acme.com", "--wat"]), /Unknown option/);
+});
+
+test("a visit's label reads its address as a person does, the visit a steps file starts with too", () => {
+  // The address given, which a steps file that starts with another step
+  // opens first, comes escaped from the URL parser.
+  assert.equal(
+    what({ action: "visit", url: "http://127.0.0.1:19281/uygulama%20%C3%A7al%C4%B1%C5%9Fma/#/%C5%9Fehir/%C4%B0zmir" }),
+    "Open http://127.0.0.1:19281/uygulama çalışma/#/şehir/İzmir",
+  );
+  assert.equal(what({ action: "visit", url: "/uygulama çalışma/#/ayarlar" }), "Open /uygulama çalışma/#/ayarlar");
+  assert.equal(what({ action: "visit", url: "/100%-cotton" }), "Open /100%-cotton");
+  assert.equal(what({ action: "visit", url: "/pricing", label: "Prices" }), "Prices");
 });
 
 test("the CLI hands demo to its own command, with its own help", () => {
