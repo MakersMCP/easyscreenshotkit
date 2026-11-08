@@ -250,10 +250,22 @@ test("a run's folder: refused when it holds someone else's files, and an earlier
     assert.throws(() => stopped.write("02-x-desktop.png", "late"), /stopped/);
     assert.deepEqual(snapshot(dir), before, "a write after the stop does not make the part folder again");
 
-    // A commit that cannot finish puts back what it moved.
+    // A folder named like a picture of a run is refused before the run, as
+    // the pictures' names are known only as their pages are found.
     put("03-features-desktop.png/inside.txt", "a folder named like a file of the run");
+    assert.throws(() => openShots(dir), /shots\/03-features-desktop\.png is a folder named like the pictures this run saves there\. Move it, or pick another folder with --out\./);
+    put("pwa/screenshots/narrow-02.png/inside.txt", "the same in pwa/screenshots");
+    fs.renameSync(path.join(dir, "03-features-desktop.png"), path.join(root, "aside"));
+    assert.throws(() => openShots(dir, { pwa: true }), /shots\/pwa\/screenshots\/narrow-02\.png is a folder named like the pictures this run saves there\./);
+    openShots(dir).abort();
+    fs.rmSync(path.join(dir, "pwa", "screenshots", "narrow-02.png"), { recursive: true });
+
+    // A commit that cannot finish puts back what it moved: here a folder
+    // that came, while the run worked, where it saves one of its files.
     const held = snapshot(dir);
     const blocked = openShots(dir);
+    fs.renameSync(path.join(root, "aside"), path.join(dir, "03-features-desktop.png"));
+    const heldNow = Object.fromEntries(Object.entries(snapshot(dir)).filter(([rel]) => !rel.startsWith(".easyscreenshotkit-part-")));
     blocked.write("01-home-desktop.png", "new home");
     blocked.write("03-features-desktop.png", "new features");
     blocked.write("manifest.json", "{}");
@@ -261,8 +273,9 @@ test("a run's folder: refused when it holds someone else's files, and an earlier
       () => blocked.commit(["01-home-desktop.png", "03-features-desktop.png", "manifest.json"]),
       /^Error: Could not move this run's files into .*shots: .*03-features-desktop\.png: a folder of that name is in the way\. What the folder held before this run is as it was\.$/,
     );
-    assert.deepEqual(snapshot(dir), held);
+    assert.deepEqual(snapshot(dir), heldNow);
     fs.rmSync(path.join(dir, "03-features-desktop.png"), { recursive: true });
+    assert.deepEqual(snapshot(dir), held);
 
     // The part folder of a run killed outright an hour ago goes once a run
     // ends well; one whose process still runs, or that changed lately, stays.

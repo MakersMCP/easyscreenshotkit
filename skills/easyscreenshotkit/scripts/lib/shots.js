@@ -139,9 +139,11 @@ function normalizeUrl(raw) {
 // run at anything else in the folder. With --pwa, also these in pwa/ and
 // pwa/screenshots/.
 const RUN_FILE = /^(\d{2}-[a-z0-9-]+\.png|sheet\.png|manifest\.json|SCREENSHOTS\.md)$/;
+const PICTURE = /^\d{2}-[a-z0-9-]+\.png$/;
 const PWA_DIR = "pwa";
+const PWA_PICTURE = /^(wide|narrow)-\d{2}\.png$/;
 const PWA_FILES = [
-  [path.join(PWA_DIR, "screenshots"), /^(wide|narrow)-\d{2}\.png$/],
+  [path.join(PWA_DIR, "screenshots"), PWA_PICTURE],
   [PWA_DIR, /^manifest-screenshots\.json$/],
 ];
 
@@ -173,6 +175,21 @@ function shotsSpec({ pwa = false } = {}) {
     earlier: earlierFiles,
     files: ["manifest.json", "SCREENSHOTS.md", "sheet.png", ...(pwa ? [path.join(PWA_DIR, "manifest-screenshots.json")] : [])],
     folders: pwa ? [PWA_DIR, path.join(PWA_DIR, "screenshots")] : [],
+    // A picture's name is known only once its page is found, so a folder
+    // named like any of them is in the way, found before the run and not
+    // at its end.
+    claim: (dir, target) => {
+      for (const [sub, name] of [["", PICTURE], ...(pwa ? [[path.join(PWA_DIR, "screenshots"), PWA_PICTURE]] : [])]) {
+        let entries = [];
+        try {
+          entries = fs.readdirSync(path.join(target, sub), { withFileTypes: true });
+        } catch {
+          continue;
+        }
+        const folder = entries.find((entry) => entry.isDirectory() && name.test(entry.name));
+        if (folder) throw new Error(`${path.join(dir, sub, folder.name)} is a folder named like the pictures this run saves there. Move it, or pick another folder with --out.`);
+      }
+    },
     tidy: [path.join(PWA_DIR, "screenshots"), PWA_DIR],
   };
 }
