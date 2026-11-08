@@ -137,7 +137,7 @@ test("a #route is a view of its own; #/, #! and an anchor are not", () => {
   for (const none of ["https://acme.com/app/#/plants", "https://acme.com/#!inbox", "https://acme.com/#/", "https://acme.com/#!", "https://acme.com/#!/", "https://acme.com/#//", "https://acme.com/#", "https://acme.com/"]) assert.equal(anchor(none), "", none);
 });
 
-test("ranking: a #route link is never a candidate; routeLinks lists each view once, unless it is taken", () => {
+test("ranking: a link to a #route offers its page to the tour; routeLinks lists each view once, unless it is taken", () => {
   const links = [
     { href: "#/plants", text: "Plants", where: "header" },
     { href: "/#features", text: "Features", where: "header" },
@@ -149,15 +149,20 @@ test("ranking: a #route link is never a candidate; routeLinks lists each view on
     { href: "/pricing", text: "Pricing", where: "header" },
     { href: "/app/#/light/", text: "Light again", where: "footer" },
     { href: "https://other.com/#/x", text: "Partner", where: "footer" },
+    { href: "/docs/#/install", text: "Docs", where: "header" },
   ];
+  // Each link counts as one to its page, as it did before routes were
+  // kept: /docs/ for the docs, /app/ for the app's views, which is left
+  // out as an app's own page, and the home page for #/plants.
   const { candidates, skipped } = pick.rankLinks(links, ["https://acme.com/#/from-the-sitemap"], { home: HOME, keys: ["acme.com/app#/today"] });
-  assert.deepEqual(candidates.map((c) => new URL(c.url).pathname), ["/pricing"]);
-  assert.deepEqual(skipped.map((s) => [s.url, s.reason]), [["https://acme.com/login", "sign-in or sign-up page"]]);
+  assert.deepEqual(candidates.map((c) => [new URL(c.url).pathname, c.kind, c.why]), [["/pricing", "pricing", 'menu link "Pricing"'], ["/docs/", "docs", 'menu link "Docs"']]);
+  assert.deepEqual(skipped.map((s) => [s.url, s.reason]), [["https://acme.com/app/", "sign-in or sign-up page"], ["https://acme.com/login", "sign-in or sign-up page"]]);
   assert.deepEqual(
     pick.routeLinks(links, { home: HOME, keys: ["acme.com/app#/today"] }).map((s) => [s.url, s.reason]),
     [
       ["https://acme.com/#/plants", "a #route, which the tour does not follow: give it with --page"],
       ["https://acme.com/app/#/light", "a #route, which the tour does not follow: give it with --page"],
+      ["https://acme.com/docs/#/install", "a #route, which the tour does not follow: give it with --page"],
     ],
   );
   // The route the home page opened on is the home page.

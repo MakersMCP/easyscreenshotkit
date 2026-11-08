@@ -399,8 +399,9 @@ function whyOf(where, text, url) {
 // the addresses of pages taken already; keys: their keys (pageKey or
 // viewKey), when known. Returns {candidates, skipped}: candidates best
 // first, skipped with reasons (links only: a sitemap holds every post the
-// site has). A link to a #route of the site is never a candidate, since
-// the tour follows paths only: routeLinks() lists those.
+// site has). The tour follows paths only, so a link to a #route of the
+// site counts as a link to its page, /docs/ for /docs/#/install, and
+// routeLinks() lists the route itself.
 function rankLinks(links, sitemap, { home, robots = null, alternates = [], exclude = [], keys = [] }) {
   const homeUrl = new URL(home);
   const homeLocale = localeOf(homeUrl.pathname);
@@ -412,9 +413,8 @@ function rankLinks(links, sitemap, { home, robots = null, alternates = [], exclu
   const skipped = new Map();
   let order = 0;
   const consider = (raw, text, where) => {
-    const full = pageUrl(raw, home);
-    if (!full || siteOf(full.href) !== site || FILE.test(full.pathname) || routeOf(full.href)) return;
     const url = linkUrl(raw, home);
+    if (!url || siteOf(url.href) !== site || FILE.test(url.pathname)) return;
     const key = pageKey(url.href);
     if (taken.has(key)) return;
     order++;
