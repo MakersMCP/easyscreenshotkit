@@ -23,7 +23,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { launch, openTab, closeTab, navigate, currentUrl } = require("./chrome");
-const { metrics, scrollTo, walk, waitForContent, settle, watchRequests, quietNetwork, waitForFonts, clearHover, resetPictureWait, capture, captureScreen, capturePage } = require("./page");
+const { metrics, scrollTo, walk, showsContent, waitForContent, settle, watchRequests, networkQuiet, quietNetwork, waitForFonts, clearHover, resetPictureWait, capture, captureScreen, capturePage } = require("./page");
 const { clean } = require("./clean");
 const { homeOf, pageKey, routeOf, viewKey, pathOf, pageUrl, anchorOf, siteOf, fold, kindOf, rankLinks, routeLinks, visitOrder, readSiteIndex, localeOf, ROUTE_LINK } = require("./pick");
 const { pngSize, tagPng } = require("./png");
@@ -460,7 +460,8 @@ function rejectAtOnce({ asked, nav, info }, { site, homeKey }) {
 function rejectReason({ asked, nav, info, loaded }, check) {
   const first = rejectAtOnce({ asked, nav, info }, check);
   if (first) return first;
-  if (!loaded) return "still loading after 20 s";
+  if (loaded === false) return "still loading after 20 s";
+  if (loaded === null) return "still loading as time ran short";
   const landed = pageKey(nav.url);
   let canonical = "";
   try {
@@ -472,16 +473,26 @@ function rejectReason({ asked, nav, info, loaded }, check) {
   return same ? `the same page as ${same.slug}` : "";
 }
 
+// A visit takes its first screenshot while FIRST_CAPTURE_MS of the run's
+// time is left, so a run short of time still has its page, and each other
+// one while CAPTURE_MS is. Before the first one it hides what floats over
+// the page and waits for the fonts, which with the end of a walk down the
+// page can take BEFORE_CAPTURE_MS.
+const FIRST_CAPTURE_MS = 5_000;
+const CAPTURE_MS = 20_000;
+const BEFORE_CAPTURE_MS = 7_000;
+
 // A view of a single page app, the address asked or the one the app went
-// to, draws once its data has come: up to 10 s for that, then the address
-// it shows by then. busy: the page had requests going all that time on an
-// earlier visit, so this one waits 2 s at most. Returns whether it was
-// still loading at the limit.
+// to, draws once its data has come: up to 10 s for that, but never into
+// the time its screenshots need, then the address it shows by then. busy:
+// the page had requests going all that time on an earlier visit, so this
+// one waits 2 s at most. Returns "quiet", "busy" when it was still loading
+// at the limit, or "short" when it still was as the run's time ran short.
 async function waitForView(tab, nav, asked, busy) {
-  if (!routeOf(asked) && !routeOf(nav.url)) return false;
-  const quiet = await quietNetwork(tab, { limitMs: busy ? 2_000 : 10_000 });
+  if (!routeOf(asked) && !routeOf(nav.url)) return "quiet";
+  const state = await quietNetwork(tab, { limitMs: busy ? 2_000 : 10_000, reserveMs: FIRST_CAPTURE_MS + BEFORE_CAPTURE_MS });
   nav.url = await currentUrl(tab, nav.url);
-  return !quiet;
+  return state;
 }
 
 // Opens one page on one device in one theme and takes the captures the
@@ -504,8 +515,8 @@ async function visit(chrome, page, group, theme, ctx, { check = null, links = fa
     } else if (glance.challenge || nav.status >= 400) {
       return { nav, info: glance, loaded: false, links: [], shots: [], cleaned: { hidden: 0, unlocked: false, badSelectors: [] } };
     }
-    const busy = await waitForView(tab, nav, page.url, page.busy);
-    const loaded = await waitForContent(tab, 20_000);
+    const view = await waitForView(tab, nav, page.url, page.busy);
+    let loaded = await waitForContent(tab, 20_000);
     await settle(tab, 6_000);
     const info = await readInfo(tab);
     if (check) {
@@ -525,13 +536,24 @@ async function visit(chrome, page, group, theme, ctx, { check = null, links = fa
     await waitForFonts(tab);
     await scrollTo(tab, 0);
     await sleep(400);
+    // A page whose waits the run's time cut short may have had its data
+    // and drawn its content since: it is taken before them only when it
+    // still has requests out, or still shows a bare loading screen, and its
+    // title and heading are read again, as it is taken.
+    let short = false;
+    if (view === "short" || loaded === null) {
+      short = view === "short" && !networkQuiet(tab, 0);
+      if (loaded === null && (await showsContent(tab).catch(() => false))) loaded = true;
+      const now = await readInfo(tab);
+      Object.assign(info, { title: now.title, heading: now.heading });
+    }
     const shots = [];
     // One capture of the screen serves every size taken at the device's own
     // scale: the phone's first screen and the narrow one for a manifest.
     let screen = null;
     for (const shot of group.shots) {
       if (shot.pwa && theme !== ctx.pwaTheme) continue;
-      if (timeLeft() < 20_000) break;
+      if (timeLeft() < (shots.length ? CAPTURE_MS : FIRST_CAPTURE_MS)) break;
       const m = await metrics(tab);
       // A phone page wider than the screen (no viewport tag, or content that
       // overflows) is shown zoomed out, as a phone shows it: the first screen
@@ -562,7 +584,7 @@ async function visit(chrome, page, group, theme, ctx, { check = null, links = fa
         shots.push({ size: shot.size, full: true, png: whole.png, scale: shot.scale, cssWidth: m.width, cssHeight: whole.height, truncated: whole.truncated, sections });
       }
     }
-    return { nav, info, loaded, busy, links: found, shots, cleaned };
+    return { nav, info, loaded, busy: view === "busy", short, links: found, shots, cleaned };
   } finally {
     await closeTab(chrome, tab);
   }
@@ -825,8 +847,12 @@ async function takeShots(rawUrl, options = {}) {
         keys,
         busy: result.busy,
       });
-      if (!result.loaded) page.notes.push("still showed a loading screen after 20 s");
+      // What the waits for the page saw at their end, and only what they
+      // waited for: a run short of time waits less.
+      if (result.loaded === false) page.notes.push("still showed a loading screen after 20 s");
       if (result.busy) page.notes.push("still loading data after 10 s");
+      if (result.short) page.notes.push("taken before its data had come: time ran short; give more with --timeout");
+      else if (result.loaded === null) page.notes.push("taken while it still showed a loading screen: time ran short; give more with --timeout");
       if (movedOn(page.asked, result.nav.url)) page.notes.push(`opened ${page.asked} and landed on ${result.nav.url}`);
       kept.push(page);
       saveShots(page, result, firstTheme, run, written);

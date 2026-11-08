@@ -69,20 +69,28 @@ async function walk(cdp, until = Infinity) {
   await scrollTo(cdp, 0);
 }
 
+// Whether the page shows content and not a bare loading screen: it is
+// taller than the screen, or has a link or an image.
+async function showsContent(cdp) {
+  const m = await metrics(cdp);
+  if (m.height > m.viewportHeight + 50) return true;
+  const snap = await cdp.send("DOMSnapshot.captureSnapshot", { computedStyles: [] });
+  const names = (((snap.documents || [])[0] || {}).nodes || {}).nodeName || [];
+  return names.some((i) => snap.strings[i] === "A" || snap.strings[i] === "IMG");
+}
+
 // A single-page app can show a bare loading screen for a long time (25 s on
-// one site, in a fresh browser). Wait, up to 30 s, until the page is taller
-// than the screen or has a link or an image. True once the page shows
-// content; false when it is still a bare loader.
+// one site, in a fresh browser). Wait, up to 30 s, until it shows content.
+// True once it does; false when it is still a bare loader at the limit;
+// null when it still was one as the run's time ran short, before the limit.
 async function waitForContent(cdp, limitMs = 30_000) {
-  for (let waited = 0; waited < limitMs && timeLeft() > 50_000; waited += 1_000) {
-    const m = await metrics(cdp);
-    if (m.height > m.viewportHeight + 50) return true;
-    const snap = await cdp.send("DOMSnapshot.captureSnapshot", { computedStyles: [] });
-    const names = (((snap.documents || [])[0] || {}).nodes || {}).nodeName || [];
-    if (names.some((i) => snap.strings[i] === "A" || snap.strings[i] === "IMG")) return true;
+  const started = Date.now();
+  for (;;) {
+    if (await showsContent(cdp)) return true;
+    if (Date.now() - started >= limitMs) return false;
+    if (timeLeft() <= 50_000) return null;
     await sleep(1_000);
   }
-  return false;
 }
 
 // A single-page app goes on building its screen after the load event: wait
@@ -191,14 +199,16 @@ function networkQuiet(cdp, quietMs = 500) {
 }
 
 // Waits until the page has had no request out for half a second, at most
-// limitMs and never into the margin the run keeps for itself. False when
-// the page still had requests going at the limit.
-async function quietNetwork(cdp, { quietMs = 500, limitMs = 10_000 } = {}) {
+// limitMs, and never into the last reserveMs of the run's time, which what
+// comes after the wait needs. Returns "quiet", "busy" when the page still
+// had requests going at the limit, or "short" when it still had them as
+// the wait reached the reserve.
+async function quietNetwork(cdp, { quietMs = 500, limitMs = 10_000, reserveMs = 45_000 } = {}) {
   const started = Date.now();
   for (;;) {
-    if (networkQuiet(cdp, quietMs)) return true;
-    if (Date.now() - started >= limitMs) return false;
-    if (timeLeft() <= 45_000) return true;
+    if (networkQuiet(cdp, quietMs)) return "quiet";
+    if (Date.now() - started >= limitMs) return "busy";
+    if (timeLeft() <= reserveMs) return "short";
     await sleep(100);
   }
 }
@@ -490,6 +500,7 @@ module.exports = {
   metrics,
   scrollTo,
   walk,
+  showsContent,
   waitForContent,
   settle,
   watchRequests,

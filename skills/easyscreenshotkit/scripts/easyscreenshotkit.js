@@ -44,7 +44,8 @@ Sizes: desktop is 1600x900 at 2x, mobile 360x640 at 3x (1080x1920), iphone
 phone page at 2x. 1270x760@2 is a Product Hunt gallery image.
 
 A #route in the address or in --page is kept: the page opens on that view,
-waits until the view's data has come (10 s at most) and is named after it,
+waits until the view's data has come (10 s at most, and a note says so when
+the run's time cut that short) and is named after it,
 02-app-plants-desktop.png for /app/#/plants. Any other fragment, such as
 #pricing, is left out, with a note. The tour follows paths only: the #route
 links on the home page, the address given and each --page are listed with

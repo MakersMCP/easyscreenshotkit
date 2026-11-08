@@ -478,6 +478,26 @@ test("a #route in the address and in --page: each view opened, waited for and na
   }
 });
 
+// A run given little time (--timeout 30, the least the command takes)
+// still waits for a view's data, up to 10 s, as long as that leaves its
+// first screenshot the time it needs, and says so when the time ran short
+// first. No note tells of a wait that did not happen.
+test("a short run waits for a #route view's data while its screenshots allow, and says when the time ran short", { skip: noBrowser, timeout: 120_000 }, async () => {
+  const slow = await appFixture({ delay: 8_000 });
+  const slower = await appFixture({ delay: 12_000 });
+  const bare = await serve((req, res) => res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end('<!doctype html><html lang="en"><title>Bare</title><body><div id="app">Loading</div></body></html>'));
+  const root = tempDir();
+  const take = async (url, name, timeLimit) => (await takeShots(url, { dir: path.join(root, name), pages: 1, sizes: "desktop", timeLimit })).manifest.pages.map((p) => [p.heading, p.notes, p.shots.length]);
+  try {
+    assert.deepEqual(await take(`${slow.origin}/app/#/plants`, "slow", 30_000), [["Your plants", [], 1]]);
+    assert.deepEqual(await take(`${slower.origin}/app/#/plants`, "slower", 20_000), [["Loading…", ["taken before its data had come: time ran short; give more with --timeout"], 1]]);
+    assert.deepEqual(await take(bare.origin, "bare", 30_000), [["", ["taken while it still showed a loading screen: time ran short; give more with --timeout"], 1]]);
+  } finally {
+    for (const { server } of [slow, slower, bare]) server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // An address copied from the browser after a sign-in can end in what the
 // sign-in left there, and a --page in an anchor. Kept, the first would open
 // the app on a view that is not there (Loading… for good, here) and be
