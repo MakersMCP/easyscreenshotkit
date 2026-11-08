@@ -277,7 +277,7 @@ async function makeDemo(rawUrl, options = {}) {
   try {
     fs.mkdirSync(frames);
     const chrome = await launch({ lang, args: [`--force-device-scale-factor=${density}`] });
-    const recorder = new Recorder(chrome, { dir: frames, base: asked, fps, viewport, hide: [...hide, ...(script ? script.hide : [])], clean: tidy, theme, lang, reducedMotion, log });
+    const recorder = new Recorder(chrome, { dir: frames, out: target, base: asked, fps, viewport, hide: [...hide, ...(script ? script.hide : [])], clean: tidy, theme, lang, reducedMotion, log });
     try {
       if (!script) {
         tour = await pickPages(chrome, asked, { pages: wanted, extra, lang, theme, reducedMotion, log });
@@ -416,7 +416,7 @@ async function makeDemo(rawUrl, options = {}) {
     }
   } catch (err) {
     run.abort();
-    throw err;
+    throw run.told(err);
   }
   // The run has ended well: its files take the place of the earlier demo's,
   // and the frames go with the part folder.

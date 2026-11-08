@@ -64,7 +64,9 @@ let hooked = false;
 //   leftovers names of an older version's leftovers, removed once stale
 // Returns the run: file(rel) is where a file of it is written, write(rel,
 // data) writes one, commit(outputs) puts them in place, abort() takes them
-// away. Until commit(), the run's part folder is all it adds to the folder.
+// away and told(err) names, in what went wrong, the folder instead of the
+// part folder. Until commit(), the run's part folder is all it adds to the
+// folder.
 function begin(dir, spec) {
   const target = path.resolve(dir);
   // The folders made for the run, deepest first, removed again when it
@@ -79,7 +81,12 @@ function begin(dir, spec) {
     // gets the access the out folder gives, where mkdtemp's 0700 would shut
     // out the others the ACL lets in.
     part = path.join(target, `.easyscreenshotkit-part-${process.pid}-${crypto.randomBytes(4).toString("hex")}`);
-    fs.mkdirSync(part);
+    try {
+      fs.mkdirSync(part);
+    } catch (err) {
+      if (!refused(err)) throw err;
+      throw new Error(`${dir} cannot be written to: ${refused(err)}. Pick another folder with --out.`);
+    }
   } catch (err) {
     removeMade(made);
     throw err;
@@ -89,6 +96,7 @@ function begin(dir, spec) {
   run.write = (rel, data) => write(run, rel, data);
   run.commit = (outputs) => commit(run, outputs);
   run.abort = () => abort(run);
+  run.told = (err) => told(run, err);
   live.add(run);
   if (!hooked) {
     hooked = true;
@@ -112,6 +120,17 @@ function toMake(target, { exists = fs.existsSync, paths = path } = {}) {
   return missing;
 }
 
+// Why the disk refuses a folder made in a place, as a person says it. A
+// full quota comes from Node as UNKNOWN (errno -122) on Linux.
+const REFUSED = {
+  EACCES: "permission to write there is denied",
+  EPERM: "permission to write there is denied",
+  EROFS: "its disk is read-only",
+  ENOSPC: "the disk is full",
+  EDQUOT: "your disk quota is full",
+};
+const refused = (err) => REFUSED[err.errno === -122 ? "EDQUOT" : err.code];
+
 // Makes the folder a run saves in, with the folders above it.
 function makeFolder(dir, target) {
   try {
@@ -119,6 +138,7 @@ function makeFolder(dir, target) {
   } catch (err) {
     const root = path.parse(target).root;
     if (err.code === "ENOENT" && root && !fs.existsSync(root)) throw new Error(`${dir} cannot be made: ${root} is not there. Check the drive, or pick another folder with --out.`);
+    if (refused(err)) throw new Error(`${dir} cannot be made: ${refused(err)}. Pick another folder with --out.`);
     throw err;
   }
 }
@@ -437,6 +457,13 @@ function removeMade(made) {
       if (err.code !== "ENOENT") break;
     }
   }
+}
+
+// An error as the user reads it, once the run's part folder is gone: a
+// path in that folder is told by the folder the run saves in.
+function told(run, err) {
+  if (err && typeof err.message === "string" && err.message.includes(run.part)) err.message = err.message.split(run.part).join(run.dir);
+  return err;
 }
 
 // Takes away what the run built, and the folders it made when they are

@@ -67,6 +67,26 @@ test("a visit's label reads its address as a person does, the visit a steps file
   assert.equal(what({ action: "visit", url: "/pricing", label: "Prices" }), "Prices");
 });
 
+test("frames that cannot be saved are told by the folder the demo saves in, not the part of it that is gone by then", async () => {
+  const { Recorder } = require("../skills/easyscreenshotkit/scripts/lib/record");
+  const root = tempDir();
+  try {
+    const run = openDemo(path.join(root, "demo"));
+    const recorder = new Recorder(null, { dir: path.join(run.file("frames"), "missing"), out: path.join(root, "demo"), base: "https://acme.com/" });
+    recorder.keep({ data: "" }, 0);
+    await Promise.all(recorder.writes);
+    assert.match(recorder.writeError, /^Could not save the video's frames in .*demo: ENOENT/);
+    assert.ok(!recorder.writeError.startsWith(`Could not save the video's frames in ${run.part}`));
+    // Any other path in the part folder, in what went wrong, is told by the
+    // folder itself once the part folder is gone.
+    const err = new Error(`ffmpeg could not write demo.mp4: ${run.file("demo.mp4")}: No space left on device`);
+    run.abort();
+    assert.equal(run.told(err).message, `ffmpeg could not write demo.mp4: ${path.join(root, "demo", "demo.mp4")}: No space left on device`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("the CLI hands demo to its own command, with its own help", () => {
   const help = spawnSync(process.execPath, [CLI, "demo", "--help"], { encoding: "utf8" });
   assert.equal(help.status, 0);

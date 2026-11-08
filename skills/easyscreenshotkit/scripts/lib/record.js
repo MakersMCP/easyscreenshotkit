@@ -252,9 +252,11 @@ const describe = (target) => (target.text !== undefined ? `text=${target.text}` 
 
 class Recorder {
   // chrome: a browser launched with the pixel density wanted; dir: where the
-  // frames go; viewport: the page's screen in CSS px.
-  constructor(chrome, { dir, base, fps = 30, viewport = { width: 1600, height: 900 }, hide = [], clean: tidy = true, theme = "light", lang = "", reducedMotion = false, log = () => {} }) {
-    Object.assign(this, { chrome, dir, base, fps, viewport, hide, tidy, theme, lang, reducedMotion, log });
+  // frames go; out: the folder the demo saves in, as the user gave it, for
+  // what goes wrong (the frames go in a part of it that is gone by then);
+  // viewport: the page's screen in CSS px.
+  constructor(chrome, { dir, out = dir, base, fps = 30, viewport = { width: 1600, height: 900 }, hide = [], clean: tidy = true, theme = "light", lang = "", reducedMotion = false, log = () => {} }) {
+    Object.assign(this, { chrome, dir, out, base, fps, viewport, hide, tidy, theme, lang, reducedMotion, log });
     this.v = 0;
     this.live = null;
     this.windows = [];
@@ -371,7 +373,7 @@ class Recorder {
     this.writes.push(
       fs.promises.writeFile(file, Buffer.from(frame.data, "base64")).catch((err) => {
         const full = err.code === "ENOSPC" || err.code === "EDQUOT" || err.errno === -122;
-        this.writeError = this.writeError || `Could not save the frames in ${this.dir}: ${full ? "the disk, or your disk quota, is full" : err.message}`;
+        this.writeError = this.writeError || `Could not save the video's frames in ${this.out}: ${full ? "the disk, or your disk quota, is full" : err.message}`;
       }),
     );
     this.frames.push({ v, file, cut });

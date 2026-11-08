@@ -413,8 +413,32 @@ test("a run's folder: refused when it holds someone else's files, and an earlier
       through.commit(["01-home-desktop.png", "manifest.json"]);
       assert.deepEqual(snapshot(elsewhere), theirs);
       assert.ok(fs.lstatSync(path.join(dir, "pwa")).isSymbolicLink());
+      // An empty folder where the link leads, named like the one a run
+      // removes once it is empty, stays too.
+      fs.rmSync(path.join(elsewhere, "screenshots", "wide-01.png"));
+      const emptied = snapshot(elsewhere);
+      const again = openShots(dir);
+      again.write("01-home-desktop.png", "again");
+      again.write("manifest.json", JSON.stringify({ version: 1, tool: "easyscreenshotkit 0.1.2" }));
+      again.commit(["01-home-desktop.png", "manifest.json"]);
+      assert.deepEqual(snapshot(elsewhere), emptied);
+      assert.ok(fs.statSync(path.join(elsewhere, "screenshots")).isDirectory());
       assert.throws(() => openShots(dir, { pwa: true }), /shots\/pwa is a link, and this run saves a folder of that name there\./);
       fs.rmSync(path.join(dir, "pwa"));
+    }
+
+    // A folder this user may not write to is refused before the run, by
+    // what it is, and stays as it was; one it may not make, too.
+    if (process.platform !== "win32" && process.getuid() !== 0) {
+      const held = snapshot(dir);
+      fs.chmodSync(dir, 0o555);
+      try {
+        assert.throws(() => openShots(dir), /^Error: .*shots cannot be written to: permission to write there is denied\. Pick another folder with --out\.$/);
+        assert.throws(() => openShots(path.join(dir, "new", "shots")), /^Error: .*shots\/new\/shots cannot be made: permission to write there is denied\. Pick another folder with --out\.$/);
+      } finally {
+        fs.chmodSync(dir, 0o755);
+      }
+      assert.deepEqual(snapshot(dir), held);
     }
 
     // A run from when the tool was called easyscreenshot counts too, another

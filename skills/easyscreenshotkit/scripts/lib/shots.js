@@ -974,7 +974,7 @@ async function takeShots(rawUrl, options = {}) {
     await pool.drain();
     if (chrome) await chrome.close();
     run.abort();
-    throw err;
+    throw run.told(err);
   }
   // The run has ended well: its files take the place of the earlier run's.
   run.commit([...written, ...(manifest.sheet ? ["sheet.png"] : []), ...(pwaSaved && pwaSaved.file ? [...pwaSaved.screenshots.map((shot) => shot.file), pwaSaved.file] : []), "SCREENSHOTS.md", "manifest.json"]);
