@@ -110,32 +110,60 @@ async function settle(cdp, limitMs = 8_000) {
 // counted; a WebSocket is not a request here at all.
 const requests = new WeakMap();
 const ENDLESS = new Set(["EventSource", "Media"]);
-// A request whose answer has come and that has had no data for this long
-// counts as done. Chrome never says a fetch sent with keepalive (the way
-// analytics tags send their hits) has finished, though its answer came:
-// counted until then, it held every view for the whole wait.
+// A request is done once the browser says it has ended. Chrome never says
+// so of a fetch sent with keepalive (the way analytics tags send their
+// hits), though its whole answer came, so a request also counts as done
+// once as much of its answer has come as its Content-Length says, and one
+// that is not a GET (a hit is mostly a POST) once some of its answer has
+// come and nothing more for this long. A GET is otherwise waited for to
+// its end: a view's data can come in parts, and its headers long before
+// the data.
 const STILL_MS = 500;
+
+// The Content-Length an answer gives, or null.
+function lengthOf(headers) {
+  for (const [name, value] of Object.entries(headers || {})) {
+    if (name.toLowerCase() === "content-length" && /^\s*\d+\s*$/.test(String(value))) return Number(value);
+  }
+  return null;
+}
 
 function watchRequests(cdp) {
   if (requests.has(cdp)) return Promise.resolve();
-  // Each request out, with when its answer or its last data came: 0 while
-  // no answer has come.
+  // Each request out: its method, the length its answer gives, how much
+  // of the answer has come and when the last of it came (0 while nothing
+  // has).
   const state = { out: new Map(), last: Date.now() };
   requests.set(cdp, state);
-  cdp.on("Network.requestWillBeSent", (p) => {
-    state.last = Date.now();
-    if (!ENDLESS.has(p.type)) state.out.set(p.requestId, 0);
-  });
+  // A request counted, as something came for it: a stream's data (a
+  // video's, or an EventSource's messages) never keeps the page busy.
   const heard = (p) => {
-    if (!state.out.has(p.requestId)) return;
-    state.last = Date.now();
-    state.out.set(p.requestId, state.last);
+    const request = state.out.get(p.requestId);
+    if (request) state.last = Date.now();
+    return request;
   };
-  cdp.on("Network.responseReceived", heard);
-  cdp.on("Network.dataReceived", heard);
-  const done = (p) => {
+  cdp.on("Network.requestWillBeSent", (p) => {
+    if (ENDLESS.has(p.type)) return;
     state.last = Date.now();
-    state.out.delete(p.requestId);
+    const method = String((p.request && p.request.method) || "GET").toUpperCase();
+    state.out.set(p.requestId, { method, length: null, received: 0, heardAt: 0 });
+  });
+  cdp.on("Network.responseReceived", (p) => {
+    const request = heard(p);
+    if (!request) return;
+    const response = p.response || {};
+    // An answer to HEAD, a 204 and a 304 have no body to wait for.
+    request.length = request.method === "HEAD" || response.status === 204 || response.status === 304 ? 0 : lengthOf(response.headers);
+  });
+  cdp.on("Network.dataReceived", (p) => {
+    const request = heard(p);
+    if (!request) return;
+    // The bytes as they came, which is what a Content-Length counts.
+    request.received += Number(p.encodedDataLength) || 0;
+    request.heardAt = state.last;
+  });
+  const done = (p) => {
+    if (heard(p)) state.out.delete(p.requestId);
   };
   cdp.on("Network.loadingFinished", done);
   cdp.on("Network.loadingFailed", done);
@@ -146,13 +174,19 @@ function watchRequests(cdp) {
   return cdp.send("Network.enable", { maxTotalBufferSize: 1, maxResourceBufferSize: 1 }, 5_000).catch(() => {});
 }
 
-// Whether the page has had no request out for quietMs: none waits for its
-// answer, and none had data in the last half second.
+// Whether a request still out counts as done (see STILL_MS).
+function answered(request, now) {
+  if (request.length !== null && request.received >= request.length) return true;
+  return request.method !== "GET" && request.heardAt > 0 && now - request.heardAt >= STILL_MS;
+}
+
+// Whether the page has had no request out for quietMs: none still waits
+// for its answer, and nothing came or went in that time.
 function networkQuiet(cdp, quietMs = 500) {
   const state = requests.get(cdp);
   if (!state) return true;
   const now = Date.now();
-  for (const heardAt of state.out.values()) if (!heardAt || now - heardAt < STILL_MS) return false;
+  for (const request of state.out.values()) if (!answered(request, now)) return false;
   return now - state.last >= quietMs;
 }
 

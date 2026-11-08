@@ -383,6 +383,9 @@ test("--no-clean keeps the floating boxes; --hide hides more; --json prints the 
 // address has no route. At /hit/, each view sends a hit with keepalive once
 // it is drawn, as an analytics tag does, and does not read the answer:
 // answered with no-store, Chrome never says such a request has finished.
+// With early, the data's answer sends its headers at once, a first byte of
+// its body a second later and the rest at `delay`, as an API that streams,
+// or flushes its headers before its slow query, does.
 const VIEWS = {
   dashboard: ["Dashboard", [0, 120, 255]],
   today: ["Today", [0, 160, 0]],
@@ -417,7 +420,7 @@ const APP = (root, { hit = false } = {}) =>
     { style: "nav{height:60px;background:rgb(30,30,30)} nav a{color:#fff;margin:0 10px} h1{margin:0;height:60px} .band{height:1200px;background:rgb(240,240,240)}" },
   );
 
-async function appFixture({ delay = 5_000 } = {}) {
+async function appFixture({ delay = 5_000, early = false } = {}) {
   const { server, origin } = await serve((req, res) => {
     const url = new URL(req.url, "http://x");
     const html = (body) => res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(body);
@@ -427,7 +430,14 @@ async function appFixture({ delay = 5_000 } = {}) {
     if (url.pathname === "/api/hit") return res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" }).end("{}");
     if (url.pathname === "/app") return res.writeHead(301, { Location: "/app/" }).end();
     const view = url.pathname.startsWith("/api/") ? VIEWS[decodeURIComponent(url.pathname.slice(5))] : null;
-    if (view) return setTimeout(() => res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ title: view[0], color: `rgb(${view[1].join(",")})` })), delay);
+    const answer = view && JSON.stringify({ title: view[0], color: `rgb(${view[1].join(",")})` });
+    if (view && early) {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.flushHeaders();
+      setTimeout(() => res.write(" "), Math.min(1_000, delay / 2));
+      return setTimeout(() => res.end(answer), delay);
+    }
+    if (view) return setTimeout(() => res.writeHead(200, { "Content-Type": "application/json" }).end(answer), delay);
     res.writeHead(404).end("not found");
   });
   return { server, origin };
@@ -469,33 +479,77 @@ test("a #route in the address and in --page: each view opened, waited for and na
 });
 
 // What the browser says of each request, played to the network wait by
-// hand: an answer that came and had no data for half a second is done,
-// even when the browser never says it finished (a fetch sent with
-// keepalive); one that has not been answered is waited for.
-test("the network wait: a request answered and quiet for half a second is done, one with no answer yet is not", async () => {
+// hand. A request is done once the browser says it ended. Chrome never
+// says so of a fetch sent with keepalive, so one whose whole answer came
+// by its Content-Length is done too, and one that is not a GET once some
+// of its answer came and nothing more for half a second. A GET with no
+// length is waited for to its end, whatever came first: its headers, or
+// the first part of its data.
+test("the network wait: a request is done once it ends or its whole answer came, and a GET whose headers came first is waited for", async () => {
   const listeners = {};
   const cdp = { on: (method, fn) => (listeners[method] = listeners[method] || []).push(fn), send: async () => ({}) };
   const emit = (method, params) => (listeners[method] || []).forEach((fn) => fn(params));
+  const sent = (requestId, method, type = "Fetch") => emit("Network.requestWillBeSent", { requestId, type, request: { method } });
+  const answer = (requestId, headers = {}, status = 200) => emit("Network.responseReceived", { requestId, response: { status, headers } });
+  const data = (requestId, encodedDataLength) => emit("Network.dataReceived", { requestId, dataLength: encodedDataLength, encodedDataLength });
   await watchRequests(cdp);
-  emit("Network.requestWillBeSent", { requestId: "data", type: "Fetch" });
-  emit("Network.requestWillBeSent", { requestId: "hit", type: "Fetch" });
-  emit("Network.requestWillBeSent", { requestId: "song", type: "Media" });
-  emit("Network.responseReceived", { requestId: "hit" });
-  emit("Network.dataReceived", { requestId: "hit" });
+  // A view's data: its headers come at once, and a first part of its body;
+  // another's headers only.
+  sent("data", "GET");
+  answer("data", { "Content-Type": "application/json" });
+  data("data", 1);
+  sent("more", "GET");
+  answer("more", { "Content-Type": "application/json" });
+  // Hits sent with keepalive, which never end: a POST with no length, a
+  // GET with one, and a song, which is never waited for.
+  sent("post-hit", "POST");
+  answer("post-hit");
+  data("post-hit", 17);
+  sent("get-hit", "GET");
+  answer("get-hit", { "content-length": "43" });
+  data("get-hit", 43);
+  sent("song", "GET", "Media");
+  sent("empty", "POST");
+  answer("empty", {}, 204);
   await sleep(700);
-  assert.equal(networkQuiet(cdp), false, "the data has no answer yet");
-  emit("Network.responseReceived", { requestId: "data" });
-  emit("Network.dataReceived", { requestId: "data" });
-  assert.equal(networkQuiet(cdp), false, "the data is still coming");
-  await sleep(700);
-  emit("Network.dataReceived", { requestId: "song" });
-  assert.equal(networkQuiet(cdp), true, "answered, and nothing more for half a second");
-  emit("Network.requestWillBeSent", { requestId: "more", type: "XHR" });
-  assert.equal(networkQuiet(cdp), false);
+  assert.equal(networkQuiet(cdp), false, "the data's GETs have not ended");
+  data("data", 200);
   emit("Network.loadingFinished", { requestId: "more" });
+  await sleep(700);
+  assert.equal(networkQuiet(cdp), false, "nor has the first now, with no data for half a second");
+  emit("Network.loadingFinished", { requestId: "data" });
   assert.equal(networkQuiet(cdp), false, "half a second after the last request");
   await sleep(600);
+  assert.equal(networkQuiet(cdp), true, "the data ended, and every hit is done");
+  // A GET whose length says more is to come is waited for.
+  sent("part", "GET", "XHR");
+  answer("part", { "Content-Length": "1000" });
+  data("part", 600);
+  await sleep(700);
+  assert.equal(networkQuiet(cdp), false, "400 bytes of it are still to come");
+  data("part", 400);
+  await sleep(600);
   assert.equal(networkQuiet(cdp), true);
+  // A POST that has had no answer yet is waited for.
+  sent("query", "POST");
+  answer("query");
+  await sleep(700);
+  assert.equal(networkQuiet(cdp), false, "a POST with headers only");
+  emit("Network.loadingFailed", { requestId: "query" });
+  await sleep(600);
+  assert.equal(networkQuiet(cdp), true);
+  // A stream's data, an EventSource's messages or a video's, comes and
+  // comes: it never keeps the page busy.
+  sent("events", "GET", "EventSource");
+  sent("film", "GET", "Media");
+  answer("events");
+  answer("film", { "Content-Length": "9000000" });
+  for (let i = 0; i < 5; i++) {
+    data("events", 40);
+    data("film", 65536);
+    await sleep(150);
+  }
+  assert.equal(networkQuiet(cdp), true, "an EventSource and a video still sending");
 });
 
 test("a view that sends a hit with keepalive is not held for the whole wait", { skip: noBrowser, timeout: 120_000 }, async () => {
@@ -513,6 +567,30 @@ test("a view that sends a hit with keepalive is not held for the whole wait", { 
     );
     // Two views on two sizes: held 10 s and 2 s each, this took over 25 s.
     assert.ok(Date.now() - started < 22_000, `took ${Date.now() - started} ms`);
+  } finally {
+    server.close();
+    fs.rmSync(path.dirname(dir), { recursive: true, force: true });
+  }
+});
+
+test("a view whose data sends its headers first and its body seconds later is taken once the body came", { skip: noBrowser, timeout: 120_000 }, async () => {
+  // Held 1.5 s after its headers came, or after its first byte, each view
+  // was taken while it still said "Loading…".
+  const { server, origin } = await appFixture({ delay: 4_000, early: true });
+  const dir = path.join(tempDir(), "shots");
+  try {
+    const { manifest } = await takeShots(`${origin}/hit/#/plants`, { dir, pages: 1, sizes: "desktop", extra: ["#/light"], timeLimit: 100_000 });
+    assert.deepEqual(
+      manifest.pages.map((p) => [p.slug, p.heading, p.notes]),
+      [
+        ["hit-plants", "Your plants", []],
+        ["hit-light", "Light check", []],
+      ],
+    );
+    for (const [p, view] of [[0, "plants"], [1, "light"]]) {
+      const png = readPng(path.join(dir, manifest.pages[p].shots[0].file));
+      assert.ok(near(css(png, 2, 800, 400), VIEWS[view][1]), `${view}: ${css(png, 2, 800, 400)}`);
+    }
   } finally {
     server.close();
     fs.rmSync(path.dirname(dir), { recursive: true, force: true });
