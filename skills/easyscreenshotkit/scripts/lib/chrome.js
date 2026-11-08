@@ -181,11 +181,13 @@ async function launch({ lang = "", args = [] } = {}) {
     if (!exited) child.kill("SIGKILL");
     for (let i = 0; i < 20 && !exited; i++) await sleep(100);
     open.delete(started);
+    const lock = lockFolderOf(profile);
     try {
       fs.rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     } catch {
       // Left for the system's temp clean-up.
     }
+    removeLockFolder(lock);
   };
   // Chrome writes the port it picked to DevToolsActivePort in the profile.
   const portFile = path.join(profile, "DevToolsActivePort");
@@ -347,10 +349,38 @@ function killBrowsers() {
   return profiles;
 }
 
+// The folder a browser keeps its single-instance lock in (on Linux and
+// macOS, com.google.Chrome.XXXXXX and the like, in the temp folder): the
+// browser removes it as it quits, but one killed outright cannot. Read from
+// the link its profile holds to the lock's socket, and only when that leads
+// to a folder right in the temp folder; "" otherwise.
+function lockFolderOf(profile) {
+  try {
+    const socket = fs.readlinkSync(path.join(profile, "SingletonSocket"));
+    if (path.basename(socket) !== "SingletonSocket") return "";
+    const folder = path.dirname(socket);
+    return path.dirname(fs.realpathSync(folder)) === fs.realpathSync(os.tmpdir()) ? folder : "";
+  } catch {
+    return "";
+  }
+}
+
+// Removes such a folder, when all it holds is the lock.
+function removeLockFolder(folder) {
+  if (!folder) return;
+  try {
+    if (fs.readdirSync(folder).every((name) => /^Singleton(Socket|Cookie|Lock)$/.test(name))) fs.rmSync(folder, { recursive: true, force: true });
+  } catch {
+    // Gone already.
+  }
+}
+
 // Synchronous, with no retries that wait long: a stopped process may have a
-// second left before it is killed outright.
+// second left before it is killed outright. Each browser's lock folder goes
+// too.
 function removeProfiles(profiles) {
   for (const profile of profiles) {
+    const lock = lockFolderOf(profile);
     for (let tries = 0; tries < 2; tries++) {
       try {
         fs.rmSync(profile, { recursive: true, force: true });
@@ -361,7 +391,8 @@ function removeProfiles(profiles) {
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
       }
     }
+    removeLockFolder(lock);
   }
 }
 
-module.exports = { findChrome, onPath, launch, connect, openTab, closeTab, navigate, currentUrl, killBrowsers, removeProfiles, userAgentFor };
+module.exports = { findChrome, onPath, launch, connect, openTab, closeTab, navigate, currentUrl, killBrowsers, removeProfiles, lockFolderOf, userAgentFor };

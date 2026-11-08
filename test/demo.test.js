@@ -549,6 +549,16 @@ function profilesOf(pid) {
   }
 }
 
+// The folder a browser keeps its single-instance lock in, in the temp
+// folder, from the link its profile holds: "" when there is none (Windows).
+function lockOf(profile) {
+  try {
+    return path.dirname(fs.readlinkSync(path.join(profile, "SingletonSocket")));
+  } catch {
+    return "";
+  }
+}
+
 test("a demo that fails or is stopped leaves an earlier demo as it was and adds nothing", { skip: missing, timeout: 300_000 }, async () => {
   const { server, origin } = await fixture();
   const root = tempDir();
@@ -572,19 +582,21 @@ test("a demo that fails or is stopped leaves an earlier demo as it was and adds 
     const child = spawn(process.execPath, [CLI, "demo", origin, "--steps", good, "--out", dir], { detached: true });
     let stderr = "";
     let profiles = [];
+    let locks = [];
     child.stderr.on("data", (d) => {
       const first = !/^Drawing /m.test(stderr);
       stderr += d;
       if (first && /^Drawing /m.test(stderr)) {
         profiles = profilesOf(child.pid);
+        locks = profiles.map(lockOf).filter(Boolean);
         process.kill(-child.pid, "SIGTERM");
       }
     });
     const how = await new Promise((resolve) => child.on("close", (status, signal) => resolve(signal || status)));
     assert.equal(how, "SIGTERM", stderr);
     assert.match(stderr, /easyscreenshotkit demo: stopped\. .*demo is as it was before this run\./);
-    if (process.platform === "linux") assert.equal(profiles.length, 1, stderr);
-    for (const profile of profiles) assert.equal(fs.existsSync(profile), false, profile);
+    if (process.platform === "linux") assert.deepEqual([profiles.length, locks.length], [1, 1], stderr);
+    for (const left of [...profiles, ...locks]) assert.equal(fs.existsSync(left), false, left);
     assert.deepEqual(snapshot(dir), before);
   } finally {
     server.close();

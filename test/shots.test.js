@@ -640,9 +640,32 @@ function profilesOf(pid) {
   }
 }
 
+// The folder a browser keeps its single-instance lock in, in the temp
+// folder, from the link its profile holds: "" when there is none (Windows).
+function lockOf(profile) {
+  try {
+    return path.dirname(fs.readlinkSync(path.join(profile, "SingletonSocket")));
+  } catch {
+    return "";
+  }
+}
+
+// The processes whose command line names a profile, from /proc.
+function runningWith(profile) {
+  if (process.platform !== "linux") return [];
+  return fs.readdirSync("/proc").filter((pid) => {
+    try {
+      return /^\d+$/.test(pid) && fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").includes(`--user-data-dir=${profile}`);
+    } catch {
+      return false;
+    }
+  });
+}
+
 // The CLI in a child process, stopped with signal (to it, or to its whole
 // process group as a supervisor sends it) once stopAt(stderr, pid) says so.
-// profiles: those of the browsers it had going then.
+// profiles: those of the browsers it had going then; locks: their lock
+// folders.
 function stopCli(args, { stopAt, signal = "SIGTERM", group = false }) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [CLI, ...args], { detached: group });
@@ -650,10 +673,12 @@ function stopCli(args, { stopAt, signal = "SIGTERM", group = false }) {
     let stderr = "";
     let sent = false;
     let profiles = [];
+    let locks = [];
     const check = () => {
       if (sent || !stopAt(stderr, child.pid)) return;
       sent = true;
       profiles = profilesOf(child.pid);
+      locks = profiles.map(lockOf).filter(Boolean);
       process.kill(group ? -child.pid : child.pid, signal);
     };
     const timer = setInterval(check, 100);
@@ -664,7 +689,7 @@ function stopCli(args, { stopAt, signal = "SIGTERM", group = false }) {
     });
     child.on("close", (status, how) => {
       clearInterval(timer);
-      resolve({ status, signal: how, stdout, stderr, sent, profiles });
+      resolve({ status, signal: how, stdout, stderr, sent, profiles, locks });
     });
   });
 }
@@ -715,10 +740,61 @@ test("a run that fails or is stopped leaves the earlier run's files as they were
       assert.match(stopped.stderr, new RegExp(`easyscreenshotkit: stopped\\. ${dir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} is as it was before this run\\.`));
       if (group) assert.deepEqual(JSON.parse(stopped.stdout || "null"), { ok: false, error: `stopped. ${dir} is as it was before this run.` });
       assert.deepEqual(snapshot(dir), before, group ? "group" : "process");
-      for (const profile of stopped.profiles) assert.equal(fs.existsSync(profile), false, profile);
+      // Nothing of the browser is left in the temp folder: its profile, nor
+      // the lock folder that a browser killed outright cannot remove.
+      if (process.platform === "linux") assert.equal(stopped.locks.length, 1, "a lock folder to look for");
+      for (const left of [...stopped.profiles, ...stopped.locks]) assert.equal(fs.existsSync(left), false, left);
     }
   } finally {
     server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A process that ends on an uncaught exception, with a run open and a
+// browser going: as it ends, the browser is killed and its profile and lock
+// folder go, and the run's folder is as it was.
+test("a process that ends on an error it did not catch leaves its run's folder as it was, and no browser behind", { skip: noBrowser, timeout: 60_000 }, async () => {
+  const root = tempDir();
+  const dir = path.join(root, "shots");
+  const lib = path.resolve(__dirname, "../skills/easyscreenshotkit/scripts/lib");
+  fs.mkdirSync(dir);
+  fs.writeFileSync(path.join(dir, "manifest.json"), JSON.stringify({ version: 1, tool: "easyscreenshotkit 0.1.1" }));
+  fs.writeFileSync(path.join(dir, "01-home-desktop.png"), "earlier");
+  const before = snapshot(dir);
+  const script = `
+    const { openShots } = require(${JSON.stringify(path.join(lib, "shots"))});
+    const { launch } = require(${JSON.stringify(path.join(lib, "chrome"))});
+    require(${JSON.stringify(path.join(lib, "time"))}).setTimeLimit(50000);
+    (async () => {
+      const run = openShots(${JSON.stringify(dir)});
+      run.write("01-home-desktop.png", "half");
+      await launch();
+      process.stdout.write("launched\\n");
+      process.stdin.once("data", () => setTimeout(() => { throw new Error("an error nobody caught"); }, 50));
+    })();`;
+  const child = spawn(process.execPath, ["-e", script], { stdio: ["pipe", "pipe", "pipe"] });
+  let stderr = "";
+  let profiles = [];
+  let locks = [];
+  child.stderr.on("data", (d) => (stderr += d));
+  child.stdout.on("data", (d) => {
+    if (!String(d).includes("launched")) return;
+    profiles = profilesOf(child.pid);
+    locks = profiles.map(lockOf).filter(Boolean);
+    child.stdin.write("go\n");
+  });
+  const status = await new Promise((resolve) => child.on("close", resolve));
+  try {
+    assert.equal(status, 1, stderr);
+    assert.match(stderr, /an error nobody caught/);
+    assert.deepEqual(snapshot(dir), before);
+    if (process.platform === "linux") assert.deepEqual([profiles.length, locks.length], [1, 1], stderr);
+    for (const left of [...profiles, ...locks]) assert.equal(fs.existsSync(left), false, left);
+    for (const profile of profiles) assert.deepEqual(runningWith(profile), [], `a browser of ${profile} still runs`);
+  } finally {
+    // What a failed check would leave running.
+    for (const profile of profiles) for (const pid of runningWith(profile)) process.kill(Number(pid), "SIGKILL");
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
