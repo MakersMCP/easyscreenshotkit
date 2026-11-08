@@ -185,7 +185,7 @@ const SHOWN = new Set([".ds_store", "thumbs.db", "desktop.ini"]);
 
 // The folder holds nothing, or an earlier run of the same kind.
 function check(dir, target, spec) {
-  const names = fs.readdirSync(target).filter((name) => !PART.test(name) && name !== LOCK && !SHOWN.has(name.toLowerCase()) && !(spec.ignore && spec.ignore(name, target)));
+  const names = fs.readdirSync(target).filter((name) => !PART.test(name) && name !== LOCK && !LOCK_ASIDE.test(name) && !SHOWN.has(name.toLowerCase()) && !(spec.ignore && spec.ignore(name, target)));
   if (!names.length) return;
   let earlier = null;
   try {
@@ -377,6 +377,9 @@ function commit(run, outputs) {
 const LOCK = ".easyscreenshotkit-commit";
 const LOCK_WAIT = 5_000;
 const LOCK_STALE = 60_000;
+// A lock moved aside to be taken over (see takeOver()), left there by a
+// run killed in that moment.
+const LOCK_ASIDE = /^\.easyscreenshotkit-commit-(\d+)-[0-9a-f]{8}$/;
 
 function lock(run) {
   const at = path.join(run.target, LOCK);
@@ -384,7 +387,9 @@ function lock(run) {
     try {
       fs.mkdirSync(at);
       try {
-        fs.writeFileSync(path.join(at, "holder.json"), JSON.stringify({ host: os.hostname(), pid: process.pid }) + "\n");
+        // The token tells this lock from any other, one of a process that
+        // had the same number before included.
+        fs.writeFileSync(path.join(at, "holder.json"), JSON.stringify({ host: os.hostname(), pid: process.pid, token: crypto.randomBytes(8).toString("hex") }) + "\n");
       } catch {
         // The folder is the lock; the name in it only tells who holds it.
       }
@@ -392,28 +397,89 @@ function lock(run) {
     } catch (err) {
       if (err.code !== "EEXIST") throw new Error(`Could not move this run's files into ${run.dir}: ${reasonOf(run, Object.assign(err, { rel: LOCK }))}. What the folder held before this run is as it was.`);
     }
-    if (stale(at)) {
-      remove(at);
-      continue;
-    }
+    const found = staleLock(at);
+    if (found && takeOver(at, found)) continue;
     if (Date.now() - started >= LOCK_WAIT) throw new Error(`Could not move this run's files into ${run.dir}: another run was still putting its files there after ${LOCK_WAIT / 1000} s. This run added nothing to the folder.`);
   }
 }
 
-// Whether a lock is left over from a process that cannot release it.
-function stale(at) {
+// A lock left over from a process that cannot release it, as {text}: its
+// holder.json as read, null when it has none. null when the lock is not
+// stale, or not there.
+function staleLock(at) {
   const s = lstat(at);
-  if (!s) return false;
+  if (!s) return null;
   const age = Date.now() - s.mtimeMs;
-  if (age > LOCK_STALE) return true;
-  let holder;
+  let text = null;
   try {
-    holder = JSON.parse(fs.readFileSync(path.join(at, "holder.json"), "utf8"));
+    text = fs.readFileSync(path.join(at, "holder.json"), "utf8");
   } catch {
     // Made a moment ago, or by a process killed before it named itself.
-    return age > LOCK_WAIT;
   }
-  return Boolean(holder) && holder.host === os.hostname() && Number.isInteger(holder.pid) && !running(holder.pid);
+  if (age > LOCK_STALE) return { text };
+  let holder = null;
+  try {
+    holder = JSON.parse(text);
+  } catch {
+    // Written halfway by a process killed as it wrote it.
+  }
+  if (!holder) return age > LOCK_WAIT ? { text } : null;
+  return holder.host === os.hostname() && Number.isInteger(holder.pid) && !running(holder.pid) ? { text } : null;
+}
+
+// Takes away the stale lock found at at. Two runs can find it stale at
+// once, and the one that comes second must not take away the lock the
+// first one made a moment later in its place. So a taker first moves the
+// holder.json it found to a name of its own, which only one of them can
+// do, and takes the lock away only when what it moved is that holder.json,
+// as read: else it puts it back. A lock with no holder.json is moved aside
+// whole, and taken away when it still has none and is still old enough to
+// be stale. True when this run took the lock away.
+function takeOver(at, found) {
+  const mine = `${process.pid}-${crypto.randomBytes(4).toString("hex")}`;
+  if (found.text === null) {
+    const aside = `${at}-${mine}`;
+    try {
+      rename(at, aside);
+    } catch {
+      return false;
+    }
+    const s = lstat(aside);
+    if (!fs.existsSync(path.join(aside, "holder.json")) && s && Date.now() - s.mtimeMs > LOCK_WAIT) {
+      remove(aside);
+      return true;
+    }
+    try {
+      rename(aside, at);
+    } catch {
+      // A lock made in that moment is there now: this one is swept later.
+    }
+    return false;
+  }
+  const holder = path.join(at, "holder.json");
+  const taken = path.join(at, `holder-${mine}.json`);
+  try {
+    rename(holder, taken);
+  } catch {
+    // Another run took it first.
+    return false;
+  }
+  let text = null;
+  try {
+    text = fs.readFileSync(taken, "utf8");
+  } catch {
+    // Taken away with its lock meanwhile.
+  }
+  if (text === found.text) {
+    remove(at);
+    return true;
+  }
+  try {
+    rename(taken, holder);
+  } catch {
+    // Its lock was released meanwhile.
+  }
+  return false;
 }
 
 // Puts back what a commit moved before it failed, and throws.
@@ -567,9 +633,9 @@ function touched(folder) {
   return newest;
 }
 
-// Removes the part folders of runs killed outright in this folder, once
-// their process is gone and they have not changed for STALE, and an older
-// version's leftovers once stale.
+// Removes the part folders of runs killed outright in this folder, and the
+// locks such runs had moved aside, once their process is gone and they have
+// not changed for STALE, and an older version's leftovers once stale.
 function sweep(target, spec) {
   let entries = [];
   try {
@@ -581,7 +647,7 @@ function sweep(target, spec) {
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const at = path.join(target, entry.name);
-    const m = PART.exec(entry.name);
+    const m = PART.exec(entry.name) || LOCK_ASIDE.exec(entry.name);
     if (m) {
       // One under this process's own number that is not one of its runs is
       // a leftover of an earlier process that had the same number.
@@ -636,4 +702,4 @@ function stopOnSignals({ name, json = false }) {
   }
 }
 
-module.exports = { begin, checkDir, stopAll, stopOnSignals, sweep, toMake, realFolder, PART, STALE, LOCK };
+module.exports = { begin, checkDir, stopAll, stopOnSignals, sweep, toMake, realFolder, staleLock, takeOver, PART, STALE, LOCK };
