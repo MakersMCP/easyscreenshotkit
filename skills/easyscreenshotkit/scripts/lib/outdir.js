@@ -69,11 +69,10 @@ function begin(dir, spec) {
   const target = path.resolve(dir);
   // The folders made for the run, deepest first, removed again when it
   // does not end well.
-  const made = [];
-  for (let at = target; !fs.existsSync(at); at = path.dirname(at)) made.push(at);
+  const made = toMake(target);
   let part = "";
   try {
-    fs.mkdirSync(target, { recursive: true });
+    makeFolder(dir, target);
     check(dir, target, spec);
     claim(dir, target, spec);
     // mkdirSync and not mkdtempSync: under a default ACL the part folder
@@ -98,6 +97,30 @@ function begin(dir, spec) {
     process.on("exit", () => stopAll());
   }
   return run;
+}
+
+// The folders that are not there yet on the way to target, deepest first:
+// up to the first one that is there, or to the root of its disk, which
+// cannot be made. On Windows a drive or a network share that is not there
+// (E:\ with no E: drive) is such a root.
+function toMake(target, { exists = fs.existsSync, paths = path } = {}) {
+  const missing = [];
+  for (let at = target; !exists(at); at = paths.dirname(at)) {
+    if (paths.dirname(at) === at) break;
+    missing.push(at);
+  }
+  return missing;
+}
+
+// Makes the folder a run saves in, with the folders above it.
+function makeFolder(dir, target) {
+  try {
+    fs.mkdirSync(target, { recursive: true });
+  } catch (err) {
+    const root = path.parse(target).root;
+    if (err.code === "ENOENT" && root && !fs.existsSync(root)) throw new Error(`${dir} cannot be made: ${root} is not there. Check the drive, or pick another folder with --out.`);
+    throw err;
+  }
 }
 
 // The folder holds nothing, or an earlier run of the same kind.
@@ -467,4 +490,4 @@ function stopOnSignals({ name, json = false }) {
   }
 }
 
-module.exports = { begin, checkDir, stopAll, stopOnSignals, sweep, PART, STALE };
+module.exports = { begin, checkDir, stopAll, stopOnSignals, sweep, toMake, PART, STALE };

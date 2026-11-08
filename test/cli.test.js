@@ -174,6 +174,22 @@ test("the pages left out: those opened first, then the #route links, then the ot
   assert.deepEqual([leftOut(rejected, many, posts).skipped.length, leftOut(rejected, many, posts).routesPast], [40, 12]);
 });
 
+test("the folders a run makes for its folder: up to the first that is there, never a drive or share that is not", () => {
+  const { toMake } = require("../skills/easyscreenshotkit/scripts/lib/outdir");
+  // Windows says a drive that is not there, and a share it cannot reach,
+  // is not there: the walk stops at its root instead of going on for ever.
+  const nothing = () => {
+    let calls = 0;
+    return () => {
+      if (++calls > 100) throw new Error("the walk does not stop");
+      return false;
+    };
+  };
+  assert.deepEqual(toMake("E:\\shots", { exists: nothing(), paths: path.win32 }), ["E:\\shots"]);
+  assert.deepEqual(toMake("\\\\nas\\share\\shots\\demo", { exists: nothing(), paths: path.win32 }), ["\\\\nas\\share\\shots\\demo", "\\\\nas\\share\\shots"]);
+  assert.deepEqual(toMake("/srv/files/job1/shots", { exists: (at) => ["/", "/srv", "/srv/files"].includes(at), paths: path.posix }), ["/srv/files/job1/shots", "/srv/files/job1"]);
+});
+
 // Every file and folder under dir, with each file's bytes, hidden ones too:
 // to tell a folder is exactly as it was.
 function snapshot(dir) {
