@@ -134,6 +134,7 @@ async function launch({ lang = "", args = [] } = {}) {
     throw new Error("No Chrome, Chromium, Edge or Brave found. Install one, or point CHROME_PATH at its binary.");
   }
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-chrome-"));
+  const locksBefore = lockFolders();
   const child = spawn(
     binary,
     [
@@ -164,7 +165,8 @@ async function launch({ lang = "", args = [] } = {}) {
   let exited = false;
   child.on("exit", () => (exited = true));
   child.on("error", () => (exited = true));
-  const started = { child, profile };
+  // lock: its lock folder, read once it answers (see lockFolderOf).
+  const started = { child, profile, lock: "" };
   open.add(started);
   let base = "";
   let browser = null;
@@ -181,7 +183,7 @@ async function launch({ lang = "", args = [] } = {}) {
     if (!exited) child.kill("SIGKILL");
     for (let i = 0; i < 20 && !exited; i++) await sleep(100);
     open.delete(started);
-    const lock = lockFolderOf(profile);
+    const lock = started.lock || lockFolderOf(profile);
     try {
       fs.rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     } catch {
@@ -198,6 +200,9 @@ async function launch({ lang = "", args = [] } = {}) {
         base = `http://127.0.0.1:${port}`;
         const version = await (await fetch(`${base}/json/version`, { signal: AbortSignal.timeout(5_000) })).json();
         browser = await connect(version.webSocketDebuggerUrl);
+        // Read now: a browser that is quitting removes the link to it
+        // before the folder, and a stop can land in between.
+        started.lock = lockFolderOf(profile);
         const { userAgent = "" } = await browser.send("Browser.getVersion").catch(() => ({}));
         return { base, browser, userAgent, close };
       }
@@ -207,7 +212,33 @@ async function launch({ lang = "", args = [] } = {}) {
     await sleep(100);
   }
   await close();
+  // A browser that ends before it answers, as Chrome does under a temp
+  // folder whose path leaves no room for its lock's socket, leaves its lock
+  // folder there, empty and with no link to it in the profile, and one of
+  // its helpers can make the profile again a moment after it went. Both go
+  // once the helpers have ended too.
+  await sleep(300);
+  fs.rmSync(profile, { recursive: true, force: true });
+  if (removeStrayLocks(locksBefore)) throw new Error(`${path.basename(binary)} did not start: the temp folder's path, ${os.tmpdir()}, is too long for the socket it opens there. Point TMPDIR at a folder with a shorter path.`);
   throw new Error(`${path.basename(binary)} did not start. Try again, or point CHROME_PATH at another browser.`);
+}
+
+// The longest path a socket can have: 107 bytes on Linux, 103 on macOS.
+const SOCKET_PATH_MAX = process.platform === "darwin" ? 103 : 107;
+
+// After a browser that did not start: removes the lock folders that came
+// into the temp folder since it started (before: the names there then) and
+// are too deep for their socket. No browser can use one of those, so none
+// is the lock of another browser starting at the same moment, empty for an
+// instant too. Returns whether there was one.
+function removeStrayLocks(before, { dir = os.tmpdir(), max = SOCKET_PATH_MAX } = {}) {
+  let found = false;
+  for (const name of lockFolders(dir)) {
+    if (before.has(name) || Buffer.byteLength(path.join(dir, name, "SingletonSocket")) <= max) continue;
+    found = true;
+    removeLockFolder(path.join(dir, name));
+  }
+  return found;
 }
 
 // The devices a page is captured on. A phone is a phone to the site: its
@@ -332,21 +363,22 @@ async function currentUrl(cdp, fallback = "") {
 }
 
 // For a process that is being stopped and has no time to ask its browsers
-// to quit: each one is killed at once. Returns their profiles, for
-// removeProfiles() once the browsers' helper processes have ended too,
-// about a tenth of a second later: removed sooner, a profile fills up again.
+// to quit: each one is killed at once. Returns their profiles with their
+// lock folders, for removeProfiles() once the browsers' helper processes
+// have ended too, about a tenth of a second later: removed sooner, a
+// profile fills up again.
 function killBrowsers() {
-  const profiles = [];
-  for (const { child, profile } of open) {
+  const browsers = [];
+  for (const { child, profile, lock } of open) {
     try {
       child.kill("SIGKILL");
     } catch {
       // Gone already.
     }
-    profiles.push(profile);
+    browsers.push({ profile, lock: lock || lockFolderOf(profile) });
   }
   open.clear();
-  return profiles;
+  return browsers;
 }
 
 // The folder a browser keeps its single-instance lock in (on Linux and
@@ -365,6 +397,17 @@ function lockFolderOf(profile) {
   }
 }
 
+// The names in the temp folder that such a folder can have.
+const LOCK_FOLDER = /^[a-z]+(\.[A-Za-z]+)+\.[A-Za-z0-9]{6}$/;
+
+function lockFolders(dir = os.tmpdir()) {
+  try {
+    return new Set(fs.readdirSync(dir).filter((name) => LOCK_FOLDER.test(name)));
+  } catch {
+    return new Set();
+  }
+}
+
 // Removes such a folder, when all it holds is the lock.
 function removeLockFolder(folder) {
   if (!folder) return;
@@ -378,9 +421,8 @@ function removeLockFolder(folder) {
 // Synchronous, with no retries that wait long: a stopped process may have a
 // second left before it is killed outright. Each browser's lock folder goes
 // too.
-function removeProfiles(profiles) {
-  for (const profile of profiles) {
-    const lock = lockFolderOf(profile);
+function removeProfiles(browsers) {
+  for (const { profile, lock } of browsers) {
     for (let tries = 0; tries < 2; tries++) {
       try {
         fs.rmSync(profile, { recursive: true, force: true });
@@ -395,4 +437,4 @@ function removeProfiles(profiles) {
   }
 }
 
-module.exports = { findChrome, onPath, launch, connect, openTab, closeTab, navigate, currentUrl, killBrowsers, removeProfiles, lockFolderOf, userAgentFor };
+module.exports = { findChrome, onPath, launch, connect, openTab, closeTab, navigate, currentUrl, killBrowsers, removeProfiles, removeStrayLocks, lockFolderOf, userAgentFor };

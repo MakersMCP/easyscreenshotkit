@@ -481,15 +481,15 @@ function abort(run) {
 // so its folder is as it was. Then, once the browsers' helper processes
 // have ended too, their profiles go. Returns the runs stopped.
 function stopAll() {
-  const profiles = killBrowsers();
+  const browsers = killBrowsers();
   const children = killChildren();
   const stopped = [...live];
   for (const run of stopped) abort(run);
-  if (profiles.length || children) {
+  if (browsers.length || children) {
     // A browser's helpers end about a tenth of a second after it, and write
     // to its profile meanwhile; a write of ffmpeg's may still be on its way.
     pause(300);
-    removeProfiles(profiles);
+    removeProfiles(browsers);
     for (const run of stopped) {
       if (fs.existsSync(run.part)) remove(run.part);
       removeMade(run.made);

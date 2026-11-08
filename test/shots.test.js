@@ -12,7 +12,7 @@ const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const test = require("node:test");
 const { takeShots, DEVICES } = require("../skills/easyscreenshotkit/scripts/lib/shots");
-const { findChrome, launch, openTab, closeTab, navigate } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
+const { findChrome, launch, openTab, closeTab, navigate, killBrowsers, removeProfiles, removeStrayLocks } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
 const { setTimeLimit, sleep } = require("../skills/easyscreenshotkit/scripts/lib/time");
 const { watchRequests, networkQuiet } = require("../skills/easyscreenshotkit/scripts/lib/page");
 const { LOCATE } = require("../skills/easyscreenshotkit/scripts/lib/record");
@@ -873,6 +873,68 @@ test("a process that ends on an error it did not catch leaves its run's folder a
   } finally {
     // What a failed check would leave running.
     for (const profile of profiles) for (const pid of runningWith(profile)) process.kill(Number(pid), "SIGKILL");
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A browser that is quitting, on its own or as it is asked to, removes the
+// link in its profile to its lock folder before the folder: a stop that
+// lands in between still finds the folder, read when the browser started.
+test("a browser killed as its run stops leaves no lock folder, though it had removed its link to it", { skip: noBrowser || (process.platform !== "linux" && "the browser's processes are read from /proc"), timeout: 60_000 }, async () => {
+  setTimeLimit(50_000);
+  const chrome = await launch();
+  const [profile] = profilesOf(process.pid);
+  const lock = lockOf(profile);
+  try {
+    assert.ok(lock && fs.existsSync(lock), `a lock folder for ${profile}`);
+    fs.unlinkSync(path.join(profile, "SingletonSocket"));
+    const browsers = killBrowsers();
+    await sleep(300);
+    removeProfiles(browsers);
+    assert.equal(fs.existsSync(profile), false, profile);
+    assert.equal(fs.existsSync(lock), false, lock);
+  } finally {
+    await chrome.close();
+    for (const pid of runningWith(profile)) process.kill(Number(pid), "SIGKILL");
+    if (lock) fs.rmSync(lock, { recursive: true, force: true });
+  }
+});
+
+// Chrome opens its lock's socket in the temp folder, and a socket's path
+// has room for 107 bytes: under a temp folder with a longer path, it ends
+// before it answers.
+test("a browser that cannot start says why and leaves nothing in the temp folder", { skip: noBrowser || (process.platform === "win32" && "Windows has no such socket"), timeout: 60_000 }, () => {
+  const root = tempDir();
+  const tmp = path.join(root, "a-temp-folder-whose-path-is-too-long-for-a-socket".padEnd(Math.max(10, 90 - root.length), "x"));
+  fs.mkdirSync(tmp);
+  try {
+    const run = spawnSync(process.execPath, [CLI, "http://127.0.0.1:9/", "--out", path.join(root, "shots")], { env: { ...process.env, TMPDIR: tmp, TMP: tmp }, encoding: "utf8", timeout: 50_000 });
+    assert.equal(run.status, 1, run.stderr);
+    assert.match(run.stderr, /did not start: the temp folder's path, .*, is too long for the socket it opens there\. Point TMPDIR at a folder with a shorter path\./);
+    assert.deepEqual(fs.readdirSync(tmp), []);
+    assert.equal(fs.existsSync(path.join(root, "shots")), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// Another browser that starts at the same moment makes its lock folder in
+// the same temp folder, and it is empty for an instant: only a lock folder
+// too deep for its socket, which no browser can use, is taken for the one
+// a browser that did not start left.
+test("a browser that did not start removes only the new lock folders too deep for a socket", () => {
+  const root = tempDir();
+  const deep = (name) => Buffer.byteLength(path.join(root, name, "SingletonSocket"));
+  const max = deep("com.google.Chrome.Aaaaaa");
+  try {
+    for (const name of ["com.google.Chrome.Aaaaaa", "org.chromium.Chromium.Bbbbbb", "com.microsoft.Edge.Cccccc", "com.brave.Browser.Beta.Dddddd"]) fs.mkdirSync(path.join(root, name));
+    fs.writeFileSync(path.join(root, "com.brave.Browser.Beta.Dddddd", "notes.txt"), "someone's");
+    // Edge's was there before the browser started.
+    assert.equal(removeStrayLocks(new Set(["com.microsoft.Edge.Cccccc"]), { dir: root, max }), true);
+    assert.deepEqual(fs.readdirSync(root).sort(), ["com.brave.Browser.Beta.Dddddd", "com.google.Chrome.Aaaaaa", "com.microsoft.Edge.Cccccc"]);
+    assert.equal(removeStrayLocks(new Set(), { dir: root, max: max + 10 }), false);
+    assert.deepEqual(fs.readdirSync(root).sort(), ["com.brave.Browser.Beta.Dddddd", "com.google.Chrome.Aaaaaa", "com.microsoft.Edge.Cccccc"]);
+  } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

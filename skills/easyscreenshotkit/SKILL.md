@@ -71,4 +71,5 @@ What comes back:
 - A run that fails or is stopped leaves the screenshots or the demo an earlier run saved in that folder as they were, and adds nothing: a new run replaces them only once it has ended well.
 - A demo step that points at nothing stops the run and names the step. Check the selector or the words against the page, or put a `wait` for it before the step.
 - When the demo says ffmpeg is missing, ask the user to install it.
+- When it says the browser did not start because the temp folder's path is too long, run it again with `TMPDIR=/tmp` in front: an agent's sandbox can set a long one.
 - Never present a screenshot as the product's own when it did not come from easyscreenshotkit or from the user.
