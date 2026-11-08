@@ -168,9 +168,9 @@ const HOME = page(
 const plain = (title, color) => page(`${title} | Acme`, `<header><a href="/">Acme</a> <a href="/features">Features</a> <a href="/pricing">Pricing</a></header><h1>${title}</h1><div style="height:2400px;background:${color}"><h2 style="margin:0;padding-top:900px">More</h2></div>`, "header{height:70px;font-size:22px}");
 
 // A single page app at /app/ with hash routes. Each view asks /api/<view>
-// for its data, which comes after 800 ms. Today names no plant; Your plants
-// links to each one. Its menu ends with a link with no words to a view
-// whose route is in Cyrillic.
+// for its data, which comes after 800 ms, or 3 s for the report Today links
+// to. Today names no plant; Your plants links to each one. Its menu ends
+// with a link with no words to a view whose route is in Cyrillic.
 const APP = page(
   "Today | Plants",
   `<nav><a href="#/today">Today</a> <a href="#/plants">Plants</a> <a href="#/light">Light</a> <a class="cacti" href="#/растения" aria-label=""><i></i></a></nav><main id="view"><h1>Loading…</h1><div class="band"></div></main>
@@ -190,7 +190,8 @@ const APP = page(
   "nav{height:60px;display:flex;gap:30px;align-items:center;padding:0 40px;font-size:22px} .cacti{display:inline-block;width:28px;height:28px;background:rgb(0,200,200)} h1{margin:0;height:60px;padding:0 40px} .plants{margin:0;height:60px;padding:0 40px;font-size:22px} .band{height:1600px;background:rgb(240,240,240)}",
 );
 const APP_VIEWS = {
-  today: ["Today", "rgb(0,160,0)", '<p class="plants">Nothing to water today.</p>'],
+  today: ["Today", "rgb(0,160,0)", '<p class="plants">Nothing to water today. <a href="#/report">Report</a></p>'],
+  report: ["Report", "rgb(250,220,0)", '<p class="plants">Watered 12 times this week</p>', 3_000],
   plants: ["Your plants", "rgb(200,0,0)", '<p class="plants"><a href="#/plant/Fern">Fern</a> <a href="#/plant/Calathea">Calathea</a></p>'],
   light: ["Light check", "rgb(255,140,0)", '<p class="plants">1,850 lux</p>'],
   "plant/Fern": ["Fern", "rgb(120,0,200)", '<p class="plants">Water today</p>'],
@@ -210,7 +211,7 @@ async function fixture() {
     if (url.pathname === "/thanks") return html(page("Thanks | Acme", `<h1>Thanks, ${String(url.searchParams.get("email")).replace(/[<>&]/g, "")}</h1><div style="height:1400px"></div>`, "body{background:rgb(250,220,0)}"));
     if (url.pathname === "/app/") return html(APP);
     const view = url.pathname.startsWith("/api/") ? APP_VIEWS[decodeURIComponent(url.pathname.slice(5))] : null;
-    if (view) return setTimeout(() => res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ title: view[0], color: view[1], body: view[2] })), 800);
+    if (view) return setTimeout(() => res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ title: view[0], color: view[1], body: view[2] })), view[3] || 800);
     res.writeHead(404).end("not found");
   });
   return { server, origin, seen };
@@ -400,6 +401,38 @@ test("a #route in the address and in a steps file: each view opened on its route
   }
 });
 
+test("a click to a #route whose data comes late shows the view drawn before the next page or the end", { skip: missing, timeout: 300_000 }, async () => {
+  const { server, origin } = await fixture();
+  const root = tempDir();
+  const dir = path.join(root, "demo");
+  const steps = path.join(root, "report.yaml");
+  fs.writeFileSync(steps, "steps:\n  - click: \"text=Report\"\n    zoom: false\n  - visit: /app/#/today\n  - click: \"text=Report\"\n    zoom: false\n");
+  try {
+    const { manifest } = await makeDemo(`${origin}/app/#/today`, { dir, steps, gif: false, timeLimit: 280_000 });
+    assert.deepEqual(
+      manifest.pages.map((p) => [p.url.slice(origin.length), p.title]),
+      [
+        ["/app/#/today", "Today | Plants"],
+        ["/app/#/report", "Report | Plants"],
+        ["/app/#/today", "Today | Plants"],
+        ["/app/#/report", "Report | Plants"],
+      ],
+    );
+    // The report, drawn off camera, is up for half a second at least before
+    // the visit cuts away and before the video ends, not its loading screen.
+    const video = path.join(dir, "demo.mp4");
+    for (const t of [manifest.pages[1].end - 0.5, manifest.pages[1].end - 0.1, manifest.video.duration - 0.5, manifest.video.duration - 0.05]) {
+      const frame = await frameOf(video, t);
+      assert.ok(near(unzoomed(frame, 800, 700), YELLOW), `at ${t} s: ${unzoomed(frame, 800, 700)}`);
+    }
+    const clicks = manifest.steps.filter((s) => s.action === "click");
+    assert.ok(clicks.every((s) => s.end - s.start > 0.8), JSON.stringify(clicks.map((s) => [s.start, s.end])));
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a tour with #routes asked for with --page: clicked to through their links, and written so in demo.yaml", { skip: missing, timeout: 300_000 }, async () => {
   const { server, origin } = await fixture();
   const root = tempDir();
@@ -449,9 +482,9 @@ test("a tour lists the #route links of the pages it takes in one note, also when
     assert.deepEqual(tour.skipped, []);
     assert.deepEqual(
       tour.routes.map((r) => decodeURI(r.url.slice(origin.length))),
-      ["/app/#/plant/Fern", "/app/#/today", "/app/#/plants", "/app/#/light", "/app/#/растения"],
+      ["/app/#/plant/Fern", "/app/#/today", "/app/#/plants", "/app/#/light", "/app/#/растения", "/app/#/report"],
     );
-    assert.equal(routesNote(tour.routes), "Left out /app/#/plant/Fern, /app/#/today, /app/#/plants, /app/#/light and /app/#/растения: #routes, which the tour does not follow: give one with --page.");
+    assert.equal(routesNote(tour.routes), "Left out /app/#/plant/Fern, /app/#/today, /app/#/plants, /app/#/light, /app/#/растения and /app/#/report: #routes, which the tour does not follow: give one with --page.");
   } finally {
     await chrome.close();
     server.close();

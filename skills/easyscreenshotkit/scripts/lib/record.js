@@ -38,6 +38,7 @@ const NAV_HOLD = 0.3; // the old page stays up after the click that leaves it
 const DWELL = 0.12; // the pointer rests on its target before it presses
 const AFTER = { click: 0.6, key: 0.5, type: 0.4, hover: 0.8 };
 const LIVE_WAIT = 1.2; // waiting on camera for something to appear, at most
+const BACK = 0.25; // the crossfade back to the page after a wait off camera
 // A page is walked this many screens down before it is recorded, so lazy
 // pictures and scroll-revealed parts are there when the demo gets to them.
 const WALK_SCREENS = 6;
@@ -679,7 +680,7 @@ class Recorder {
       }
       if (away) {
         await this.fresh();
-        await this.startLive({ fade: 0.25 });
+        await this.startLive({ fade: BACK });
       }
       if (!found) return null;
     }
@@ -822,6 +823,7 @@ class Recorder {
   // drawing. Nothing is cleaned up here: the clean-up's rules for the
   // known tools and the watch for late boxes are still on, and what the
   // click opened (a dialog on a route of its own) is meant to be seen.
+  // Returns whether it went off camera.
   async redrawn() {
     const started = Date.now();
     let away = false;
@@ -844,8 +846,9 @@ class Recorder {
     }
     if (away) {
       await this.fresh();
-      await this.startLive({ fade: 0.25 });
+      await this.startLive({ fade: BACK });
     }
+    return away;
   }
 
   // Runs one step; returns what happened, with its start and end in the
@@ -901,7 +904,10 @@ class Recorder {
       if (page) Object.assign(record, { end: Math.max(record.start, left), opened: page.url });
     }
     if (!record.opened && viewOf(this.url) !== viewOf(before) && ["click", "key", "type"].includes(step.action)) {
-      await this.redrawn();
+      // A view drawn off camera comes back in and stays up as long as the
+      // step holds a view, so the next step or the video's end does not
+      // cut it away.
+      if (await this.redrawn()) await this.hold(BACK + (step.pause !== undefined ? step.pause : AFTER[step.action]));
       Object.assign(record, { end: this.now(), opened: this.url });
       // Its title, for steps.json, as a page that was opened has one.
       const title = await this.eval("document.title");
