@@ -265,7 +265,8 @@ function folders(root, rel, made = null) {
 
 // A file of the run, written whole in its part folder. A full disk or quota
 // comes back from Node as "UNKNOWN: unknown error, write" (EDQUOT), which
-// says nothing; this says what.
+// says nothing; this says what. saveFailed marks the error: a run that could
+// not save one of its files has not ended well, whichever file it was.
 function write(run, rel, data) {
   if (run.ended) throw new Error(`This run has stopped, so nothing more is saved in ${run.dir}.`);
   try {
@@ -273,7 +274,7 @@ function write(run, rel, data) {
     fs.writeFileSync(path.join(run.part, rel), data);
   } catch (err) {
     const full = err.code === "ENOSPC" || err.code === "EDQUOT" || err.errno === -122;
-    throw new Error(`Could not save ${rel.split(path.sep).join("/")} in ${run.dir}: ${full ? "the disk, or your disk quota, is full" : err.message}`);
+    throw Object.assign(new Error(`Could not save ${rel.split(path.sep).join("/")} in ${run.dir}: ${full ? "the disk, or your disk quota, is full" : err.message}`), { saveFailed: true });
   }
 }
 

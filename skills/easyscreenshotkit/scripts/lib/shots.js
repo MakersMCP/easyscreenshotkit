@@ -863,11 +863,15 @@ async function takeShots(rawUrl, options = {}) {
   let manifest = null;
   let saved = [];
   let chrome = null;
+  // The first file that could not be saved, a full disk's above all. A run
+  // that lost one has not ended well, whichever window or page it was for.
+  let unsaved = null;
   // The other devices and themes of a page kept are taken in windows of
   // their own while the next pages are being found.
   const pool = makePool(2);
   const alive = () => {
     if (chrome && chrome.gone()) throw new Error(BROWSER_GONE);
+    if (unsaved) throw unsaved;
   };
   try {
     chrome = await launch({ lang });
@@ -882,8 +886,9 @@ async function takeShots(rawUrl, options = {}) {
           if (group === first && themeName === firstTheme) continue;
           if (group.shots.every((shot) => shot.pwa && themeName !== ctx.pwaTheme)) continue;
           windows.push(async () => {
-            // The run fails over a browser that ended: no note on it.
-            if (chrome.gone()) return;
+            // The run fails over a browser that ended or a file that could
+            // not be saved: no note on it, and no more windows.
+            if (unsaved || chrome.gone()) return;
             const label = `${group.key}${themeName === "dark" ? " (dark)" : ""}`;
             if (timeLeft() < 30_000) {
               page.notes.push(`${label} not taken: time ran out`);
@@ -898,7 +903,8 @@ async function takeShots(rawUrl, options = {}) {
               else for (const note of waitNotes(got)) page.notes.push(`${label}: ${note}`);
               saveShots(page, got, themeName, run, written);
             } catch (err) {
-              if (!chrome.gone()) page.notes.push(`${label} could not be taken: ${err.message}`);
+              if (err.saveFailed) unsaved = unsaved || err;
+              else if (!chrome.gone()) page.notes.push(`${label} could not be taken: ${err.message}`);
             }
           });
         }
@@ -1002,6 +1008,7 @@ async function takeShots(rawUrl, options = {}) {
         continue;
       }
       await alone(url);
+      alive();
       if (timeLeft() < 45_000) {
         notes.push(`${url} was asked for but not taken: time ran out; give more with --timeout.`);
         continue;
@@ -1055,6 +1062,7 @@ async function takeShots(rawUrl, options = {}) {
       const took = [lastVisit];
       while (queue.length && kept.length < wanted && visits < wanted * 3) {
         await alone(queue[0].url);
+        alive();
         const expected = took.reduce((sum, ms) => sum + ms, 0) / took.length;
         if (timeLeft() < Math.max(60_000, expected * 1.3 + 20_000)) {
           notes.push(`Time ran out after ${kept.length === 1 ? "1 page" : `${kept.length} pages`}; give more with --timeout.`);
@@ -1140,12 +1148,14 @@ async function takeShots(rawUrl, options = {}) {
     log("Drawing the sheet");
     // The sheet takes a few seconds and is drawn even when the pages used up
     // the run's time. One that cannot be drawn is said so: the pages are
-    // there all the same. Over a browser that ended, the run fails.
+    // there all the same. Over a browser that ended, or a sheet that was
+    // drawn and could not be saved, the run fails.
     if (timeLeft() < 90_000) setTimeLimit(90_000);
     try {
-      manifest.sheet = await renderSheet(chrome, manifest, run.part);
+      manifest.sheet = await renderSheet(chrome, manifest, run);
     } catch (err) {
       alive();
+      if (err.saveFailed) throw err;
       notes.push(`sheet.png could not be drawn: ${run.told(err).message.replace(/\.$/, "")}.`);
     }
     await chrome.close();

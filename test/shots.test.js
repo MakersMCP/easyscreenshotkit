@@ -172,10 +172,10 @@ async function fixture() {
 }
 
 // The CLI in a child process. Not spawnSync: the test's own server must go on
-// answering while the child runs.
-function runCli(args, { env = process.env } = {}) {
+// answering while the child runs. preload: a script Node loads first.
+function runCli(args, { env = process.env, preload = "" } = {}) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [CLI, ...args], { env });
+    const child = spawn(process.execPath, [...(preload ? ["--require", preload] : []), CLI, ...args], { env });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (d) => (stdout += d));
@@ -1150,6 +1150,87 @@ test("a run whose picture came out cut short fails, and leaves the earlier run's
     assert.deepEqual(snapshot(dir), before);
   } finally {
     fs.writeFileSync = write;
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A preload for the CLI: writing a file whose path matches FULL_FOR fails as
+// a full disk fails it, or as a full quota does, which Node calls UNKNOWN.
+const FULL_DISK = `
+  const fs = require("fs");
+  const write = fs.writeFileSync;
+  fs.writeFileSync = (file, ...rest) => {
+    if (!new RegExp(process.env.FULL_FOR).test(String(file))) return write(file, ...rest);
+    throw Object.assign(new Error("full"), process.env.FULL_AS === "quota" ? { code: "UNKNOWN", errno: -122, syscall: "write" } : { code: "ENOSPC", errno: -28, syscall: "write" });
+  };
+`;
+const asPattern = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+// A run that could not save a file has not ended well, whichever file it
+// was. A window after the first and the sheet were each a note, the run
+// exited with 0, and it replaced an earlier run with one that lacked them.
+test("a window after the first or a sheet that cannot be saved fails the run, and leaves the earlier run's files as they were", { skip: noBrowser, timeout: 200_000 }, async () => {
+  const { server, origin } = await fixture();
+  const root = tempDir();
+  const dir = path.join(root, "shots");
+  const preload = path.join(root, "full-disk.js");
+  fs.writeFileSync(preload, FULL_DISK);
+  try {
+    await takeShots(origin, { dir, pages: 1, sizes: "desktop,mobile", timeLimit: 100_000 });
+    const before = snapshot(dir);
+    assert.deepEqual(Object.keys(before).sort(), ["01-home-desktop.png", "01-home-mobile.png", "SCREENSHOTS.md", "manifest.json", "sheet.png"]);
+    for (const [file, as] of [["01-home-mobile.png", "ENOSPC"], ["01-home-mobile.png", "quota"], ["sheet.png", "ENOSPC"], ["sheet.png", "quota"], ["sheet.html", "ENOSPC"]]) {
+      const env = { ...process.env, FULL_FOR: `${asPattern(file)}$`, FULL_AS: as };
+      const failed = await runCli([origin, "--pages", "1", "--sizes", "desktop,mobile", "--out", dir], { env, preload });
+      assert.equal(failed.status, 1, `${file} ${as}\n${failed.stdout}\n${failed.stderr}`);
+      assert.ok(failed.stderr.includes(`easyscreenshotkit: Could not save ${file} in ${dir}: the disk, or your disk quota, is full\n`), failed.stderr);
+      assert.deepEqual(snapshot(dir), before, `${file} ${as}`);
+    }
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// Windows that are still to be taken once one could not be saved are not
+// opened: the run fails over that one, and the other pages cost it no time.
+test("a run stops opening pages once a window could not be saved", { skip: noBrowser, timeout: 120_000 }, async () => {
+  const { server, origin, seen } = await fixture();
+  const root = tempDir();
+  const dir = path.join(root, "shots");
+  const preload = path.join(root, "full-disk.js");
+  fs.writeFileSync(preload, FULL_DISK);
+  try {
+    const failed = await runCli([origin, "--pages", "1", "--page", "/integrations", "--page", "/about", "--sizes", "desktop,mobile", "--out", dir], { env: { ...process.env, FULL_FOR: "-home-mobile\\.png$" }, preload });
+    assert.equal(failed.status, 1, failed.stderr);
+    assert.match(failed.stderr, /Could not save 01-home-mobile\.png in .*: the disk, or your disk quota, is full/);
+    assert.equal(fs.existsSync(dir), false);
+    // The home page's phone window was lost well before /about, the last
+    // page asked for, got as far as its own: it has no second window.
+    assert.ok(seen.filter(({ url }) => url === "/about").length <= 1, seen.map(({ url }) => url).join(" "));
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A sheet that cannot be drawn is no reason to lose the pages: only one that
+// was drawn and could not be saved fails the run.
+test("a sheet that cannot be drawn, for a reason that is not the disk, is named in the notes", { skip: noBrowser, timeout: 120_000 }, async () => {
+  const { server, origin } = await fixture();
+  const root = tempDir();
+  const dir = path.join(root, "shots");
+  const preload = path.join(root, "no-sheet.js");
+  fs.writeFileSync(preload, `require(${JSON.stringify(path.resolve(__dirname, "../skills/easyscreenshotkit/scripts/lib/sheet"))}).renderSheet = async () => { throw new Error("the browser gave no picture of it"); };\n`);
+  try {
+    const run = await runCli([origin, "--pages", "1", "--sizes", "desktop", "--json", "--out", dir], { preload });
+    assert.equal(run.status, 0, run.stderr);
+    const manifest = JSON.parse(run.stdout);
+    assert.equal(manifest.sheet, null);
+    assert.deepEqual(manifest.notes, ["sheet.png could not be drawn: the browser gave no picture of it."]);
+    assert.deepEqual(fs.readdirSync(dir).sort(), ["01-home-desktop.png", "SCREENSHOTS.md", "manifest.json"]);
+  } finally {
     server.close();
     fs.rmSync(root, { recursive: true, force: true });
   }

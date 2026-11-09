@@ -4,7 +4,6 @@
 // show an agent one image instead of fifteen. Drawn in the browser the
 // pages were taken with, from the files already saved: no request goes out.
 
-const fs = require("fs");
 const path = require("path");
 const { pathToFileURL } = require("url");
 const { openTab, closeTab, navigate } = require("./chrome");
@@ -64,30 +63,26 @@ function sheetHtml(manifest, dir) {
 }
 
 // The sheet as a page of its own: an HTML file that shows the saved PNGs,
-// opened in a new window and captured whole. dir: the folder the PNGs are
-// in, where sheet.png goes; the HTML file is made in a folder of its own
-// there, and goes once the sheet is drawn. Returns the sheet's file and
-// size, or null when no page has a picture to show; throws when it cannot
-// be drawn.
-async function renderSheet(chrome, manifest, dir) {
+// opened in a new window and captured whole. run: the run the PNGs are in,
+// where sheet.png goes; the HTML file is made in its part folder, and goes
+// with it. Returns the sheet's file and size, or null when no page has a
+// picture to show; throws when it cannot be drawn or saved.
+async function renderSheet(chrome, manifest, run) {
   if (!manifest.pages.some((page) => picksFor(page).length)) return null;
-  const temp = fs.mkdtempSync(path.join(dir, "sheet-"));
-  const file = path.join(temp, "sheet.html");
-  fs.writeFileSync(file, sheetHtml(manifest, dir));
+  run.write("sheet.html", sheetHtml(manifest, run.part));
   const tab = await openTab(chrome, SHEET);
   try {
-    await navigate(tab, pathToFileURL(file).href);
+    await navigate(tab, pathToFileURL(run.file("sheet.html")).href);
     resetPictureWait(tab, 15_000);
     const m = await metrics(tab);
     const shot = await capture(tab, 0, 0, m.width, m.height, SHEET.scale, true);
     const png = Buffer.from(shot.data || "", "base64");
     const size = pngSize(png);
     if (!size) throw new Error("the browser gave no picture of it");
-    fs.writeFileSync(path.join(dir, "sheet.png"), png);
+    run.write("sheet.png", png);
     return { file: "sheet.png", ...size };
   } finally {
     await closeTab(chrome, tab);
-    fs.rmSync(temp, { recursive: true, force: true });
   }
 }
 
