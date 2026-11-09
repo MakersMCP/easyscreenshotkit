@@ -429,6 +429,9 @@ async function openTab(chrome, device, { lang = "", theme = "light", reducedMoti
   // nothing more while the browser goes on: its calls fail at once, with why,
   // where each waited out its whole time limit and was called too slow.
   cdp.on("Inspector.targetCrashed", () => cdp.fail(CRASHED));
+  // A dialog a page opens (an alert while it loads, a question before it is
+  // left) holds the tab until someone answers it, and nothing else does.
+  cdp.on("Page.javascriptDialogOpening", () => cdp.send("Page.handleJavaScriptDialog", { accept: true }).catch(() => {}));
   try {
     await cdp.send("Inspector.enable").catch(() => {});
     await cdp.send("Page.enable");

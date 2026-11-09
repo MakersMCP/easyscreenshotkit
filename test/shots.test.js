@@ -760,6 +760,23 @@ test("an app that goes to another route after the wait is named by that route, a
   }
 });
 
+// A dialog held the tab until someone answered it, and nothing did: the run
+// failed some way into its time limit with a message that said nothing of it.
+test("a page that opens a dialog while it loads is taken", { skip: noBrowser, timeout: 100_000 }, async () => {
+  const { server, origin } = await serve((req, res) => {
+    if (req.url === "/") return res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Dialogs | Acme", '<h1 id="h">Before</h1><p><a href="/x">x</a></p><script>alert("hello"); confirm("sure?"); prompt("your name?"); document.getElementById("h").textContent = "After the dialogs";</script>'));
+    res.writeHead(404).end("not found");
+  });
+  const dir = path.join(tempDir(), "shots");
+  try {
+    const { manifest } = await takeShots(origin, { dir, pages: 1, sizes: "desktop", timeLimit: 60_000 });
+    assert.equal(manifest.pages[0].heading, "After the dialogs");
+  } finally {
+    server.close();
+    fs.rmSync(path.dirname(dir), { recursive: true, force: true });
+  }
+});
+
 // A run given little time (--timeout 30, the least the command takes)
 // still waits for a view's data, up to 10 s, as long as that leaves its
 // first screenshot the time it needs, and says so when the time ran short
