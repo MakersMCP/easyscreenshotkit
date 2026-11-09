@@ -177,7 +177,9 @@ test("the CLI hands demo to its own command, with its own help", () => {
 });
 
 test("a demo never writes into a folder that holds someone else's files, and its files take an earlier demo's place once it has ended well", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-demo-dir-"));
+  // Absolute, so a link made to a folder in it leads there under a TMPDIR
+  // given as a relative path too.
+  const dir = path.resolve(fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-demo-dir-")));
   const earlier = () => fs.writeFileSync(path.join(dir, "steps.json"), JSON.stringify({ version: 1, kind: "demo", tool: "easyscreenshotkit 0.1.0" }));
   const record = (options, files) => {
     const run = openDemo(dir, options);

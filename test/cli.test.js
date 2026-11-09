@@ -303,7 +303,9 @@ test("the pages left out: those opened first, then the #route links, then the ot
 
 test("two runs that put their files in one folder at the same moment take turns, and the later one's replace the earlier one's whole", async () => {
   const { LOCK, staleLock, takeOver } = require("../skills/easyscreenshotkit/scripts/lib/outdir");
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-dir-"));
+  // Absolute, so a link made to a folder in it leads there under a TMPDIR
+  // given as a relative path too.
+  const root = path.resolve(fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-dir-")));
   const dir = path.join(root, "shots");
   const lock = path.join(dir, LOCK);
   const runOf = (id, pictures) => {
@@ -445,7 +447,9 @@ function snapshot(dir) {
 const hourAgo = () => new Date(Date.now() - 3_600_000);
 
 test("a run's folder: refused when it holds someone else's files, and an earlier run's files stay until a new run has ended well", () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-dir-"));
+  // Absolute, so a link made to a folder in it leads there under a TMPDIR
+  // given as a relative path too.
+  const root = path.resolve(fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-dir-")));
   const dir = path.join(root, "shots");
   const put = (rel, text) => {
     fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
