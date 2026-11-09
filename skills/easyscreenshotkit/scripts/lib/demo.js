@@ -25,7 +25,7 @@ const { pickPages, tourSteps } = require("./tour");
 const { layoutOf, LOOKS, backdropOf, renderVideo, renderStill } = require("./compose");
 const { cameraAt } = require("./motion");
 const { findFfmpeg, pickEncoder, startVideo, makeGif, MISSING } = require("./ffmpeg");
-const { tagPng, pngSize } = require("./png");
+const { tagPng, pngSize, pngFileIsWhole } = require("./png");
 const { setTimeLimit, timeLeft } = require("./time");
 const { begin, checkDir, stopOnSignals } = require("./outdir");
 const version = require("./version");
@@ -424,6 +424,7 @@ async function makeDemo(rawUrl, options = {}) {
     }
     const png = tagPng(poster.png, { Title: `${name} demo`, Source: asked, "Creation Time": new Date().toISOString(), Software: `easyscreenshotkit ${version}` });
     run.write("poster.png", png);
+    if (!pngFileIsWhole(run.file("poster.png"))) throw new Error("poster.png came out cut short (the disk, or your disk quota, may be full), so no demo was saved.");
     if (gif) {
       log("Making demo.gif");
       gifInfo = await makeGif(ffmpeg, video, run.file("demo.gif"), { dir: frames });

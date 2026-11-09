@@ -1134,6 +1134,27 @@ test("a run whose browser ends in the middle of it fails, and leaves the earlier
   }
 });
 
+// A run ends well only with whole files: a picture that reached the disk cut
+// short does not take the place of the earlier run's.
+test("a run whose picture came out cut short fails, and leaves the earlier run's files as they were", { skip: noBrowser, timeout: 120_000 }, async () => {
+  const { server, origin } = await fixture();
+  const root = tempDir();
+  const dir = path.join(root, "shots");
+  const write = fs.writeFileSync;
+  try {
+    await takeShots(origin, { dir, pages: 1, sizes: "desktop", timeLimit: 50_000 });
+    const before = snapshot(dir);
+    fs.writeFileSync = (file, data, ...rest) => write(file, /-desktop\.png$/.test(String(file)) ? data.subarray(0, data.length - 7) : data, ...rest);
+    await assert.rejects(takeShots(origin, { dir, pages: 1, sizes: "desktop", timeLimit: 50_000 }), /^Error: 01-home-desktop\.png came out cut short \(the disk, or your disk quota, may be full\), so no screenshots were saved\.$/);
+    fs.writeFileSync = write;
+    assert.deepEqual(snapshot(dir), before);
+  } finally {
+    fs.writeFileSync = write;
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // A process that ends on an uncaught exception, with a run open and a
 // browser going: as it ends, the browser is killed and its profile and lock
 // folder go, and the run's folder is as it was.

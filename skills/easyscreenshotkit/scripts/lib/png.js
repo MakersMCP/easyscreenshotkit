@@ -9,6 +9,7 @@
 // page's end, so only the first row of each screen needs to be made plain
 // again (it had no row above it); every other row is copied as it is.
 
+const fs = require("fs");
 const zlib = require("zlib");
 
 const SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -33,6 +34,27 @@ function pngChunk(type, data) {
   data.copy(chunk, 8);
   chunk.writeUInt32BE(crc32(chunk.subarray(4, 8 + data.length)), 8 + data.length);
   return chunk;
+}
+
+// Whether the file at a path is a whole PNG: every PNG starts with its
+// signature and ends in the same twelve bytes, its IEND chunk.
+function pngFileIsWhole(file) {
+  const end = pngChunk("IEND", Buffer.alloc(0));
+  let fd;
+  try {
+    fd = fs.openSync(file, "r");
+    const { size } = fs.fstatSync(fd);
+    if (size < SIGNATURE.length + end.length) return false;
+    const head = Buffer.alloc(SIGNATURE.length);
+    const tail = Buffer.alloc(end.length);
+    fs.readSync(fd, head, 0, head.length, 0);
+    fs.readSync(fd, tail, 0, tail.length, size - tail.length);
+    return head.equals(SIGNATURE) && tail.equals(end);
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
 }
 
 // Width and height from the header, or null for anything that is not a PNG.
@@ -180,4 +202,4 @@ function pngText(png) {
   return out;
 }
 
-module.exports = { crc32, pngChunk, pngSize, pngRows, toRgb, joinScreens, tagPng, pngText };
+module.exports = { crc32, pngChunk, pngFileIsWhole, pngSize, pngRows, toRgb, joinScreens, tagPng, pngText };

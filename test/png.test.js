@@ -5,7 +5,10 @@
 
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const { joinScreens, tagPng, pngText, pngSize } = require("../skills/easyscreenshotkit/scripts/lib/png");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { joinScreens, tagPng, pngText, pngSize, pngFileIsWhole } = require("../skills/easyscreenshotkit/scripts/lib/png");
 const { screenTops } = require("../skills/easyscreenshotkit/scripts/lib/page");
 const { readPng, pngOf } = require("./helpers");
 
@@ -61,6 +64,25 @@ test("a screen that came back as RGBA joins the RGB ones, its see-through pixels
   assert.equal(png.height, 40);
   assert.deepEqual(png.pixel(0, 0), [127, 127, 127]);
   for (let y = 1; y < 40; y++) assert.deepEqual(png.pixel(4, y), PAGE_COLOR(4, y), `row ${y}`);
+});
+
+test("a PNG file is whole only when it starts and ends as a PNG does", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-png-"));
+  try {
+    const file = path.join(dir, "a.png");
+    const png = pngOf(10, 10, (x, y) => PAGE_COLOR(x, y));
+    fs.writeFileSync(file, png);
+    assert.equal(pngFileIsWhole(file), true);
+    fs.writeFileSync(file, tagPng(png, { Title: "A page" }));
+    assert.equal(pngFileIsWhole(file), true);
+    for (const data of [Buffer.alloc(0), png.subarray(0, 20), png.subarray(0, png.length - 1), png.subarray(1), Buffer.concat([png, Buffer.from([0])])]) {
+      fs.writeFileSync(file, data);
+      assert.equal(pngFileIsWhole(file), false, `${data.length} bytes`);
+    }
+    assert.equal(pngFileIsWhole(path.join(dir, "no-such.png")), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("screen tops: the first screen whole, then three quarters of each, the last one at the page's end", () => {

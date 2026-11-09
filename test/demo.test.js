@@ -17,7 +17,7 @@ const { pickPages } = require("../skills/easyscreenshotkit/scripts/lib/tour");
 const { setTimeLimit } = require("../skills/easyscreenshotkit/scripts/lib/time");
 const { readSteps } = require("../skills/easyscreenshotkit/scripts/lib/steps");
 const { findChrome, launch, openTab, closeTab, navigate } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
-const { findFfmpeg, makeGif } = require("../skills/easyscreenshotkit/scripts/lib/ffmpeg");
+const { findFfmpeg, makeGif, startVideo, gifIsWhole, mp4Frames } = require("../skills/easyscreenshotkit/scripts/lib/ffmpeg");
 const { readPng, serve, near } = require("./helpers");
 
 const CLI = path.resolve(__dirname, "../skills/easyscreenshotkit/scripts/easyscreenshotkit.js");
@@ -144,6 +144,61 @@ test("demo.gif is made in a folder whose path holds a %, and nothing is written 
       assert.deepEqual(fs.readdirSync(frames), [], `${name}: the palette is gone`);
       assert.deepEqual(fs.readdirSync(root).sort(), before, `${name}: nothing was written next to the folder`);
     }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A whole GIF and MP4 as ffmpeg writes them, and the same files cut short at
+// any point: what the run reads before it counts a file as made.
+test("a GIF or a video cut short is told from a whole one, by its blocks and by its index", { skip: !ffmpeg && "no ffmpeg installed", timeout: 60_000 }, () => {
+  const root = tempDir();
+  try {
+    const video = path.join(root, "whole.mp4");
+    const gif = path.join(root, "whole.gif");
+    const lavfi = ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=160x90:rate=10:duration=1"];
+    for (const args of [[...lavfi, "-pix_fmt", "yuv420p", "-movflags", "+faststart", video], [...lavfi, gif]]) {
+      const made = spawnSync(ffmpeg, args, { encoding: "utf8" });
+      assert.equal(made.status, 0, made.stderr);
+    }
+    assert.equal(mp4Frames(video), 10);
+    const bytes = fs.readFileSync(video);
+    for (const at of [0, 4, 7, 200, bytes.length >> 1, bytes.length - 1]) {
+      const cut = path.join(root, "cut.mp4");
+      fs.writeFileSync(cut, bytes.subarray(0, at));
+      assert.equal(mp4Frames(cut), 0, `cut at ${at}`);
+    }
+    assert.equal(mp4Frames(path.join(root, "no-such.mp4")), 0);
+    const whole = fs.readFileSync(gif);
+    assert.equal(gifIsWhole(whole), true);
+    for (const at of [0, 5, 12, 13, 400, whole.length >> 1, whole.length - 1]) assert.equal(gifIsWhole(whole.subarray(0, at)), false, `cut at ${at}`);
+    // Cut where the last byte happens to be the trailer's.
+    const lookalike = Buffer.from(whole.subarray(0, whole.length - 1));
+    lookalike[lookalike.length - 1] = 0x3b;
+    assert.equal(gifIsWhole(lookalike), false);
+    assert.equal(gifIsWhole(Buffer.concat([whole, Buffer.from([0])])), false, "more after its trailer");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ffmpeg 4, on a full disk, only logs that it could not write the end of the
+// file and exits with 0, and a GIF or a video cut short replaced the earlier
+// demo. Here a stand-in that does the same: every call asks it to fail, and
+// what it leaves is read and refused.
+test("a GIF or a video that ffmpeg cut short while exiting with 0 is no output", { skip: process.platform === "win32" && "the stand-in for ffmpeg is a shell script", timeout: 30_000 }, async () => {
+  const root = tempDir();
+  const log = path.join(root, "args.txt");
+  const fake = path.join(root, "ffmpeg");
+  fs.writeFileSync(fake, `#!/bin/sh\necho "$*" >> "${log}"\nfor last; do :; done\nprintf 'GIF89a\\001\\000\\001\\000\\000\\000\\000' > "$last"\ncat > /dev/null\nexit 0\n`, { mode: 0o755 });
+  try {
+    await assert.rejects(makeGif(fake, path.join(root, "in.mp4"), path.join(root, "out.gif"), { dir: root }), /^Error: ffmpeg could not write out\.gif: the file came out cut short \(the disk, or your disk quota, may be full\)$/);
+    const sink = startVideo(fake, path.join(root, "out.mp4"), { fps: 30, encoder: { name: "x", args: [] } });
+    await sink.write(Buffer.from("a frame"));
+    await assert.rejects(sink.end(), /^Error: ffmpeg could not write out\.mp4: the file came out cut short/);
+    const calls = fs.readFileSync(log, "utf8").trim().split("\n");
+    assert.equal(calls.length, 3, calls.join("\n"));
+    for (const call of calls) assert.match(call, /(^| )-xerror( |$)/, call);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -739,6 +794,20 @@ test("a demo that fails or is stopped leaves an earlier demo as it was and adds 
 
     // A step that points at nothing.
     await assert.rejects(makeDemo(origin, { dir, steps: bad, gif: false, timeLimit: 100_000 }), /step 2 \(click\): nothing on the page matches/);
+    assert.deepEqual(snapshot(dir), before);
+
+    // An ffmpeg that exits with 0 and leaves a GIF cut short, as ffmpeg 4
+    // does on a full disk.
+    const cutting = path.join(root, "ffmpeg-that-cuts");
+    fs.writeFileSync(cutting, `#!${process.execPath}\nconst { spawnSync } = require("child_process");\nconst fs = require("fs");\nconst args = process.argv.slice(2);\nconst done = spawnSync(${JSON.stringify(ffmpeg)}, args, { stdio: "inherit" });\nconst last = args[args.length - 1];\nif (last.endsWith(".gif")) fs.truncateSync(last, fs.statSync(last).size - 99);\nprocess.exit(done.status);\n`, { mode: 0o755 });
+    const realFfmpeg = process.env.FFMPEG_PATH;
+    process.env.FFMPEG_PATH = cutting;
+    try {
+      await assert.rejects(makeDemo(origin, { dir, steps: good, timeLimit: 100_000 }), /ffmpeg could not write demo\.gif: the file came out cut short/);
+    } finally {
+      if (realFfmpeg === undefined) delete process.env.FFMPEG_PATH;
+      else process.env.FFMPEG_PATH = realFfmpeg;
+    }
     assert.deepEqual(snapshot(dir), before);
 
     // Stopped with SIGTERM to its whole process group while the video is

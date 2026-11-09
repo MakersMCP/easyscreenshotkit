@@ -68,7 +68,7 @@ What comes back:
 - A site that answers with a bot check gives no screenshots: easyscreenshotkit stops and says so. Ask the user for screenshots instead.
 - Screens behind a login are not reached. Ask the user for them, or for a public page that shows the same thing.
 - If something still covers a page, run again with `--hide '<css selector>'`. Slow sites can take `--timeout 600`.
-- A run that fails or is stopped leaves the screenshots or the demo an earlier run saved in that folder as they were, and adds nothing: a new run replaces them only once it has ended well.
+- A run that fails or is stopped leaves the screenshots or the demo an earlier run saved in that folder as they were, and adds nothing: a new run replaces them only once it has ended well. A run whose browser is lost in the middle of it, or whose files come out cut short on a full disk, has failed in that sense.
 - An address that answers with a file to download, at once or after a redirect, is refused and nothing is saved. A `--page` or a page of the tour is left out with that reason in `skipped` and `notes`; as the only page, it stops the run. A demo's `visit` step to one stops the demo.
 - A demo step that points at nothing stops the run and names the step. Check the selector or the words against the page, or put a `wait` for it before the step.
 - When the demo says ffmpeg is missing, ask the user to install it.

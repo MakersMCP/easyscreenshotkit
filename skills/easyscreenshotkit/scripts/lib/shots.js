@@ -26,7 +26,7 @@ const { launch, openTab, closeTab, navigate, currentUrl } = require("./chrome");
 const { metrics, scrollTo, walk, showsContent, waitForContent, settle, watchRequests, networkQuiet, quietNetwork, waitForFonts, clearHover, resetPictureWait, capture, captureScreen, capturePage } = require("./page");
 const { clean } = require("./clean");
 const { homeOf, pageKey, routeOf, viewKey, pathOf, pageUrl, anchorOf, siteOf, fold, kindOf, rankLinks, routeLinks, visitOrder, readSiteIndex, localeOf, alternateFor, oneLine, ROUTE_LINK } = require("./pick");
-const { pngSize, tagPng } = require("./png");
+const { pngFileIsWhole, pngSize, tagPng } = require("./png");
 const { PWA_SHOTS, LOOKED_AT, planPwa, checkManifest } = require("./pwa");
 const { renderSheet } = require("./sheet");
 const { begin, checkDir, realFolder } = require("./outdir");
@@ -858,6 +858,7 @@ async function takeShots(rawUrl, options = {}) {
   let siteManifest = "";
   let pwaSaved = null;
   let manifest = null;
+  let saved = [];
   let chrome = null;
   // The other devices and themes of a page kept are taken in windows of
   // their own while the next pages are being found.
@@ -1149,6 +1150,11 @@ async function takeShots(rawUrl, options = {}) {
     if (siteCheck) Object.assign(manifest.pwa, await siteCheck);
     run.write("manifest.json", JSON.stringify(manifest, null, 2) + "\n");
     writeMarkdown(manifest, run);
+    // A run ends well only with whole files: each picture is read back
+    // before it can take the place of an earlier run's.
+    saved = [...written, ...(manifest.sheet ? ["sheet.png"] : []), ...(pwaSaved && pwaSaved.file ? [...pwaSaved.screenshots.map((shot) => shot.file), pwaSaved.file] : []), "SCREENSHOTS.md", "manifest.json"];
+    const cut = saved.find((file) => file.endsWith(".png") && !pngFileIsWhole(run.file(file)));
+    if (cut) throw new Error(`${cut} came out cut short (the disk, or your disk quota, may be full), so no screenshots were saved.`);
   } catch (err) {
     // Whatever failed first, a browser that ended is why.
     const gone = Boolean(chrome && chrome.gone());
@@ -1158,7 +1164,7 @@ async function takeShots(rawUrl, options = {}) {
     throw run.told(gone ? new Error(BROWSER_GONE) : err);
   }
   // The run has ended well: its files take the place of the earlier run's.
-  run.commit([...written, ...(manifest.sheet ? ["sheet.png"] : []), ...(pwaSaved && pwaSaved.file ? [...pwaSaved.screenshots.map((shot) => shot.file), pwaSaved.file] : []), "SCREENSHOTS.md", "manifest.json"]);
+  run.commit(saved);
   return { dir: target, manifest };
 }
 
