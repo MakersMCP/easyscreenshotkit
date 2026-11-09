@@ -101,7 +101,7 @@ The demo needs ffmpeg, the one on your machine (`brew install ffmpeg`, `sudo apt
   --no-gif            skip demo.gif
 ```
 
-`--out`, `--theme`, `--lang`, `--hide`, `--reduced-motion`, `--no-clean` and `--json` work as they do for screenshots, and `--timeout` gives a demo 900 seconds by default.
+`--out`, `--lang`, `--hide`, `--reduced-motion`, `--no-clean` and `--json` work as they do for screenshots. A demo's `--theme` takes light or dark, and `--timeout` gives a demo 900 seconds by default.
 
 How a demo is made:
 
