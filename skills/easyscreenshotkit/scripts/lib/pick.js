@@ -290,6 +290,14 @@ function printable(text) {
   return String(text).replace(ACTING, (c) => (c === "\n" || MARKS.test(c) ? c : encodeURIComponent(c)));
 }
 
+// A line of a file or a report an agent reads (SCREENSHOTS.md, what
+// --pwa-check says), with what a page or a site's manifest wrote in it:
+// each line break in it, of any kind, is a space, so it cannot start a
+// heading or a line of its own.
+function oneLine(text) {
+  return String(text).replace(/[\n\r\v\f\u0085\u2028\u2029]+/g, " ");
+}
+
 // What an address shows after its host, as a person reads it: the path,
 // the query and the fragment.
 function pathOf(raw) {
@@ -641,6 +649,7 @@ module.exports = {
   viewOf,
   readable,
   printable,
+  oneLine,
   pathOf,
   linkUrl,
   pageUrl,

@@ -26,6 +26,7 @@
 const fs = require("fs");
 const path = require("path");
 const { pngSize } = require("./png");
+const { oneLine } = require("./pick");
 const version = require("./version");
 
 const MIN_SIDE = 320;
@@ -472,7 +473,8 @@ function describeCheck(report) {
   if (report.problems.length) lines.push("", "To fix:", ...report.problems.map((text) => `  - ${text}`));
   else lines.push("", "Nothing to fix: Chrome shows them as they are.");
   if (report.tips.length) lines.push("", "Worth adding:", ...report.tips.map((text) => `  - ${text}`));
-  return lines.join("\n");
+  // What the manifest says (a src, a type) stays on its line.
+  return lines.map(oneLine).join("\n");
 }
 
 module.exports = {

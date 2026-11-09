@@ -25,7 +25,7 @@ const crypto = require("crypto");
 const { launch, openTab, closeTab, navigate, currentUrl } = require("./chrome");
 const { metrics, scrollTo, walk, showsContent, waitForContent, settle, watchRequests, networkQuiet, quietNetwork, waitForFonts, clearHover, resetPictureWait, capture, captureScreen, capturePage } = require("./page");
 const { clean } = require("./clean");
-const { homeOf, pageKey, routeOf, viewKey, pathOf, pageUrl, anchorOf, siteOf, fold, kindOf, rankLinks, routeLinks, visitOrder, readSiteIndex, localeOf, alternateFor, ROUTE_LINK } = require("./pick");
+const { homeOf, pageKey, routeOf, viewKey, pathOf, pageUrl, anchorOf, siteOf, fold, kindOf, rankLinks, routeLinks, visitOrder, readSiteIndex, localeOf, alternateFor, oneLine, ROUTE_LINK } = require("./pick");
 const { pngSize, tagPng } = require("./png");
 const { PWA_SHOTS, LOOKED_AT, planPwa, checkManifest } = require("./pwa");
 const { renderSheet } = require("./sheet");
@@ -344,7 +344,10 @@ const ONCE = `((text) => {
 
 const READ_INFO = `(() => {
   const once = ${ONCE};
-  const meta = (selector) => ((document.querySelector(selector) || {}).content || "").trim();
+  // A page's own words, on one line as the title and the heading are: a
+  // line break in a meta tag's content would make a line of its own where
+  // the site's name and the description are written.
+  const meta = (selector) => ((document.querySelector(selector) || {}).content || "").replace(/\\s+/g, " ").trim();
   const h1 = document.querySelector("h1");
   const text = (document.body ? document.body.innerText : "").replace(/\\s+/g, " ").trim();
   return {
@@ -354,7 +357,7 @@ const READ_INFO = `(() => {
     heading: h1 ? once(h1.innerText.replace(/\\s+/g, " ").trim()).slice(0, 200) : "",
     canonical: (document.querySelector('link[rel="canonical"]') || {}).href || "",
     manifest: (document.querySelector('link[rel~="manifest" i][href]') || {}).href || "",
-    lang: document.documentElement.lang || "",
+    lang: (document.documentElement.lang || "").replace(/\\s+/g, " ").trim(),
     text: text.slice(0, 20000),
     scripts: [...document.querySelectorAll("script[src], iframe[src]")].map((el) => el.src).join(" ").slice(0, 20000),
     height: document.documentElement.scrollHeight,
@@ -784,7 +787,7 @@ function writeMarkdown(manifest, run) {
     lines.push("");
   }
   if (manifest.notes.length) lines.push("## Notes", "", ...manifest.notes.map((note) => `- ${note}`), "");
-  run.write("SCREENSHOTS.md", lines.join("\n"));
+  run.write("SCREENSHOTS.md", lines.map(oneLine).join("\n"));
 }
 
 // A browser that ends in the middle of a run, as a crash or a kill from
@@ -1180,4 +1183,4 @@ function leftOut(rejected, routes, links) {
   return { skipped: all.slice(0, LEFT_OUT), routesPast: all.slice(LEFT_OUT).filter((skip) => skip.reason === ROUTE_LINK).length };
 }
 
-module.exports = { takeShots, parseSizes, addPwaShots, normalizeUrl, fragmentNotes, prepareDir, openShots, slugOf, identity, movedOn, pagesAsked, waitForView, leftOut, siteName, readInfo, readLinks, rejectAtOnce, rejectReason, DEVICES, MAX_HEIGHT };
+module.exports = { takeShots, parseSizes, addPwaShots, normalizeUrl, fragmentNotes, prepareDir, openShots, slugOf, identity, movedOn, pagesAsked, waitForView, leftOut, siteName, readInfo, readLinks, rejectAtOnce, rejectReason, writeMarkdown, DEVICES, MAX_HEIGHT };
