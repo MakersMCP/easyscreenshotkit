@@ -810,6 +810,17 @@ test("a demo that fails or is stopped leaves an earlier demo as it was and adds 
     }
     assert.deepEqual(snapshot(dir), before);
 
+    // A poster that reached the disk cut short does not take the place of
+    // the earlier one.
+    const write = fs.writeFileSync;
+    fs.writeFileSync = (file, data, ...rest) => write(file, /poster\.png$/.test(String(file)) ? data.subarray(0, data.length - 7) : data, ...rest);
+    try {
+      await assert.rejects(makeDemo(origin, { dir, steps: good, gif: false, timeLimit: 100_000 }), /^Error: poster\.png came out cut short \(the disk, or your disk quota, may be full\), so no demo was saved\.$/);
+    } finally {
+      fs.writeFileSync = write;
+    }
+    assert.deepEqual(snapshot(dir), before);
+
     // Stopped with SIGTERM to its whole process group while the video is
     // drawn, as a supervisor stops a job: the partial demo.mp4, the frames
     // and the browser's profile go, and it ends by the same signal.
