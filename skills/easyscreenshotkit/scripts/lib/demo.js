@@ -70,7 +70,9 @@ is that view of the address given. Any other fragment in the address or in
 --page, such as #pricing or #inbox, is left out, with a note; a visit step
 keeps it. A tour follows paths only: the notes in steps.json name the
 #route links on the home page, the address given and each --page, and the
-#routes in the site's sitemap.
+#routes in the site's sitemap. An address that answers with a file to
+download is refused: a tour leaves it out and says so, a visit step to one
+stops the demo, and the browser saves nothing.
 
 A demo builds its files inside the folder it saves in and moves them into
 place once it has ended well, replacing an earlier demo's. One that fails or
@@ -375,6 +377,7 @@ async function makeDemo(rawUrl, options = {}) {
       await chrome.close();
     }
     if (!take.frames.length) throw new Error("No frame was recorded.");
+    for (const url of take.refused.slice(0, 5)) notes.push(`The page started a download of ${String(url).slice(0, 200)}, which the browser refused: no file was saved.`);
     if (take.slow) notes.push("A page drew slowly in this browser, so it was recorded in slow motion and played back at speed; its own animations look right, scripted ones may run fast.");
 
     // The video.

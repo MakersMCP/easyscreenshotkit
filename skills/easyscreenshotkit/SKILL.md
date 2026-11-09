@@ -69,6 +69,7 @@ What comes back:
 - Screens behind a login are not reached. Ask the user for them, or for a public page that shows the same thing.
 - If something still covers a page, run again with `--hide '<css selector>'`. Slow sites can take `--timeout 600`.
 - A run that fails or is stopped leaves the screenshots or the demo an earlier run saved in that folder as they were, and adds nothing: a new run replaces them only once it has ended well.
+- An address that answers with a file to download, at once or after a redirect, is refused and nothing is saved. A `--page` or a page of the tour is left out with that reason in `skipped` and `notes`; as the only page, it stops the run. A demo's `visit` step to one stops the demo.
 - A demo step that points at nothing stops the run and names the step. Check the selector or the words against the page, or put a `wait` for it before the step.
 - When the demo says ffmpeg is missing, ask the user to install it.
 - When it says the browser did not start because the temp folder's path is too long, run it again with `TMPDIR=/tmp` in front: an agent's sandbox can set a long one.

@@ -155,8 +155,8 @@ async function fixture() {
         return html(page("Fiyatlar | Acme", '<h1>Fiyatlar</h1><div style="height:1400px"></div><a href="/tr/">Ana sayfa</a>', { lang: "tr" }));
       case "/picture.svg":
         return setTimeout(() => res.writeHead(200, { "Content-Type": "image/svg+xml" }).end('<svg xmlns="http://www.w3.org/2000/svg" width="400" height="300"><rect width="400" height="300" fill="rgb(230,120,0)"/></svg>'), 300);
-      case "/report.csv":
-        return res.writeHead(200, { "Content-Type": "text/csv", "Content-Disposition": 'attachment; filename="report.csv"' }).end("a,b\n1,2\n");
+      case "/nothing":
+        return res.writeHead(204).end();
       case "/app.webmanifest":
         return res.writeHead(200, { "Content-Type": "application/manifest+json" }).end(JSON.stringify({ name: "Acme", start_url: "/", display: "standalone" }));
       case "/robots.txt":
@@ -282,18 +282,18 @@ test("picks the pages worth showing and leaves the rest out with reasons", { ski
   }
 });
 
-// A --page the browser cannot open, such as a link to a file, which it does
-// not download, is left out and named in the notes, and the run goes on: it
-// stopped the run, with --pages 1 too.
+// A --page the browser cannot open, here one that answers with nothing, is
+// left out and named in the notes, and the run goes on: it stopped the run,
+// with --pages 1 too.
 test("a --page that cannot be opened is named in the notes, and the run goes on", { skip: noBrowser, timeout: 120_000 }, async () => {
   const { server, origin } = await fixture();
   const dir = path.join(tempDir(), "shots");
   try {
-    const { manifest } = await takeShots(origin, { dir, pages: 1, sizes: "desktop", extra: ["/report.csv", "/pricing"], timeLimit: 100_000 });
+    const { manifest } = await takeShots(origin, { dir, pages: 1, sizes: "desktop", extra: ["/nothing", "/pricing"], timeLimit: 100_000 });
     assert.deepEqual(manifest.pages.map((p) => p.slug), ["home", "pricing"]);
-    const left = manifest.skipped.find((s) => s.url === `${origin}/report.csv`);
+    const left = manifest.skipped.find((s) => s.url === `${origin}/nothing`);
     assert.match(left.reason, /^could not be opened: net::ERR_[A-Z_]+$/);
-    assert.ok(manifest.notes.includes(`${origin}/report.csv was asked for but not taken: ${left.reason}.`), manifest.notes.join("\n"));
+    assert.ok(manifest.notes.includes(`${origin}/nothing was asked for but not taken: ${left.reason}.`), manifest.notes.join("\n"));
   } finally {
     server.close();
     fs.rmSync(path.dirname(dir), { recursive: true, force: true });
@@ -1363,6 +1363,63 @@ test("a site cannot make the browser save a file", { skip: noBrowser || (process
     assert.ok(seen.includes("/file.bin"), "the page sent the browser to the file");
     assert.deepEqual(filesUnder(root, fromTheSite), []);
     assert.deepEqual(fs.readdirSync(path.join(root, "shots")).sort(), ["01-home-desktop.png", "SCREENSHOTS.md", "manifest.json", "sheet.png"]);
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// An address that answers with a file, at once or after a redirect, is no
+// page to take. It is refused, the report says why, and the browser saves
+// nothing: closing the tab right after the answer saved the file, as a
+// browser told per tab not to download forgets it when that tab goes.
+const REFUSED = "a file to download instead of a page";
+
+test("an address that answers with a file is refused, the report says so, and nothing is saved", { skip: noBrowser || (process.platform !== "linux" && "Chrome reads where it saves a download from HOME on Linux only"), timeout: 240_000 }, async () => {
+  const seen = [];
+  const { server, origin } = await serve((req, res) => {
+    seen.push(req.url);
+    if (req.url === "/") return res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Acme", '<header><nav><a href="/download">Download</a></nav></header><h1>Acme</h1><div style="height:1400px"></div>'));
+    if (req.url === "/download") return res.writeHead(302, { Location: "/file.bin" }).end();
+    if (req.url === "/file.bin") return res.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Disposition": 'attachment; filename="from-the-site.txt"' }).end(DOWNLOAD);
+    res.writeHead(404).end("not found");
+  });
+  const root = tempDir();
+  const home = path.join(root, "home");
+  fs.mkdirSync(home);
+  const env = { ...process.env, HOME: home };
+  delete env.XDG_CONFIG_HOME;
+  delete env.XDG_DOWNLOAD_DIR;
+  const manifestOf = (dir) => JSON.parse(fs.readFileSync(path.join(dir, "manifest.json"), "utf8"));
+  try {
+    // --page, to the file and to a redirect to it: both are left out, and
+    // the page asked for first is taken.
+    const asked = path.join(root, "asked");
+    const named = await runCli([origin, "--pages", "1", "--sizes", "desktop", "--page", "/file.bin", "--page", "/download", "--out", asked], { env });
+    assert.equal(named.status, 0, named.stderr);
+    const manifest = manifestOf(asked);
+    assert.deepEqual(manifest.pages.map((p) => p.slug), ["home"]);
+    assert.deepEqual(manifest.skipped, [{ url: `${origin}/file.bin`, reason: REFUSED }, { url: `${origin}/download`, reason: REFUSED }]);
+    for (const at of ["/file.bin", "/download"]) assert.ok(manifest.notes.includes(`${origin}${at} was asked for but not taken: ${REFUSED}.`), manifest.notes.join("\n"));
+    assert.deepEqual(filesUnder(root, fromTheSite), []);
+
+    // A tour whose menu links to the file through a redirect.
+    const toured = path.join(root, "tour");
+    const tour = await runCli([origin, "--pages", "2", "--sizes", "desktop", "--out", toured], { env });
+    assert.equal(tour.status, 0, tour.stderr);
+    assert.deepEqual(manifestOf(toured).skipped, [{ url: `${origin}/download`, reason: REFUSED }]);
+    assert.match(tour.stdout, new RegExp(`/download \\(${REFUSED}\\)`));
+    assert.deepEqual(filesUnder(root, fromTheSite), []);
+
+    // The address given, as the only page to take: the run fails and says
+    // why, and an earlier run stays as it was.
+    const before = snapshot(asked);
+    const given = await runCli([`${origin}/download`, "--pages", "1", "--sizes", "desktop", "--out", asked], { env });
+    assert.equal(given.status, 1, given.stdout);
+    assert.match(given.stderr, /^easyscreenshotkit: Could not open .*\/download: it answers with a file to download instead of a page\.$/m);
+    assert.deepEqual(snapshot(asked), before);
+    assert.deepEqual(filesUnder(root, fromTheSite), []);
+    assert.equal(seen.filter((at) => at === "/file.bin").length >= 3, true, seen.join(" "));
   } finally {
     server.close();
     fs.rmSync(root, { recursive: true, force: true });

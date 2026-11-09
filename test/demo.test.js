@@ -350,7 +350,7 @@ async function fixture({ sitemap = null } = {}) {
     if (url.pathname === "/features") return html(plain("Features", "rgb(0,200,200)"));
     if (url.pathname === "/pricing") return html(plain("Pricing", "rgb(0,120,255)"));
     if (url.pathname === "/login") return html(plain("Log in", "#eee"));
-    if (url.pathname === "/report.csv") return res.writeHead(200, { "Content-Type": "text/csv", "Content-Disposition": 'attachment; filename="report.csv"' }).end("a,b\n1,2\n");
+    if (url.pathname === "/nothing") return res.writeHead(204).end();
     if (url.pathname === "/thanks") return html(page("Thanks | Acme", `<h1>Thanks, ${String(url.searchParams.get("email")).replace(/[<>&]/g, "")}</h1><div style="height:1400px"></div>`, "body{background:rgb(250,220,0)}"));
     if (url.pathname === "/app/") return html(APP);
     const view = url.pathname.startsWith("/api/") ? APP_VIEWS[decodeURIComponent(url.pathname.slice(5))] : null;
@@ -662,17 +662,18 @@ test("a tour lists the #route links of the home page and the address given, and 
   );
 });
 
-// A --page the browser cannot open, such as a link to a file, is left out
-// of the tour with the reason, and the tour goes on: it stopped the demo.
+// A --page the browser cannot open, here one that answers with nothing, is
+// left out of the tour with the reason, and the tour goes on: it stopped
+// the demo.
 test("a tour leaves out a --page that cannot be opened, and goes on", { skip: !findChrome() && "no Chrome, Chromium, Edge or Brave installed", timeout: 60_000 }, async () => {
   const { server, origin } = await fixture();
   setTimeLimit(50_000);
   const chrome = await launch();
   try {
-    const tour = await pickPages(chrome, origin, { pages: 2, extra: ["/report.csv"] });
+    const tour = await pickPages(chrome, origin, { pages: 2, extra: ["/nothing"] });
     assert.deepEqual(tour.pages.map((p) => p.url.slice(origin.length)), ["/"]);
     assert.equal(tour.skipped.length, 1);
-    assert.equal(tour.skipped[0].url, `${origin}/report.csv`);
+    assert.equal(tour.skipped[0].url, `${origin}/nothing`);
     assert.match(tour.skipped[0].reason, /^could not be opened: net::ERR_[A-Z_]+$/);
   } finally {
     await chrome.close();
@@ -777,6 +778,7 @@ test("a click on a download link saves no file", { skip: missing || (process.pla
     seen.push(req.url);
     if (req.url === "/") return res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Get it | Acme", '<h1>Get it</h1><p style="font-size:32px;padding:0 40px"><a href="/file.bin">Get the file</a></p><div style="height:1400px;background:rgb(0,160,0)"></div>'));
     if (req.url === "/file.bin") return res.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Disposition": 'attachment; filename="from-the-site.txt"' }).end("written by the site\n");
+    if (req.url === "/get") return res.writeHead(302, { Location: "/file.bin" }).end();
     res.writeHead(404).end("not found");
   });
   const root = tempDir();
@@ -809,6 +811,32 @@ test("a click on a download link saves no file", { skip: missing || (process.pla
     assert.ok(seen.includes("/file.bin"), "the click sent the browser to the file");
     assert.deepEqual(fromTheSite(), []);
     assert.deepEqual(fs.readdirSync(path.join(root, "demo")).sort(), ["demo.mp4", "poster.png", "steps.json"]);
+    const { notes } = JSON.parse(fs.readFileSync(path.join(root, "demo", "steps.json"), "utf8"));
+    assert.deepEqual(notes.filter((note) => /download/.test(note)), [`The page started a download of ${origin}/file.bin, which the browser refused: no file was saved.`]);
+
+    // An address that answers with a file is no page to record: a tour
+    // leaves it out and says so, and a visit step to one stops the demo,
+    // with the demo before it as it was.
+    const dir = path.join(root, "demo");
+    const before = snapshot(dir);
+    const run = (args) =>
+      new Promise((resolve) => {
+        const child = spawn(process.execPath, [CLI, "demo", ...args], { env });
+        let err = "";
+        child.stderr.on("data", (d) => (err += d));
+        child.on("close", (code) => resolve({ code, err }));
+      });
+    const visit = path.join(root, "visit.yaml");
+    fs.writeFileSync(visit, "steps:\n  - visit: /\n  - visit: /get\n");
+    const refused = await run([origin, "--steps", visit, "--out", dir, "--no-gif"]);
+    assert.equal(refused.code, 1, refused.err);
+    assert.match(refused.err, /^easyscreenshotkit demo: step 2 \(visit\): Could not open .*\/get: it answers with a file to download instead of a page\.$/m);
+    assert.deepEqual(snapshot(dir), before);
+    const tour = await run([origin, "--pages", "2", "--page", "/get", "--no-gif", "--out", path.join(root, "tour")]);
+    assert.equal(tour.code, 0, tour.err);
+    const toured = JSON.parse(fs.readFileSync(path.join(root, "tour", "steps.json"), "utf8"));
+    assert.ok(toured.notes.includes(`Left out ${origin}/get: a file to download instead of a page.`), toured.notes.join("\n"));
+    assert.deepEqual(fromTheSite(), []);
   } finally {
     server.close();
     fs.rmSync(root, { recursive: true, force: true });

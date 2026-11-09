@@ -52,7 +52,9 @@ and is named after it, 02-app-plants-desktop.png for /app/#/plants. A
 address given. Any other fragment, such as #pricing or #inbox, is left
 out, with a note. The tour follows paths only: the #route links on the
 home page, the address given and each --page, and the #routes in the
-site's sitemap, are listed with the pages it left out.
+site's sitemap, are listed with the pages it left out. An address that
+answers with a file to download is refused and named in the report, and
+the browser saves nothing.
 
 The folder has to be new, empty or hold an earlier run. A run builds its
 files in a folder whose name starts with a dot, inside the folder it saves

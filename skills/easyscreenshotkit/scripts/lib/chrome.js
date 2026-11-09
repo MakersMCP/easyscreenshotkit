@@ -244,8 +244,9 @@ async function start(binary, { lang, args, own }) {
         // A page cannot make the browser save a file: a download it starts
         // (a link to an attachment, a redirect to one) is refused before
         // anything is written, in the Downloads folder or anywhere else.
-        // Each tab is told the same (see openTab), for a browser that does
-        // not know this command.
+        // Said once, for the whole browser: Page.setDownloadBehavior on a
+        // tab lifts this for every tab as soon as that tab's connection
+        // closes, and a tab closed right after a download began saved it.
         await browser.send("Browser.setDownloadBehavior", { behavior: "deny" }, 5_000).catch(() => {});
         // Read now: a browser that is quitting removes the link to it
         // before the folder, and a stop can land in between. In a profile
@@ -341,8 +342,6 @@ async function openTab(chrome, device, { lang = "", theme = "light", reducedMoti
   cdp.targetId = targetId;
   try {
     await cdp.send("Page.enable");
-    // No download either, as the browser is told in launch().
-    await cdp.send("Page.setDownloadBehavior", { behavior: "deny" }, 5_000).catch(() => {});
     await cdp.send("Emulation.setDeviceMetricsOverride", {
       width: device.width,
       height: device.height,
@@ -383,7 +382,11 @@ async function closeTab(chrome, cdp) {
 // with no loader for it), so there is no load event to wait for: only for
 // the page to move to it, which comes after the answer, 2 s at most.
 // Returns the address the tab ended on, after any redirects, and the HTTP
-// status the page came with.
+// status the page came with. An address that answers with a file to
+// download, at once or after a redirect, is refused: the browser saves
+// nothing (see launch()), and there is no page to take.
+const NOT_A_PAGE = "a file to download instead of a page";
+
 async function navigate(cdp, url) {
   let onLoad;
   let onMove;
@@ -391,7 +394,8 @@ async function navigate(cdp, url) {
   const loaded = new Promise((resolve) => cdp.on("Page.loadEventFired", (onLoad = resolve)));
   const moved = new Promise((resolve) => cdp.on("Page.navigatedWithinDocument", (onMove = resolve)));
   try {
-    const { errorText, loaderId } = await cdp.send("Page.navigate", { url });
+    const { errorText, loaderId, isDownload } = await cdp.send("Page.navigate", { url });
+    if (isDownload) throw Object.assign(new Error(`Could not open ${url}: it answers with ${NOT_A_PAGE}.`), { refused: NOT_A_PAGE });
     // reason: the browser's own words, for a page left out over it.
     if (errorText) throw Object.assign(new Error(`Could not open ${url}: ${errorText}`), { reason: errorText });
     // The wait is cleared once the page has loaded: left running, it kept

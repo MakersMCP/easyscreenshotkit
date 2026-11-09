@@ -518,6 +518,7 @@ async function waitForView(tab, nav, asked, busy) {
 
 // Why a page that could not be opened is left out.
 function notOpened(err) {
+  if (err.refused) return err.refused;
   return /timed out/.test(err.message) ? `too slow to answer (${err.message})` : `could not be opened: ${err.reason || err.message}`;
 }
 
@@ -983,10 +984,11 @@ async function takeShots(rawUrl, options = {}) {
 
     // The page given, when it is not the page opened first, and the pages
     // asked for with --page, even past --pages: taken whatever they are,
-    // unless they fail to open (a link to a file, which the browser does
-    // not download, a host that does not answer). One that is not taken is
-    // named in the notes, and the run goes on. With a tour, the #route links
-    // on each are listed with the pages left out, as the home page's are.
+    // unless they fail to open (an address that answers with a file, which
+    // the browser does not save, a host that does not answer). One that is
+    // not taken is named in the notes, and the run goes on. With a tour,
+    // the #route links on each are listed with the pages left out, as the
+    // home page's are.
     const namedLinks = [];
     const named = [...(given && start.kind !== "given" ? [[given, "the address given"]] : []), ...asks.map((url) => [url, "asked for with --page"])];
     for (const [url, why] of named) {

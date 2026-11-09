@@ -271,7 +271,7 @@ class Recorder {
     this.quiet = false;
     this.url = "";
     this.cursor = { x: viewport.width * 0.64, y: viewport.height * 0.76 };
-    this.take = { start: { ...this.cursor }, shownAt: null, moves: [], clicks: [], typing: [], keys: [], scrolls: [], cuts: [], urls: [] };
+    this.take = { start: { ...this.cursor }, shownAt: null, moves: [], clicks: [], typing: [], keys: [], scrolls: [], cuts: [], urls: [], refused: [] };
     this.pages = [];
   }
 
@@ -297,6 +297,13 @@ class Recorder {
       if (p.frame && !p.frame.parentId && p.type !== "BackForwardCacheRestore") this.committedAt = Date.now();
     });
     tab.on("Page.loadEventFired", () => (this.loadedAt = Date.now()));
+    // A download the page started, by a click or by itself: the browser
+    // refuses it (see launch()), and the page stays where it is.
+    tab.on("Page.downloadWillBegin", (p) => {
+      if (p.frameId !== this.frameId) return;
+      this.refusedAt = Date.now();
+      if (!this.take.refused.includes(p.url)) this.take.refused.push(p.url);
+    });
     // An app that changes its address without loading a page (its own
     // router): the title bar follows. A new #route is another page; a new
     // anchor (a page that marks the section scrolled to) is the same page.
@@ -528,7 +535,7 @@ class Recorder {
     if (live) this.stopLive(at);
     const started = Date.now();
     const inDocument = () => this.sameAt >= at && String(this.sameUrl).split("#")[0] === String(this.navUrl).split("#")[0];
-    while (Date.now() - started < 15_000 && !(this.committedAt >= at) && !inDocument()) await sleep(30);
+    while (Date.now() - started < 15_000 && !(this.committedAt >= at) && !inDocument() && !(this.refusedAt >= at)) await sleep(30);
     if (!(this.committedAt >= at)) {
       this.navAt = 0;
       if (live) {
