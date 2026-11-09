@@ -12,7 +12,7 @@
 
 const { openTab, closeTab, navigate } = require("./chrome");
 const { waitForContent, settle, walk, watchRequests } = require("./page");
-const { readInfo, readLinks, rejectAtOnce, rejectReason, slugOf, siteName, identity, pagesAsked, waitForView } = require("./shots");
+const { readInfo, readLinks, rejectAtOnce, rejectReason, slugOf, siteName, identity, pagesAsked, waitForView, notOpened } = require("./shots");
 const { homeOf, pageKey, routeOf, viewKey, pathOf, readable, siteOf, rankLinks, routeLinks, visitOrder, readSiteIndex, kindOf, alternateFor } = require("./pick");
 const { TOP_COVER } = require("./record");
 const { timeLeft } = require("./time");
@@ -98,14 +98,22 @@ async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = 
   };
   const check = { site: siteOf(home), homeKey, kept };
   // The page given and the ones asked for come whatever they are, unless
-  // they fail to open; one the tour has already is said so.
+  // they fail to open, as a link to a file does; one the tour has already
+  // is said so. A page that fails because the browser ended fails the demo.
   for (const [url, why] of [...(given ? [[given, "the address given"]] : []), ...asks.map((url) => [url, "asked for with --page"])]) {
     const same = kept.find((page) => page.keys.has(viewKey(url)));
     if (same) {
       skipped.push({ url, reason: `the same page as ${same.slug}` });
       continue;
     }
-    const got = await probe(chrome, url, { site: check.site, homeKey: "", kept: [] }, ctx, { links: wanted > 1 });
+    let got;
+    try {
+      got = await probe(chrome, url, { site: check.site, homeKey: "", kept: [] }, ctx, { links: wanted > 1 });
+    } catch (err) {
+      if (chrome.gone()) throw err;
+      skipped.push({ url, reason: notOpened(err) });
+      continue;
+    }
     if (got.rejected) skipped.push({ url, reason: got.rejected });
     else {
       keep(url, (kindOf(new URL(url), "") || { kind: "other" }).kind, why, got);
@@ -131,7 +139,8 @@ async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = 
       try {
         got = await probe(chrome, candidate.url, check, ctx);
       } catch (err) {
-        skipped.push({ url: candidate.url, reason: `could not be opened: ${err.message}` });
+        if (chrome.gone()) throw err;
+        skipped.push({ url: candidate.url, reason: notOpened(err) });
         continue;
       }
       if (got.rejected) skipped.push({ url: candidate.url, reason: got.rejected });

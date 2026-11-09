@@ -392,7 +392,8 @@ async function navigate(cdp, url) {
   const moved = new Promise((resolve) => cdp.on("Page.navigatedWithinDocument", (onMove = resolve)));
   try {
     const { errorText, loaderId } = await cdp.send("Page.navigate", { url });
-    if (errorText) throw new Error(`Could not open ${url}: ${errorText}`);
+    // reason: the browser's own words, for a page left out over it.
+    if (errorText) throw Object.assign(new Error(`Could not open ${url}: ${errorText}`), { reason: errorText });
     // The wait is cleared once the page has loaded: left running, it kept
     // the process alive that long after the last page.
     const limit = loaderId ? Math.max(1_000, Math.min(20_000, timeLeft() - 60_000)) : 2_000;

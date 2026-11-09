@@ -155,6 +155,8 @@ async function fixture() {
         return html(page("Fiyatlar | Acme", '<h1>Fiyatlar</h1><div style="height:1400px"></div><a href="/tr/">Ana sayfa</a>', { lang: "tr" }));
       case "/picture.svg":
         return setTimeout(() => res.writeHead(200, { "Content-Type": "image/svg+xml" }).end('<svg xmlns="http://www.w3.org/2000/svg" width="400" height="300"><rect width="400" height="300" fill="rgb(230,120,0)"/></svg>'), 300);
+      case "/report.csv":
+        return res.writeHead(200, { "Content-Type": "text/csv", "Content-Disposition": 'attachment; filename="report.csv"' }).end("a,b\n1,2\n");
       case "/app.webmanifest":
         return res.writeHead(200, { "Content-Type": "application/manifest+json" }).end(JSON.stringify({ name: "Acme", start_url: "/", display: "standalone" }));
       case "/robots.txt":
@@ -274,6 +276,24 @@ test("picks the pages worth showing and leaves the rest out with reasons", { ski
     assert.match(md, /\/docs: a bot check instead of the page/);
     assert.equal(JSON.parse(fs.readFileSync(path.join(dir, "manifest.json"), "utf8")).pages.length, 5);
     assert.ok(manifest.sheet && manifest.sheet.width === 1600 && fs.existsSync(path.join(dir, "sheet.png")));
+  } finally {
+    server.close();
+    fs.rmSync(path.dirname(dir), { recursive: true, force: true });
+  }
+});
+
+// A --page the browser cannot open, such as a link to a file, which it does
+// not download, is left out and named in the notes, and the run goes on: it
+// stopped the run, with --pages 1 too.
+test("a --page that cannot be opened is named in the notes, and the run goes on", { skip: noBrowser, timeout: 120_000 }, async () => {
+  const { server, origin } = await fixture();
+  const dir = path.join(tempDir(), "shots");
+  try {
+    const { manifest } = await takeShots(origin, { dir, pages: 1, sizes: "desktop", extra: ["/report.csv", "/pricing"], timeLimit: 100_000 });
+    assert.deepEqual(manifest.pages.map((p) => p.slug), ["home", "pricing"]);
+    const left = manifest.skipped.find((s) => s.url === `${origin}/report.csv`);
+    assert.match(left.reason, /^could not be opened: net::ERR_[A-Z_]+$/);
+    assert.ok(manifest.notes.includes(`${origin}/report.csv was asked for but not taken: ${left.reason}.`), manifest.notes.join("\n"));
   } finally {
     server.close();
     fs.rmSync(path.dirname(dir), { recursive: true, force: true });

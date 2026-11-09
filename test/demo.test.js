@@ -347,6 +347,7 @@ async function fixture({ sitemap = null } = {}) {
     if (url.pathname === "/features") return html(plain("Features", "rgb(0,200,200)"));
     if (url.pathname === "/pricing") return html(plain("Pricing", "rgb(0,120,255)"));
     if (url.pathname === "/login") return html(plain("Log in", "#eee"));
+    if (url.pathname === "/report.csv") return res.writeHead(200, { "Content-Type": "text/csv", "Content-Disposition": 'attachment; filename="report.csv"' }).end("a,b\n1,2\n");
     if (url.pathname === "/thanks") return html(page("Thanks | Acme", `<h1>Thanks, ${String(url.searchParams.get("email")).replace(/[<>&]/g, "")}</h1><div style="height:1400px"></div>`, "body{background:rgb(250,220,0)}"));
     if (url.pathname === "/app/") return html(APP);
     const view = url.pathname.startsWith("/api/") ? APP_VIEWS[decodeURIComponent(url.pathname.slice(5))] : null;
@@ -656,6 +657,24 @@ test("a tour lists the #route links of the home page and the address given, and 
     routesNote(Array.from({ length: 15 }, (_, i) => route(`item/${i + 1}`))),
     `Left out ${Array.from({ length: 12 }, (_, i) => `/app/#/item/${i + 1}`).join(", ")} and 3 more: #routes, which the tour does not follow: give one with --page.`,
   );
+});
+
+// A --page the browser cannot open, such as a link to a file, is left out
+// of the tour with the reason, and the tour goes on: it stopped the demo.
+test("a tour leaves out a --page that cannot be opened, and goes on", { skip: !findChrome() && "no Chrome, Chromium, Edge or Brave installed", timeout: 60_000 }, async () => {
+  const { server, origin } = await fixture();
+  setTimeLimit(50_000);
+  const chrome = await launch();
+  try {
+    const tour = await pickPages(chrome, origin, { pages: 2, extra: ["/report.csv"] });
+    assert.deepEqual(tour.pages.map((p) => p.url.slice(origin.length)), ["/"]);
+    assert.equal(tour.skipped.length, 1);
+    assert.equal(tour.skipped[0].url, `${origin}/report.csv`);
+    assert.match(tour.skipped[0].reason, /^could not be opened: net::ERR_[A-Z_]+$/);
+  } finally {
+    await chrome.close();
+    server.close();
+  }
 });
 
 // Every file and folder under dir, with each file's bytes, hidden ones too.

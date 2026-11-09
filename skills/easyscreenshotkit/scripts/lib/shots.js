@@ -516,6 +516,11 @@ async function waitForView(tab, nav, asked, busy) {
   return state;
 }
 
+// Why a page that could not be opened is left out.
+function notOpened(err) {
+  return /timed out/.test(err.message) ? `too slow to answer (${err.message})` : `could not be opened: ${err.reason || err.message}`;
+}
+
 // What the wait for a #route view's data saw by the time a window of it
 // was taken, as a note: "" when the data had come. A window taken before it
 // had come shows the view's loading screen.
@@ -978,9 +983,10 @@ async function takeShots(rawUrl, options = {}) {
 
     // The page given, when it is not the page opened first, and the pages
     // asked for with --page, even past --pages: taken whatever they are,
-    // unless they fail to open. One that is not taken is named in the notes.
-    // With a tour, the #route links on each are listed with the pages left
-    // out, as the home page's are.
+    // unless they fail to open (a link to a file, which the browser does
+    // not download, a host that does not answer). One that is not taken is
+    // named in the notes, and the run goes on. With a tour, the #route links
+    // on each are listed with the pages left out, as the home page's are.
     const namedLinks = [];
     const named = [...(given && start.kind !== "given" ? [[given, "the address given"]] : []), ...asks.map((url) => [url, "asked for with --page"])];
     for (const [url, why] of named) {
@@ -997,7 +1003,22 @@ async function takeShots(rawUrl, options = {}) {
       const kind = (kindOf(new URL(url), "") || { kind: "other" }).kind;
       const page = newPage(url, kind, why);
       log(`Opening ${url}`);
-      const got = await visit(chrome, page, first, firstTheme, ctx, { routes: wanted > 1 });
+      let got;
+      try {
+        got = await visit(chrome, page, first, firstTheme, ctx, { routes: wanted > 1 });
+      } catch (err) {
+        alive();
+        // One that failed because the run's time ran out is said so, and
+        // not left out as a page that could not be opened.
+        if (timeLeft() < 30_000) {
+          notes.push(`${url} was asked for but not taken: time ran out; give more with --timeout.`);
+          continue;
+        }
+        const reason = notOpened(err);
+        rejected.push({ url, reason });
+        notes.push(`${url} was asked for but not taken: ${reason}.`);
+        continue;
+      }
       const failed = got.nav.status >= 400 ? `the page answered ${got.nav.status}` : got.info.challenge ? "a bot check instead of the page" : "";
       if (failed) {
         rejected.push({ url, reason: failed });
@@ -1053,7 +1074,7 @@ async function takeShots(rawUrl, options = {}) {
             notes.push(`Time ran out after ${kept.length === 1 ? "1 page" : `${kept.length} pages`}; give more with --timeout.`);
             break;
           }
-          rejected.push({ url: candidate.url, reason: /timed out/.test(err.message) ? `too slow to answer (${err.message})` : `could not be opened: ${err.message}` });
+          rejected.push({ url: candidate.url, reason: notOpened(err) });
           continue;
         }
         if (got.rejected) rejected.push({ url: candidate.url, reason: got.rejected });
@@ -1195,4 +1216,4 @@ function leftOut(rejected, routes, links) {
   return { skipped: all.slice(0, LEFT_OUT), routesPast: all.slice(LEFT_OUT).filter((skip) => skip.reason === ROUTE_LINK).length };
 }
 
-module.exports = { takeShots, parseSizes, addPwaShots, normalizeUrl, fragmentNotes, prepareDir, openShots, slugOf, identity, movedOn, pagesAsked, waitForView, leftOut, siteName, readInfo, readLinks, rejectAtOnce, rejectReason, writeMarkdown, DEVICES, MAX_HEIGHT };
+module.exports = { takeShots, parseSizes, addPwaShots, normalizeUrl, fragmentNotes, prepareDir, openShots, slugOf, identity, movedOn, pagesAsked, waitForView, leftOut, siteName, readInfo, readLinks, rejectAtOnce, rejectReason, notOpened, writeMarkdown, DEVICES, MAX_HEIGHT };
