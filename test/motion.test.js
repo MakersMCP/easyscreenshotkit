@@ -9,6 +9,7 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 const { ease, curve, pointAt, moveDuration, scrollDuration, cursorAt, planCamera, cameraAt, ringsAt, keyAt, ZOOM_IN } = require("../skills/easyscreenshotkit/scripts/lib/motion");
+const { spawnSync } = require("node:child_process");
 const { layoutOf, backdropOf, addressOf, frameAt, stateAt } = require("../skills/easyscreenshotkit/scripts/lib/compose");
 
 const viewport = { width: 1600, height: 900 };
@@ -200,6 +201,24 @@ test("layout, backdrop and the address in the title bar", () => {
   // Letters in a path or a route show as a browser shows them.
   assert.equal(addressOf("https://acme.com/uygulama%20%C3%A7al%C4%B1%C5%9Fma/#/%D1%80%D0%B0%D1%81%D1%82%D0%B5%D0%BD%D0%B8%D1%8F"), "acme.com/uygulama çalışma/#/растения");
   assert.equal(addressOf("https://acme.com/a%2Fb"), "acme.com/a%2Fb");
+});
+
+// Opening a named pipe waits for whatever writes to it, and a process waiting
+// there cannot handle a stop: only SIGKILL ended it. In a child process, so a
+// check that waits cannot hold the tests up too.
+test("a --background that is a named pipe is refused at once", { skip: process.platform === "win32" && "no named pipes of that kind on Windows", timeout: 30_000 }, () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-backdrop-"));
+  const pipe = path.join(dir, "pipe.png");
+  const compose = path.resolve(__dirname, "../skills/easyscreenshotkit/scripts/lib/compose");
+  try {
+    assert.equal(spawnSync("mkfifo", [pipe]).status, 0);
+    const script = `try { require(${JSON.stringify(compose)}).backdropOf(${JSON.stringify(pipe)}); } catch (err) { process.stdout.write(err.message); }`;
+    const run = spawnSync(process.execPath, ["-e", script], { encoding: "utf8", timeout: 10_000, killSignal: "SIGKILL" });
+    assert.equal(run.signal, null, "the process was held by the pipe");
+    assert.equal(run.stdout, `--background: ${pipe} is no picture the browser can draw: PNG, JPEG, WebP, GIF, AVIF or SVG.`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("each frame of the video: the right recorded frame, the crossfade at a cut, the pointer under the zoom", () => {

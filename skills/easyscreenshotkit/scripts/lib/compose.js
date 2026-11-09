@@ -72,10 +72,13 @@ function isPicture(head, name) {
 }
 
 // The first bytes of a file, up to length, or null when it cannot be read as
-// a file.
+// a file. Only a regular file is opened: opening a named pipe waits for
+// whatever writes to it, and the whole process with it, so a stop could not
+// be handled.
 function firstBytes(file, length) {
   let fd;
   try {
+    if (!fs.statSync(file).isFile()) return null;
     fd = fs.openSync(file, "r");
     const head = Buffer.alloc(length);
     return head.subarray(0, fs.readSync(fd, head, 0, length, 0));
