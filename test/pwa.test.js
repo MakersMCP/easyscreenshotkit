@@ -319,6 +319,20 @@ test("--pwa-check: a path is a file, also when nothing is there, and an address 
   }
 });
 
+// A value that is no address and no path is told in one line, as every
+// other failure is, and not with Node's stack; with --json on stdout too.
+test("--pwa-check: a value that is no address is one line, and a false ok with --json", () => {
+  for (const value of ["ftp://a.com/m.json", "foo bar.com", "https://", "a.com:abc"]) {
+    const plain = spawnSync(process.execPath, [CLI, "--pwa-check", value], { encoding: "utf8" });
+    assert.equal(plain.status, 1, value);
+    assert.equal(plain.stderr, `easyscreenshotkit: Not a web address: ${value}\n`, value);
+    assert.equal(plain.stdout, "", value);
+    const json = spawnSync(process.execPath, [CLI, "--pwa-check", value, "--json"], { encoding: "utf8" });
+    assert.equal(json.status, 1, value);
+    assert.deepEqual(JSON.parse(json.stdout), { ok: false, error: `Not a web address: ${value}` }, value);
+  }
+});
+
 test("--pwa-check: a site's address leads to the manifest its page links", async () => {
   assert.equal(manifestLink('<link href="/app.webmanifest" rel="manifest">', "https://acme.com/a/"), "https://acme.com/app.webmanifest");
   assert.equal(manifestLink("<link rel='icon' href='/i.png'><link rel=manifest href=m.json?v=1&amp;x=2>", "https://acme.com/a/"), "https://acme.com/a/m.json?v=1&x=2");

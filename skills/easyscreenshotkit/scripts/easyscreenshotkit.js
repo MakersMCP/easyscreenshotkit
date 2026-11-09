@@ -136,10 +136,9 @@ function manifestTarget(value) {
 
 // --pwa-check: a manifest file on this machine, else a web address.
 async function pwaCheck(options) {
-  const target = manifestTarget(options.pwaCheck);
   let report;
   try {
-    report = await checkManifest(target);
+    report = await checkManifest(manifestTarget(options.pwaCheck));
   } catch (err) {
     if (options.json) process.stdout.write(JSON.stringify({ ok: false, error: err.message }) + "\n");
     process.stderr.write(`easyscreenshotkit: ${printable(err.message)}\n`);
