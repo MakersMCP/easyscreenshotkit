@@ -877,6 +877,8 @@ test("a demo whose browser ends or whose tab crashes in the middle of it fails, 
     // A tour, the browser killed in the wait on its first page: the tour
     // then read no sections and no link, and ended there.
     { args: ["--pages", "1"], line: /^02 Wait 1\.6 s$/m, delay: 300, kill: (all) => all.filter(({ args }) => /--user-data-dir/.test(args) && !/--type=/.test(args)), told: browser },
+    // The browser that draws the frames, killed as it starts.
+    { args: ["--steps", steps], line: /^Drawing \d+ frames/m, delay: 50, kill: (all) => all.filter(({ args }) => /--user-data-dir/.test(args) && !/--type=/.test(args)), told: browser },
   ];
   try {
     await makeDemo(origin, { dir, steps, gif: false, timeLimit: 200_000 });
@@ -885,13 +887,16 @@ test("a demo whose browser ends or whose tab crashes in the middle of it fails, 
       const child = spawn(process.execPath, [CLI, "demo", origin, ...args, "--no-gif", "--out", dir]);
       let stderr = "";
       let killed = [];
+      let profiles = [];
       let sent = false;
       child.stderr.on("data", (d) => {
         stderr += d;
         if (!sent && line.test(stderr)) {
           sent = true;
           setTimeout(() => {
-            killed = kill(descendants(child.pid));
+            const all = descendants(child.pid);
+            profiles = [...new Set(all.flatMap(({ args }) => [...args.matchAll(/--user-data-dir=([^\s\0]+)/g)].map((m) => m[1])))];
+            killed = kill(all);
             for (const { pid } of killed) process.kill(pid, "SIGKILL");
           }, delay);
         }
@@ -901,6 +906,11 @@ test("a demo whose browser ends or whose tab crashes in the middle of it fails, 
       assert.equal(status, 1, `case ${i}\n${stderr}`);
       assert.match(stderr, told, `case ${i}`);
       assert.deepEqual(snapshot(dir), before, `case ${i}`);
+      // Its helpers go on for a moment after a browser is killed, and made
+      // the profile again after it was removed.
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      assert.ok(profiles.length >= 1, `case ${i}: a profile to look for`);
+      for (const profile of profiles) assert.equal(fs.existsSync(profile), false, `case ${i}: ${profile}`);
     }
   } finally {
     server.close();

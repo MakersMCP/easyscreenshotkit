@@ -227,22 +227,35 @@ async function start(binary, { lang, args, own }) {
   // screenshots are not lost over it.
   const close = async () => {
     closing = true;
+    let killed = lost;
     if (browser && !exited) {
       await browser.send("Browser.close", {}, 3_000).catch(() => {});
       for (let i = 0; i < 50 && !exited; i++) await sleep(100);
     }
     if (browser) browser.close();
-    if (!exited) child.kill("SIGKILL");
+    if (!exited) {
+      killed = true;
+      child.kill("SIGKILL");
+    }
     for (let i = 0; i < 20 && !exited; i++) await sleep(100);
     open.delete(started);
     const lock = started.lock || lockFolderOf(profile);
-    try {
-      fs.rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-    } catch {
-      // Left for the system's temp clean-up.
+    const remove = () => {
+      try {
+        fs.rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      } catch {
+        // Left for the system's temp clean-up.
+      }
+      removeLockFolder(lock);
+      removeFetchFolders(fetching);
+    };
+    remove();
+    // The helpers of a browser that was killed go on for a moment and make
+    // its profile again: it is removed again once they have ended.
+    for (let i = 0; i < 4 && killed; i++) {
+      await sleep(200);
+      if (fs.existsSync(profile)) remove();
     }
-    removeLockFolder(lock);
-    removeFetchFolders(fetching);
   };
   // Chrome writes the port it picked to DevToolsActivePort in the profile.
   const portFile = path.join(profile, "DevToolsActivePort");
