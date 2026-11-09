@@ -1316,6 +1316,39 @@ test("a tab that crashes fails the run on its first page and is named in the not
   }
 });
 
+// The helpers of a browser that was killed go on for a moment, and could make
+// its profile again after the run had removed it. A stand-in browser does so
+// every time: the real one, and once it has ended and the run has removed
+// its profile, a process it left that makes the profile again.
+test("a profile that a killed browser's helpers make again after the run removed it is removed too", { skip: noBrowser || (process.platform !== "linux" && "the browser's process is read from /proc"), timeout: 120_000 }, async () => {
+  const { server, origin } = await fixture();
+  const root = tempDir();
+  const browser = path.join(root, "browser");
+  fs.writeFileSync(
+    browser,
+    [
+      "#!/bin/sh",
+      'for arg in "$@"; do case "$arg" in --user-data-dir=*) profile="${arg#--user-data-dir=}" ;; esac; done',
+      '(while [ -d "$profile" ]; do sleep 0.02; done; sleep 0.2; mkdir -p "$profile/Default"; echo again > "$profile/Default/Preferences") &',
+      `exec ${JSON.stringify(findChrome())} "$@"`,
+      "",
+    ].join("\n"),
+    { mode: 0o755 },
+  );
+  try {
+    const killed = await stopCli([origin, "--pages", "2", "--sizes", "desktop", "--out", path.join(root, "shots")], { stopAt: (stderr) => /^01 home {2}\/$/m.test(stderr), browser: true, env: { ...process.env, CHROME_PATH: browser } });
+    assert.ok(killed.sent, killed.stderr);
+    assert.equal(killed.status, 1, killed.stderr);
+    assert.match(killed.stderr, /The browser ended in the middle of the run/);
+    assert.equal(killed.profiles.length, 1);
+    await sleep(1_000);
+    assert.equal(fs.existsSync(killed.profiles[0]), false, killed.profiles[0]);
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // A process that ends on an uncaught exception, with a run open and a
 // browser going: as it ends, the browser is killed and its profile and lock
 // folder go, and the run's folder is as it was.
