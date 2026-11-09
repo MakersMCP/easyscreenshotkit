@@ -465,6 +465,22 @@ function snapshot(dir) {
 
 const hourAgo = () => new Date(Date.now() - 3_600_000);
 
+// Reading a named pipe waits for whatever writes to it, and a process waiting
+// there cannot handle a stop: only SIGKILL ended it. In a child process, so a
+// check that waits cannot hold the tests up too.
+test("a named pipe where a run looks for an earlier run's manifest holds no earlier run", { skip: process.platform === "win32" && "no named pipes of that kind on Windows", timeout: 30_000 }, () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-marker-"));
+  try {
+    assert.equal(spawnSync("mkfifo", [path.join(dir, "manifest.json")]).status, 0);
+    const run = spawnSync(process.execPath, [CLI, "http://127.0.0.1:9/", "--out", dir], { encoding: "utf8", timeout: 10_000, killSignal: "SIGKILL" });
+    assert.equal(run.signal, null, "the process was held by the pipe");
+    assert.equal(run.status, 1, run.stderr);
+    assert.equal(run.stderr, `easyscreenshotkit: ${dir} is not empty and holds no earlier easyscreenshotkit run. Pick another folder with --out.\n`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("a run's folder: refused when it holds someone else's files, and an earlier run's files stay until a new run has ended well", () => {
   // Absolute, so a link made to a folder in it leads there under a TMPDIR
   // given as a relative path too.

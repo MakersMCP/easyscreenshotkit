@@ -187,9 +187,12 @@ const SHOWN = new Set([".ds_store", "thumbs.db", "desktop.ini"]);
 function check(dir, target, spec) {
   const names = fs.readdirSync(target).filter((name) => !PART.test(name) && name !== LOCK && !SHOWN.has(name.toLowerCase()) && !(spec.ignore && spec.ignore(name, target)));
   if (!names.length) return;
+  const marker = path.join(target, spec.marker);
   let earlier = null;
   try {
-    earlier = JSON.parse(fs.readFileSync(path.join(target, spec.marker), "utf8"));
+    // Only a regular file: reading a named pipe would wait for whatever
+    // writes to it, and hold the process so that a stop cannot be heard.
+    if (fs.statSync(marker).isFile()) earlier = JSON.parse(fs.readFileSync(marker, "utf8"));
   } catch {
     // Not a run of ours.
   }

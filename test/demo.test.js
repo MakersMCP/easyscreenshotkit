@@ -204,6 +204,42 @@ test("a GIF or a video that ffmpeg cut short while exiting with 0 is no output",
   }
 });
 
+// A named pipe nothing writes to holds a read of it for as long as it takes,
+// and a synchronous one held the process so that only SIGKILL ended it. A
+// read that is not synchronous lets a stop through, and a pipe that is
+// written to, as --steps <(a generator) gives, is read as before.
+test("a --steps file that is a named pipe waits for its writer, and a stop ends the wait", { skip: (process.platform === "win32" && "no named pipes of that kind on Windows") || (!ffmpeg && "no ffmpeg installed"), timeout: 60_000 }, async () => {
+  const root = tempDir();
+  const pipe = path.join(root, "steps.yaml");
+  try {
+    assert.equal(spawnSync("mkfifo", [pipe]).status, 0);
+    const stopped = spawn(process.execPath, [CLI, "demo", "--steps", pipe, "--out", path.join(root, "out")]);
+    let stderr = "";
+    stopped.stderr.on("data", (d) => (stderr += d));
+    setTimeout(() => stopped.kill("SIGTERM"), 1_000);
+    // The check below waits no longer than this for a process that is held.
+    const kill = setTimeout(() => stopped.kill("SIGKILL"), 8_000);
+    const how = await new Promise((resolve) => stopped.on("close", (status, signal) => resolve(signal || status)));
+    clearTimeout(kill);
+    assert.equal(how, "SIGTERM", stderr);
+    assert.equal(stderr, "easyscreenshotkit demo: stopped.\n");
+    assert.equal(fs.existsSync(path.join(root, "out")), false);
+
+    // What is written to it is read: here a step that is not one, which
+    // stops the demo before a browser is started.
+    const reading = spawn(process.execPath, [CLI, "demo", "--steps", pipe, "--out", path.join(root, "out")]);
+    let told = "";
+    reading.stderr.on("data", (d) => (told += d));
+    const writer = spawnSync("sh", ["-c", 'printf "steps:\\n  - jump: 1\\n" > "$1"', "sh", pipe], { timeout: 10_000 });
+    assert.equal(writer.status, 0);
+    const status = await new Promise((resolve) => reading.on("close", resolve));
+    assert.equal(status, 1, told);
+    assert.match(told, /steps\.yaml: step 1: no action; use one of visit/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // A demo from a steps file leaves the demo.yaml an earlier tour wrote in its
 // folder, as it may be the file it follows: that is not one of its files.
 test("the summary lists demo.yaml after a tour, which wrote it, not after a steps run that left an earlier tour's there", () => {

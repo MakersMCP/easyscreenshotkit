@@ -9,7 +9,7 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 const { parseYaml } = require("../skills/easyscreenshotkit/scripts/lib/yaml");
-const { normalizeSteps, readSteps, toYaml, keyOf, targetOf } = require("../skills/easyscreenshotkit/scripts/lib/steps");
+const { normalizeSteps, readSteps, loadSteps, toYaml, keyOf, targetOf } = require("../skills/easyscreenshotkit/scripts/lib/steps");
 
 test("YAML: mappings, lists, inline collections, quotes, numbers and comments", () => {
   const doc = parseYaml(`# a demo
@@ -170,7 +170,7 @@ test("steps: mistakes are caught with the step's number", () => {
   assert.deepEqual(targetOf("text='Sign in'", "x"), { text: "Sign in" });
 });
 
-test("a steps file is read from YAML or JSON, and a tour written back reads the same", () => {
+test("a steps file is read from YAML or JSON, and a tour written back reads the same", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-steps-"));
   try {
     const yaml = path.join(dir, "demo.yaml");
@@ -182,6 +182,10 @@ test("a steps file is read from YAML or JSON, and a tour written back reads the 
     fs.writeFileSync(yaml, "steps:\n  - click: #go\n");
     assert.throws(() => readSteps(yaml), /^Error: demo\.yaml: line 2: #go is read as a comment/);
     assert.throws(() => readSteps(path.join(dir, "none.yaml")), /could not read .*none\.yaml: no such file/);
+    // The same for a command that handles signals while it reads.
+    await assert.rejects(loadSteps(yaml), /^Error: demo\.yaml: line 2: #go is read as a comment/);
+    await assert.rejects(loadSteps(path.join(dir, "none.yaml")), /could not read .*none\.yaml: no such file/);
+    assert.deepEqual((await loadSteps(json)).steps, [{ action: "wait", seconds: 1 }]);
 
     const tour = {
       url: "https://acme.com/",

@@ -192,13 +192,33 @@ function normalizeSteps(doc) {
   return { url: top.url ? top.url.trim() : "", hide: hide.map((selector) => selector.trim()), steps: top.steps.map(normalizeStep) };
 }
 
+const notRead = (file, err) => new StepError(`could not read ${file}: ${err.code === "ENOENT" ? "no such file" : err.message}`);
+
 function readSteps(file) {
   let text;
   try {
     text = fs.readFileSync(file, "utf8");
   } catch (err) {
-    throw new StepError(`could not read ${file}: ${err.code === "ENOENT" ? "no such file" : err.message}`);
+    throw notRead(file, err);
   }
+  return parseSteps(text, file);
+}
+
+// readSteps() for a process that handles signals: a named pipe, as --steps
+// <(a generator) gives, holds a read until something writes to it, and a
+// synchronous one would hold the signal's handler with it.
+async function loadSteps(file) {
+  let text;
+  try {
+    text = await fs.promises.readFile(file, "utf8");
+  } catch (err) {
+    throw notRead(file, err);
+  }
+  return parseSteps(text, file);
+}
+
+// The steps in a file's text, read as its name says.
+function parseSteps(text, file) {
   let doc;
   try {
     doc = /\.json$/i.test(file) ? JSON.parse(text) : parseYaml(text);
@@ -249,4 +269,4 @@ function toYaml({ url, hide = [], steps }, header = []) {
   return lines.join("\n") + "\n";
 }
 
-module.exports = { ACTIONS, StepError, targetOf, keyOf, normalizeStep, normalizeSteps, readSteps, toYaml, targetText };
+module.exports = { ACTIONS, StepError, targetOf, keyOf, normalizeStep, normalizeSteps, readSteps, loadSteps, toYaml, targetText };

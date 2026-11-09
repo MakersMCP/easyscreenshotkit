@@ -20,7 +20,7 @@ const { launch, CRASHED } = require("./chrome");
 const { normalizeUrl, fragmentNotes } = require("./shots");
 const { homeOf, siteOf, routeOf, viewKey, viewOf, pathOf, readable, printable } = require("./pick");
 const { Recorder } = require("./record");
-const { readSteps, toYaml, targetText } = require("./steps");
+const { loadSteps, toYaml, targetText } = require("./steps");
 const { pickPages, tourSteps } = require("./tour");
 const { layoutOf, LOOKS, backdropOf, renderVideo, renderStill } = require("./compose");
 const { cameraAt } = require("./motion");
@@ -320,7 +320,9 @@ async function makeDemo(rawUrl, options = {}) {
     log = () => {},
   } = options;
   setTimeLimit(timeLimit);
-  const script = stepsFile ? readSteps(stepsFile) : null;
+  // Read without holding the process: a named pipe that nothing writes to
+  // yet waits for as long as it takes, and a stop has to be heard meanwhile.
+  const script = stepsFile ? await loadSteps(stepsFile) : null;
   const asked = normalizeUrl(rawUrl || (script && script.url) || "");
   const backdrop = backdropOf(background);
   const ffmpeg = findFfmpeg();
