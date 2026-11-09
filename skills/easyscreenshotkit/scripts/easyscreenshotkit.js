@@ -43,15 +43,16 @@ Sizes: desktop is 1600x900 at 2x, mobile 360x640 at 3x (1080x1920), iphone
 440x956 at 3x (1320x2868), full the whole page at 1x, mobile-full the whole
 phone page at 2x. 1270x760@2 is a Product Hunt gallery image.
 
-A #route in the address or in --page is kept: the page opens on that view,
-waits in each window until the view's data has come, 10 s at most (a note
-says so when it had not, and --pwa leaves that window's capture out), and
-is named after it, 02-app-plants-desktop.png for /app/#/plants. A --page
-that is only a route, such as '#/plants', is that view of the address
-given. Any other fragment, such as #pricing, is left out, with a note. The
-tour follows paths only: the #route links on the home page, the address
-given and each --page, and the #routes in the site's sitemap, are listed
-with the pages it left out.
+A #route (#/ or #!) in the address or in --page is kept: the page opens on
+that view, waits in each window until the view's data has come, 10 s at
+most in the first and 2 s in the others when it had not come by then (a
+note says so when it had not, and --pwa leaves that window's capture out),
+and is named after it, 02-app-plants-desktop.png for /app/#/plants. A
+--page that is only a route, such as '#/plants', is that view of the
+address given. Any other fragment, such as #pricing or #inbox, is left
+out, with a note. The tour follows paths only: the #route links on the
+home page, the address given and each --page, and the #routes in the
+site's sitemap, are listed with the pages it left out.
 
 The folder has to be new, empty or hold an earlier run. A run builds its
 files in a folder whose name starts with a dot, inside the folder it saves

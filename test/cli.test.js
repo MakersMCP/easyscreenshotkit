@@ -27,6 +27,8 @@ test("the CLI explains itself and refuses a missing address or a bad option", ()
   const help = spawnSync(process.execPath, [CLI, "--help"], { encoding: "utf8" });
   assert.equal(help.status, 0);
   assert.match(help.stdout, /Usage: easyscreenshotkit <url>/);
+  // What a #route is, where the help first names one.
+  assert.match(help.stdout, /^A #route \(#\/ or #!\) in the address or in --page is kept/m);
   const none = spawnSync(process.execPath, [CLI], { encoding: "utf8" });
   assert.equal(none.status, 2);
   assert.match(none.stderr, /Give one website address/);

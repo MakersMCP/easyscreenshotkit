@@ -169,6 +169,7 @@ test("the CLI hands demo to its own command, with its own help", () => {
   const help = spawnSync(process.execPath, [CLI, "demo", "--help"], { encoding: "utf8" });
   assert.equal(help.status, 0);
   assert.match(help.stdout, /Usage: easyscreenshotkit demo <url>/);
+  assert.match(help.stdout, /^A #route \(#\/ or #!\) in the address, in --page or in a visit step is kept/m);
   const none = spawnSync(process.execPath, [CLI, "demo"], { encoding: "utf8" });
   assert.equal(none.status, 2);
   assert.match(none.stderr, /easyscreenshotkit demo: Give one website address/);
