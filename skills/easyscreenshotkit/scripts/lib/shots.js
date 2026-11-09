@@ -22,7 +22,7 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
-const { launch, openTab, closeTab, navigate, currentUrl } = require("./chrome");
+const { launch, openTab, closeTab, navigate, currentUrl, CRASHED } = require("./chrome");
 const { metrics, scrollTo, walk, showsContent, waitForContent, settle, watchRequests, networkQuiet, quietNetwork, waitForFonts, clearHover, resetPictureWait, capture, captureScreen, capturePage } = require("./page");
 const { clean } = require("./clean");
 const { homeOf, pageKey, routeOf, viewKey, pathOf, pageUrl, anchorOf, siteOf, fold, kindOf, rankLinks, routeLinks, visitOrder, readSiteIndex, localeOf, alternateFor, oneLine, ROUTE_LINK } = require("./pick");
@@ -815,6 +815,9 @@ function writeMarkdown(manifest, run) {
 // outside ends it, takes with it every page and window the run had still to
 // take: the run fails, and its folder stays as it was.
 const BROWSER_GONE = "The browser ended in the middle of the run (it crashed, or was killed), so no screenshots were saved.";
+// A tab that crashes on the first page opened leaves the run with no page.
+// On any other it costs that page or window, named in the notes.
+const TAB_CRASHED = "The browser's tab crashed in the middle of the run, so no screenshots were saved.";
 
 async function takeShots(rawUrl, options = {}) {
   const {
@@ -1170,11 +1173,11 @@ async function takeShots(rawUrl, options = {}) {
     if (cut) throw new Error(`${cut} came out cut short (the disk, or your disk quota, may be full), so no screenshots were saved.`);
   } catch (err) {
     // Whatever failed first, a browser that ended is why.
-    const gone = Boolean(chrome && chrome.gone());
+    const why = chrome && chrome.gone() ? BROWSER_GONE : err.message === CRASHED ? TAB_CRASHED : "";
     await pool.drain();
     if (chrome) await chrome.close();
     run.abort();
-    throw run.told(gone ? new Error(BROWSER_GONE) : err);
+    throw run.told(why ? new Error(why) : err);
   }
   // The run has ended well: its files take the place of the earlier run's.
   run.commit(saved);

@@ -17,7 +17,7 @@ const { setTimeLimit, sleep } = require("../skills/easyscreenshotkit/scripts/lib
 const { watchRequests, networkQuiet } = require("../skills/easyscreenshotkit/scripts/lib/page");
 const { LOCATE } = require("../skills/easyscreenshotkit/scripts/lib/record");
 const { pngText } = require("../skills/easyscreenshotkit/scripts/lib/png");
-const { readPng, serve, near } = require("./helpers");
+const { readPng, serve, near, descendants } = require("./helpers");
 
 const CLI = path.resolve(__dirname, "../skills/easyscreenshotkit/scripts/easyscreenshotkit.js");
 const noBrowser = !findChrome() && "no Chrome, Chromium, Edge or Brave installed";
@@ -1230,6 +1230,86 @@ test("a sheet that cannot be drawn, for a reason that is not the disk, is named 
     assert.equal(manifest.sheet, null);
     assert.deepEqual(manifest.notes, ["sheet.png could not be drawn: the browser gave no picture of it."]);
     assert.deepEqual(fs.readdirSync(dir).sort(), ["01-home-desktop.png", "SCREENSHOTS.md", "manifest.json"]);
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A tab that crashes answers nothing more. On the first page opened the run
+// has no page and fails at once, in a whole sentence; on a --page or a window
+// after the first it costs that page or window, named in the notes. The
+// server kills the tab's page when the tab asks it for what it holds back: a
+// picture that holds up the load event, or the data a view waits for.
+const HELD_BACK = "/held-back";
+
+test("a tab that crashes fails the run on its first page and is named in the notes on a --page or a later window", { skip: noBrowser || (process.platform !== "linux" && "the browser's processes are read from /proc"), timeout: 200_000 }, async () => {
+  let hold = null;
+  const { server, origin } = await serve((req, res) => {
+    const html = (body) => res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(body);
+    if (req.url === "/") return html(page("Acme", '<h1>Acme</h1><p><a href="/about">About</a></p>'));
+    if (req.url === "/picture") return html(page("Picture", `<h1>Picture</h1><img src="${HELD_BACK}" width="100" height="100">`));
+    if (req.url === "/app/") return html(page("App", `<h1>App</h1><script>fetch("${HELD_BACK}");</script>`));
+    if (req.url === HELD_BACK) {
+      if (hold && hold(req)) return;
+      return res.writeHead(204).end();
+    }
+    res.writeHead(404).end("not found");
+  });
+  const root = tempDir();
+  const dir = path.join(root, "shots");
+  // The CLI, its tab's page killed once it asks for what is held back and
+  // when says so. seconds: from the kill to the end of the run.
+  const run = (args, when = () => true) =>
+    new Promise((resolve) => {
+      const child = spawn(process.execPath, [CLI, ...args]);
+      let stdout = "";
+      let stderr = "";
+      let killedAt = 0;
+      hold = (req) => {
+        if (killedAt || !when(req)) return false;
+        killedAt = Date.now();
+        for (const { pid, args: line } of descendants(child.pid)) if (/--type=renderer/.test(line)) process.kill(pid, "SIGKILL");
+        return true;
+      };
+      child.stdout.on("data", (d) => (stdout += d));
+      child.stderr.on("data", (d) => (stderr += d));
+      child.on("close", (status) => {
+        hold = null;
+        resolve({ status, stdout, stderr, killed: killedAt > 0, seconds: (Date.now() - killedAt) / 1000 });
+      });
+    });
+  const manifestOf = (at) => JSON.parse(fs.readFileSync(path.join(at, "manifest.json"), "utf8"));
+  try {
+    await takeShots(origin, { dir, pages: 1, sizes: "desktop", timeLimit: 100_000 });
+    const before = snapshot(dir);
+    // The first page: a load event that will not come, and a view's data
+    // that will not come. Neither its 20 s nor its 10 s are waited out.
+    for (const [address, limit] of [[`${origin}/picture`, 15], [`${origin}/app/#/today`, 8]]) {
+      const crashed = await run([address, "--pages", "1", "--sizes", "desktop", "--out", dir]);
+      assert.ok(crashed.killed, crashed.stderr);
+      assert.equal(crashed.status, 1, crashed.stdout + crashed.stderr);
+      assert.match(crashed.stderr, /^easyscreenshotkit: The browser's tab crashed in the middle of the run, so no screenshots were saved\.$/m);
+      assert.ok(crashed.seconds < limit, `${address}: ${crashed.seconds} s after the kill`);
+      assert.deepEqual(snapshot(dir), before, address);
+    }
+    // A --page: named in the notes and left out, and the run goes on.
+    const asked = path.join(root, "asked");
+    const named = await run([origin, "--pages", "1", "--page", "/app/#/today", "--sizes", "desktop", "--out", asked]);
+    assert.ok(named.killed, named.stderr);
+    assert.equal(named.status, 0, named.stderr);
+    const reason = "could not be opened: the browser's tab crashed";
+    assert.deepEqual(manifestOf(asked).pages.map((p) => p.slug), ["home"]);
+    assert.deepEqual(manifestOf(asked).skipped, [{ url: `${origin}/app/#/today`, reason }]);
+    assert.deepEqual(manifestOf(asked).notes, [`${origin}/app/#/today was asked for but not taken: ${reason}.`]);
+    // A window after the first: that window is named, and the rest is saved.
+    const later = path.join(root, "later");
+    const windows = await run([`${origin}/picture`, "--pages", "1", "--sizes", "desktop,mobile", "--out", later], (req) => /Android/.test(req.headers["user-agent"]));
+    assert.ok(windows.killed, windows.stderr);
+    assert.equal(windows.status, 0, windows.stderr);
+    const [only] = manifestOf(later).pages;
+    assert.deepEqual(only.shots.map((shot) => shot.size), ["desktop"]);
+    assert.deepEqual(only.notes, ["mobile could not be taken: the browser's tab crashed"]);
   } finally {
     server.close();
     fs.rmSync(root, { recursive: true, force: true });

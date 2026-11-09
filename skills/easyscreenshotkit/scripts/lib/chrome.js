@@ -59,7 +59,12 @@ function findChrome() {
   return "";
 }
 
-// onClose: called once the connection has closed, whoever closed it.
+// What a call to a tab whose page crashed fails with.
+const CRASHED = "the browser's tab crashed";
+
+// onClose: called once the connection has closed, whoever closed it. over:
+// settled once no answer can come any more, as the connection closed or
+// fail() was called.
 function connect(wsUrl, { onClose = () => {} } = {}) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(wsUrl);
@@ -68,6 +73,8 @@ function connect(wsUrl, { onClose = () => {} } = {}) {
     let nextId = 0;
     // Set by fail(): every call goes on failing with it.
     let failure = "";
+    let ended;
+    const over = new Promise((settle) => (ended = settle));
     ws.onmessage = (event) => {
       let msg;
       try {
@@ -93,10 +100,12 @@ function connect(wsUrl, { onClose = () => {} } = {}) {
         waiter.reject(new Error("The browser connection closed."));
       }
       pending.clear();
+      ended();
       onClose();
     };
     ws.onopen = () =>
       resolve({
+        over,
         send(method, params = {}, timeoutMs = 30_000) {
           // A call on a connection that is closing or closed would get no
           // answer, and waited out its whole time limit: it fails at once.
@@ -132,6 +141,7 @@ function connect(wsUrl, { onClose = () => {} } = {}) {
             waiter.reject(new Error(message));
           }
           pending.clear();
+          ended();
         },
       });
   });
@@ -402,7 +412,7 @@ async function openTab(chrome, device, { lang = "", theme = "light", reducedMoti
   // A tab whose page crashed, as one killed for its memory does, answers
   // nothing more while the browser goes on: its calls fail at once, with why,
   // where each waited out its whole time limit and was called too slow.
-  cdp.on("Inspector.targetCrashed", () => cdp.fail("the browser's tab crashed"));
+  cdp.on("Inspector.targetCrashed", () => cdp.fail(CRASHED));
   try {
     await cdp.send("Inspector.enable").catch(() => {});
     await cdp.send("Page.enable");
@@ -465,7 +475,9 @@ async function navigate(cdp, url) {
     // The wait is cleared once the page has loaded: left running, it kept
     // the process alive that long after the last page.
     const limit = loaderId ? Math.max(1_000, Math.min(20_000, timeLeft() - 60_000)) : 2_000;
-    await Promise.race([loaderId ? loaded : moved, new Promise((resolve) => (timer = setTimeout(resolve, limit)))]);
+    // A tab that crashed, or a browser that ended, fires no such event: the
+    // calls that come next say which.
+    await Promise.race([loaderId ? loaded : moved, cdp.over, new Promise((resolve) => (timer = setTimeout(resolve, limit)))]);
   } finally {
     clearTimeout(timer);
     cdp.off("Page.loadEventFired", onLoad);
@@ -565,4 +577,4 @@ function removeProfiles(browsers) {
   }
 }
 
-module.exports = { findChrome, onPath, launch, connect, openTab, closeTab, navigate, currentUrl, killBrowsers, removeProfiles, removeStrayLocks, removeFetchFolders, fetchFolders, roomIn, lockFolderOf, userAgentFor };
+module.exports = { findChrome, onPath, launch, connect, openTab, closeTab, navigate, currentUrl, killBrowsers, removeProfiles, removeStrayLocks, removeFetchFolders, fetchFolders, roomIn, lockFolderOf, userAgentFor, CRASHED };

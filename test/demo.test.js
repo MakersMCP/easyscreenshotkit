@@ -18,7 +18,7 @@ const { setTimeLimit } = require("../skills/easyscreenshotkit/scripts/lib/time")
 const { readSteps } = require("../skills/easyscreenshotkit/scripts/lib/steps");
 const { findChrome, launch, openTab, closeTab, navigate } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
 const { findFfmpeg, makeGif, startVideo, gifIsWhole, mp4Frames } = require("../skills/easyscreenshotkit/scripts/lib/ffmpeg");
-const { readPng, serve, near } = require("./helpers");
+const { readPng, serve, near, descendants } = require("./helpers");
 
 const CLI = path.resolve(__dirname, "../skills/easyscreenshotkit/scripts/easyscreenshotkit.js");
 const ffmpeg = findFfmpeg();
@@ -837,25 +837,6 @@ test("a demo that fails or is stopped leaves an earlier demo as it was and adds 
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
-
-// The processes under pid, each with its command line.
-function descendants(pid) {
-  let kids = [];
-  try {
-    kids = fs.readFileSync(`/proc/${pid}/task/${pid}/children`, "utf8").trim().split(/\s+/).filter(Boolean).map(Number);
-  } catch {
-    return [];
-  }
-  return kids.flatMap((kid) => {
-    let args = "";
-    try {
-      args = fs.readFileSync(`/proc/${kid}/cmdline`, "utf8");
-    } catch {
-      // Gone already.
-    }
-    return [{ pid: kid, args }, ...descendants(kid)];
-  });
-}
 
 // The recording browser killed, or the page's own process killed as the
 // system kills one for its memory, while a step waits: no frame comes after

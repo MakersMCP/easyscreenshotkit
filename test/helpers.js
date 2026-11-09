@@ -119,4 +119,24 @@ function near(actual, expected, tolerance = 12) {
   return actual.every((v, i) => Math.abs(v - expected[i]) <= tolerance);
 }
 
-module.exports = { readPng, pngOf, serve, near };
+// The processes under pid, each with its command line, from /proc: none
+// where there is no /proc.
+function descendants(pid) {
+  let kids = [];
+  try {
+    kids = fs.readFileSync(`/proc/${pid}/task/${pid}/children`, "utf8").trim().split(/\s+/).filter(Boolean).map(Number);
+  } catch {
+    return [];
+  }
+  return kids.flatMap((kid) => {
+    let args = "";
+    try {
+      args = fs.readFileSync(`/proc/${kid}/cmdline`, "utf8");
+    } catch {
+      // Gone already.
+    }
+    return [{ pid: kid, args }, ...descendants(kid)];
+  });
+}
+
+module.exports = { readPng, pngOf, serve, near, descendants };
