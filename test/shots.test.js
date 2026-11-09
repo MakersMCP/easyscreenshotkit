@@ -12,7 +12,7 @@ const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const test = require("node:test");
 const { takeShots, DEVICES } = require("../skills/easyscreenshotkit/scripts/lib/shots");
-const { findChrome, launch, openTab, closeTab, navigate, killBrowsers, removeProfiles, removeStrayLocks, roomIn } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
+const { findChrome, launch, openTab, closeTab, navigate, killBrowsers, removeProfiles, removeStrayLocks, removeFetchFolders, fetchFolders, roomIn } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
 const { setTimeLimit, sleep } = require("../skills/easyscreenshotkit/scripts/lib/time");
 const { watchRequests, networkQuiet } = require("../skills/easyscreenshotkit/scripts/lib/page");
 const { LOCATE } = require("../skills/easyscreenshotkit/scripts/lib/record");
@@ -1276,6 +1276,63 @@ test("a run that ends in its first seconds leaves nothing in the temp folder", {
     server.close();
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// Where the profile cannot be the browser's temp folder (a temp folder with a
+// longer path, macOS, Windows), the folder the browser makes for what it
+// downloads for itself is in the temp folder, and a run that ended in the
+// browser's first seconds left it there: it goes too.
+test("a run that ends in its first seconds leaves nothing in a temp folder with a long path", { skip: noBrowser, timeout: 120_000 }, async (t) => {
+  const { server, origin } = await fixture();
+  const root = tempDir();
+  const tmp = path.join(os.tmpdir(), `t-${"x".repeat(Math.max(1, 34 - os.tmpdir().length))}`);
+  fs.mkdirSync(tmp, { recursive: true });
+  const env = { ...process.env, TMPDIR: tmp, TMP: tmp, TEMP: tmp };
+  try {
+    if (process.platform === "linux" && roomIn(path.join(tmp, "easyscreenshotkit-chrome-XXXXXX"))) return t.skip(`${tmp} leaves room for the browser's lock in its profile`);
+    for (let i = 0; i < 2; i++) {
+      const failed = await runCli([`${origin}/missing`, "--pages", "1", "--sizes", "desktop", "--out", path.join(root, "missing")], { env });
+      assert.equal(failed.status, 1, failed.stderr);
+      assert.match(failed.stderr, /answered 404/);
+      assert.deepEqual(fs.readdirSync(tmp), []);
+    }
+    let opened = 0;
+    const stopped = await stopCli([origin, "--pages", "2", "--sizes", "desktop", "--out", path.join(root, "stopped")], {
+      env,
+      stopAt: (stderr) => {
+        if (!opened && /^Opening /m.test(stderr)) opened = Date.now();
+        return opened > 0 && Date.now() - opened >= 1_000;
+      },
+    });
+    assert.ok(stopped.sent, stopped.stderr);
+    assert.equal(stopped.signal, "SIGTERM", stopped.stderr);
+    assert.deepEqual(fs.readdirSync(tmp), []);
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// Another browser's folder in the same temp folder stays: one that was
+// there before this browser started, and one with something in it.
+test("only the empty folders a browser left for its own downloads since it started are removed", () => {
+  const root = tempDir();
+  try {
+    const names = ["com.google.Chrome.chrome_chrome_url_fetcher_.Aaaaaa", "com.google.Chrome.chrome_chrome_url_fetcher_.Bbbbbb", "chrome_url_fetcher_12_34", "com.google.Chrome.chrome_chrome_Unpacker_BeginUnzipping.Cccccc", "com.google.Chrome.chrome_chrome_url_fetcher_.Dddddd", "unrelated"];
+    for (const name of names) fs.mkdirSync(path.join(root, name));
+    fs.writeFileSync(path.join(root, names[4], "part.crx"), "being downloaded");
+    const before = new Set([names[0]]);
+    assert.deepEqual([...fetchFolders(root)].sort(), names.slice(0, 5).sort());
+    removeFetchFolders(before, root);
+    assert.deepEqual(fs.readdirSync(root).sort(), [names[0], names[4], "unrelated"].sort());
+    // A browser with a temp folder of its own has left nothing here.
+    fs.mkdirSync(path.join(root, names[1]));
+    removeFetchFolders(null, root);
+    assert.ok(fs.existsSync(path.join(root, names[1])));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });
 

@@ -175,6 +175,9 @@ async function start(binary, { lang, args, own }) {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-chrome-"));
   const inProfile = own && process.platform === "linux" && roomIn(profile);
   const locksBefore = lockFolders();
+  // In the temp folder, the folders the browser may leave there (see
+  // removeFetchFolders); none, in a profile that is its temp folder too.
+  const fetching = inProfile ? null : fetchFolders();
   const child = spawn(
     binary,
     [
@@ -214,7 +217,7 @@ async function start(binary, { lang, args, own }) {
   });
   child.on("error", () => (exited = true));
   // lock: its lock folder, read once it answers (see lockFolderOf).
-  const started = { child, profile, lock: "" };
+  const started = { child, profile, lock: "", fetching };
   open.add(started);
   let base = "";
   let browser = null;
@@ -239,6 +242,7 @@ async function start(binary, { lang, args, own }) {
       // Left for the system's temp clean-up.
     }
     removeLockFolder(lock);
+    removeFetchFolders(fetching);
   };
   // Chrome writes the port it picked to DevToolsActivePort in the profile.
   const portFile = path.join(profile, "DevToolsActivePort");
@@ -308,6 +312,36 @@ function removeStrayLocks(before, { dir = os.tmpdir(), max = SOCKET_PATH_MAX } =
     removeLockFolder(path.join(dir, name));
   }
   return found;
+}
+
+// In its first seconds a browser makes a folder in its temp folder for what
+// it downloads for itself (com.google.Chrome.chrome_chrome_url_fetcher_.XXXXXX
+// and the like; chrome_url_fetcher_XXXX_XXXX on Windows) and another to unpack
+// it in (chrome_Unpacker_BeginUnzipping), and leaves them there when it quits
+// or is killed before that has ended.
+function fetchFolders(dir = os.tmpdir()) {
+  try {
+    return new Set(fs.readdirSync(dir).filter((name) => /chrome_(url_fetcher|Unpacker)_/.test(name)));
+  } catch {
+    return new Set();
+  }
+}
+
+// Once a browser has ended, removes such folders that came since it started
+// (before: the names there then) and are empty: rmdir takes nothing else.
+// One that another browser made a moment ago costs that browser a download
+// of its own that it does again. before: null when the browser had a temp
+// folder of its own.
+function removeFetchFolders(before, dir = os.tmpdir()) {
+  if (!before) return;
+  for (const name of fetchFolders(dir)) {
+    if (before.has(name)) continue;
+    try {
+      fs.rmdirSync(path.join(dir, name));
+    } catch {
+      // Not empty, or gone already.
+    }
+  }
 }
 
 // The devices a page is captured on. A phone is a phone to the site: its
@@ -449,13 +483,13 @@ async function currentUrl(cdp, fallback = "") {
 // profile fills up again.
 function killBrowsers() {
   const browsers = [];
-  for (const { child, profile, lock } of open) {
+  for (const { child, profile, lock, fetching } of open) {
     try {
       child.kill("SIGKILL");
     } catch {
       // Gone already.
     }
-    browsers.push({ profile, lock: lock || lockFolderOf(profile) });
+    browsers.push({ profile, lock: lock || lockFolderOf(profile), fetching });
   }
   open.clear();
   return browsers;
@@ -502,7 +536,7 @@ function removeLockFolder(folder) {
 // second left before it is killed outright. Each browser's lock folder goes
 // too.
 function removeProfiles(browsers) {
-  for (const { profile, lock } of browsers) {
+  for (const { profile, lock, fetching } of browsers) {
     for (let tries = 0; tries < 2; tries++) {
       try {
         fs.rmSync(profile, { recursive: true, force: true });
@@ -514,7 +548,8 @@ function removeProfiles(browsers) {
       }
     }
     removeLockFolder(lock);
+    removeFetchFolders(fetching);
   }
 }
 
-module.exports = { findChrome, onPath, launch, connect, openTab, closeTab, navigate, currentUrl, killBrowsers, removeProfiles, removeStrayLocks, roomIn, lockFolderOf, userAgentFor };
+module.exports = { findChrome, onPath, launch, connect, openTab, closeTab, navigate, currentUrl, killBrowsers, removeProfiles, removeStrayLocks, removeFetchFolders, fetchFolders, roomIn, lockFolderOf, userAgentFor };
