@@ -22,7 +22,7 @@ const { homeOf, siteOf, routeOf, viewKey, viewOf, pathOf, readable, printable } 
 const { Recorder } = require("./record");
 const { loadSteps, toYaml, targetText } = require("./steps");
 const { pickPages, tourSteps } = require("./tour");
-const { layoutOf, LOOKS, backdropOf, renderVideo, renderStill } = require("./compose");
+const { layoutOf, LOOKS, backdropOf, checkBackdrop, renderVideo, renderStill } = require("./compose");
 const { cameraAt } = require("./motion");
 const { findFfmpeg, pickEncoder, startVideo, makeGif, MISSING } = require("./ffmpeg");
 const { tagPng, pngSize, pngFileIsWhole } = require("./png");
@@ -359,6 +359,7 @@ async function makeDemo(rawUrl, options = {}) {
     chrome = await launch({ lang, args: [`--force-device-scale-factor=${density}`] });
     recorder = new Recorder(chrome, { dir: frames, out: target, base: asked, fps, viewport, hide: [...hide, ...(script ? script.hide : [])], clean: tidy, theme, lang, reducedMotion, log });
     try {
+      await checkBackdrop(chrome, background, frames);
       if (!script) {
         tour = await pickPages(chrome, asked, { pages: wanted, extra, lang, theme, reducedMotion, log });
         alive();

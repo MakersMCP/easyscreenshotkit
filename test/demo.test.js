@@ -18,7 +18,8 @@ const { setTimeLimit } = require("../skills/easyscreenshotkit/scripts/lib/time")
 const { readSteps } = require("../skills/easyscreenshotkit/scripts/lib/steps");
 const { findChrome, launch, openTab, closeTab, navigate } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
 const { findFfmpeg, makeGif, startVideo, gifIsWhole, mp4Frames } = require("../skills/easyscreenshotkit/scripts/lib/ffmpeg");
-const { readPng, serve, near, descendants } = require("./helpers");
+const { checkBackdrop } = require("../skills/easyscreenshotkit/scripts/lib/compose");
+const { readPng, pngOf, serve, near, descendants } = require("./helpers");
 
 const CLI = path.resolve(__dirname, "../skills/easyscreenshotkit/scripts/easyscreenshotkit.js");
 const ffmpeg = findFfmpeg();
@@ -200,6 +201,111 @@ test("a GIF or a video that ffmpeg cut short while exiting with 0 is no output",
     assert.equal(calls.length, 3, calls.join("\n"));
     for (const call of calls) assert.match(call, /(^| )-xerror( |$)/, call);
   } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// Whether a --background file can be drawn is the browser's to say: it
+// draws nothing for one that is no picture, and the backdrop came out plain
+// grey with no word of why. A check of its first bytes passed what the
+// browser cannot draw and refused the BMP and the ICO it can.
+test("a --background file is judged by the browser: what it draws is taken, what it does not is refused", { skip: !findChrome() && "no Chrome, Chromium, Edge or Brave installed", timeout: 60_000 }, async () => {
+  const root = tempDir();
+  const png = pngOf(32, 32, () => [0, 170, 119]);
+  const bmp = Buffer.alloc(70);
+  bmp.write("BM", 0, "latin1");
+  bmp.writeUInt32LE(bmp.length, 2);
+  bmp.writeUInt32LE(54, 10);
+  bmp.writeUInt32LE(40, 14);
+  bmp.writeInt32LE(2, 18);
+  bmp.writeInt32LE(2, 22);
+  bmp.writeUInt16LE(1, 26);
+  bmp.writeUInt16LE(24, 28);
+  const ico = Buffer.alloc(22);
+  ico.writeUInt16LE(1, 2);
+  ico.writeUInt16LE(1, 4);
+  ico[6] = 32;
+  ico[7] = 32;
+  ico.writeUInt16LE(1, 10);
+  ico.writeUInt16LE(32, 12);
+  ico.writeUInt32LE(png.length, 14);
+  ico.writeUInt32LE(22, 18);
+  const svg = (attributes = 'width="10" height="10"') => `<svg xmlns="http://www.w3.org/2000/svg" ${attributes}><rect width="10" height="10" fill="#00aa77"/></svg>`;
+  const pictures = {
+    "a.png": png,
+    "bmp-named.png": bmp,
+    "ico-named.png": Buffer.concat([ico, png]),
+    "a.svg": svg(),
+    "viewbox.svg": svg('viewBox="0 0 10 10"'),
+    "no-size.svg": svg(""),
+    "long-head.svg": `<?xml version="1.0"?>\n<!-- ${"a long comment ".repeat(400)} -->\n${svg()}`,
+    "prefixed.svg": '<svg:svg xmlns:svg="http://www.w3.org/2000/svg" width="10" height="10"><svg:rect width="10" height="10"/></svg:svg>',
+    "utf16.svg": Buffer.from(`\ufeff<?xml version="1.0" encoding="UTF-16"?>\n${svg()}`, "utf16le"),
+  };
+  const notPictures = {
+    "sound.png": Buffer.concat([Buffer.from("RIFF"), Buffer.alloc(4), Buffer.from("WAVEfmt "), Buffer.alloc(64)]),
+    "empty.png": "",
+    "cut.png": png.subarray(0, 40),
+    "text.webp": "not a picture at all",
+    "raster.svg": png,
+    "drawing.png": svg(),
+    "no-xmlns.svg": '<svg width="10" height="10"><rect width="10" height="10"/></svg>',
+    "html-with-svg.svg": `<!doctype html><html><body>${svg()}</body></html>`,
+    "comment-only.svg": `<?xml version="1.0"?>\n<!-- ${svg()} -->\n`,
+  };
+  setTimeLimit(50_000);
+  const chrome = await launch();
+  const file = (name, data) => {
+    const at = path.join(root, name);
+    fs.writeFileSync(at, data);
+    return at;
+  };
+  try {
+    // Colours and gradients are no files.
+    await checkBackdrop(chrome, "#0f172a, rgb(1, 2, 3)", root);
+    await checkBackdrop(chrome, "", root);
+    for (const [name, data] of Object.entries(pictures)) await checkBackdrop(chrome, file(name, data), root);
+    for (const [name, data] of Object.entries(notPictures)) await assert.rejects(checkBackdrop(chrome, file(name, data), root), new RegExp(`^Error: --background: .*${name} is no picture the browser can draw: PNG, JPEG, WebP, GIF, AVIF or SVG\\.$`), name);
+  } finally {
+    await chrome.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a demo is refused a --background the browser cannot draw before it records, and draws one it can", { skip: missing, timeout: 200_000 }, async () => {
+  const { server, origin, seen } = await fixture();
+  const root = tempDir();
+  const steps = path.join(root, "steps.yaml");
+  fs.writeFileSync(steps, "steps:\n  - visit: /\n  - wait: 0.3\n");
+  const out = path.join(root, "out");
+  // A 2x2 BMP in one colour, under a picture's name.
+  const bmp = Buffer.alloc(70);
+  bmp.write("BM", 0, "latin1");
+  bmp.writeUInt32LE(bmp.length, 2);
+  bmp.writeUInt32LE(54, 10);
+  bmp.writeUInt32LE(40, 14);
+  bmp.writeInt32LE(2, 18);
+  bmp.writeInt32LE(2, 22);
+  bmp.writeUInt16LE(1, 26);
+  bmp.writeUInt16LE(24, 28);
+  for (const at of [54, 57, 62, 65]) Buffer.from([119, 170, 0]).copy(bmp, at);
+  const bad = path.join(root, "no-xmlns.svg");
+  fs.writeFileSync(bad, '<svg width="10" height="10"><rect width="10" height="10"/></svg>');
+  const good = path.join(root, "bmp-named.png");
+  fs.writeFileSync(good, bmp);
+  try {
+    const refused = spawnSync(process.execPath, [CLI, "demo", origin, "--steps", steps, "--background", bad, "--no-gif", "--out", out], { encoding: "utf8", timeout: 60_000 });
+    // In a child process that cannot reach this one's server while this one
+    // is held: the refusal comes before anything is opened.
+    assert.equal(refused.status, 1, refused.stderr);
+    assert.ok(refused.stderr.includes(`easyscreenshotkit demo: --background: ${bad} is no picture the browser can draw`), refused.stderr);
+    assert.equal(fs.existsSync(out), false);
+    assert.deepEqual(seen, []);
+    await makeDemo(origin, { dir: out, steps, background: good, gif: false, timeLimit: 150_000 });
+    const poster = readPng(path.join(out, "poster.png"));
+    assert.ok(near(poster.pixel(20, 20), [0, 170, 119], 30), `backdrop: ${poster.pixel(20, 20)}`);
+  } finally {
+    server.close();
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

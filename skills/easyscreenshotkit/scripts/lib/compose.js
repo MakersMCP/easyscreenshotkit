@@ -49,61 +49,43 @@ const LOOKS = {
 
 const COLOR = /^(#[0-9a-f]{3,8}|(rgb|rgba|hsl|hsla)\([\d\s.,%/+-]+\)|[a-z]{3,30})$/i;
 
-// How much of a file is read to tell whether it is a picture. An SVG's root
-// can come after a long comment or doctype.
-const PICTURE_HEAD = 4096;
-const SVG_HEAD = 1024 * 1024;
+const PICTURE_FILE = /\.(png|jpe?g|webp|gif|avif|svg)$/i;
+const noPicture = (file) => new Error(`--background: ${file} is no picture the browser can draw: PNG, JPEG, WebP, GIF, AVIF or SVG.`);
 
-// Whether a file's first bytes fit what the browser does with it: it reads a
-// PNG, JPEG, WebP, GIF or AVIF by its bytes, whatever its name says, and a
-// file named .svg as text that has to hold an SVG root, which can have a
-// namespace prefix (<svg:svg>) and be in UTF-16.
-function isPicture(head, name) {
-  const text = (from, to) => head.toString("latin1", from, to);
-  if (/\.svg$/i.test(name)) return /<(?:[^\s<>:]+:)?svg[\s>]/i.test(text(0, head.length).replace(/\0/g, ""));
-  if (head.length < 12) return false;
-  return (
-    head.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) ||
-    (head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff) ||
-    /^GIF8[79]a$/.test(text(0, 6)) ||
-    (text(0, 4) === "RIFF" && text(8, 12) === "WEBP") ||
-    (text(4, 8) === "ftyp" && /avi[fs]/.test(text(8, Math.min(head.length, head.readUInt32BE(0)))))
-  );
-}
-
-// The first bytes of a file, up to length, or null when it cannot be read as
-// a file. Only a regular file is opened: opening a named pipe waits for
-// whatever writes to it, and the whole process with it, so a stop could not
-// be handled.
-function firstBytes(file, length) {
-  let fd;
-  try {
-    if (!fs.statSync(file).isFile()) return null;
-    fd = fs.openSync(file, "r");
-    const head = Buffer.alloc(length);
-    return head.subarray(0, fs.readSync(fd, head, 0, length, 0));
-  } catch {
-    return null;
-  } finally {
-    if (fd !== undefined) fs.closeSync(fd);
-  }
-}
-
-// --background: a colour, two colours for a gradient, or a picture file. A
-// file is read before the run: the browser draws nothing for one that is no
-// picture, and the backdrop came out plain grey with no word of why.
+// --background: a colour, two colours for a gradient, or a picture file.
+// Only a regular file can be one: the browser opening a named pipe would
+// wait for whatever writes to it. Whether it draws is checkBackdrop()'s.
 function backdropOf(value) {
   const text = String(value || "").trim();
   if (!text) return "";
-  if (/\.(png|jpe?g|webp|gif|avif|svg)$/i.test(text)) {
+  if (PICTURE_FILE.test(text)) {
     if (!fs.existsSync(text)) throw new Error(`--background: no such picture file: ${text}`);
-    const head = firstBytes(text, /\.svg$/i.test(text) ? SVG_HEAD : PICTURE_HEAD);
-    if (!head || !isPicture(head, text)) throw new Error(`--background: ${text} is no picture the browser can draw: PNG, JPEG, WebP, GIF, AVIF or SVG.`);
+    if (!fs.statSync(text).isFile()) throw noPicture(text);
     return `url("${pathToFileURL(path.resolve(text)).href}") center / cover no-repeat, #222`;
   }
   const colors = text.split(/\s*,\s*(?![^()]*\))/);
   if (!colors.length || colors.length > 3 || colors.some((c) => !COLOR.test(c))) throw new Error(`--background takes a colour, two colours for a gradient, or a picture file, not ${text}`);
   return colors.length === 1 ? colors[0] : `linear-gradient(135deg, ${colors.join(", ")})`;
+}
+
+// A --background file is the browser's to judge, before anything is
+// recorded: it draws nothing for a file that is no picture, and the backdrop
+// came out plain grey with no word of why. It is loaded as the video's
+// page would load it, from a page in dir.
+async function checkBackdrop(chrome, value, dir) {
+  const file = String(value || "").trim();
+  if (!PICTURE_FILE.test(file)) return;
+  const page = path.join(dir, "picture.html");
+  fs.writeFileSync(page, "<!doctype html><title>picture</title>");
+  const tab = await openTab(chrome, { width: 64, height: 64, scale: 1, mobile: false, touch: false, agent: "desktop" });
+  try {
+    await navigate(tab, pathToFileURL(page).href);
+    const expression = `new Promise((done) => { const img = new Image(); img.onload = () => done(img.naturalWidth); img.onerror = () => done(0); img.src = ${JSON.stringify(pathToFileURL(path.resolve(file)).href)}; })`;
+    const { result } = await tab.send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }, 30_000);
+    if (!(result && result.value > 0)) throw noPicture(file);
+  } finally {
+    await closeTab(chrome, tab);
+  }
 }
 
 // How light the site is, from a small capture of its first screen: 0 is
@@ -357,4 +339,4 @@ async function renderStill(chrome, take, { layout, look, zoom, dir, t }) {
   }
 }
 
-module.exports = { layoutOf, LOOKS, backdropOf, lightnessOf, composeHtml, addressOf, frameAt, stateAt, renderVideo, renderStill, WIDTH, HEIGHT };
+module.exports = { layoutOf, LOOKS, backdropOf, checkBackdrop, lightnessOf, composeHtml, addressOf, frameAt, stateAt, renderVideo, renderStill, WIDTH, HEIGHT };

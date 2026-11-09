@@ -149,42 +149,11 @@ test("layout, backdrop and the address in the title bar", () => {
   assert.throws(() => backdropOf("missing.png"), /no such picture file/);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-backdrop-"));
   try {
-    const file = (name, data) => {
-      const at = path.join(dir, name);
-      fs.writeFileSync(at, data);
-      return at;
-    };
-    const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(16)]);
-    const ftyp = (brands) => Buffer.concat([Buffer.from([0, 0, 0, 8 + brands.length]), Buffer.from(`ftyp${brands}`, "latin1"), Buffer.alloc(8)]);
-    const pictures = {
-      "a.png": png,
-      "a.jpg": Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(16)]),
-      "a.gif": Buffer.concat([Buffer.from("GIF89a"), Buffer.alloc(16)]),
-      "a.webp": Buffer.concat([Buffer.from("RIFF"), Buffer.alloc(4), Buffer.from("WEBPVP8 ")]),
-      "a.avif": ftyp("avif\0\0\0\0mif1miaf"),
-      "b.avif": ftyp("mif1\0\0\0\0avifmiaf"),
-      // The browser reads these by their bytes, not their names.
-      "jpeg-named.png": Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(16)]),
-      "a.svg": '<?xml version="1.0"?>\n<!-- a drawing -->\n<svg xmlns="http://www.w3.org/2000/svg"></svg>',
-      // An SVG's root can come late, after a long comment or doctype, have a
-      // namespace prefix, and be written in UTF-16.
-      "long-head.svg": `<?xml version="1.0"?>\n<!-- ${"a long comment ".repeat(400)} -->\n<svg xmlns="http://www.w3.org/2000/svg"></svg>`,
-      "prefixed.svg": '<svg:svg xmlns:svg="http://www.w3.org/2000/svg"><svg:rect width="1" height="1"/></svg:svg>',
-      "utf16.svg": Buffer.from('\ufeff<?xml version="1.0" encoding="UTF-16"?>\n<svg xmlns="http://www.w3.org/2000/svg"></svg>', "utf16le"),
-    };
-    for (const [name, data] of Object.entries(pictures)) assert.match(backdropOf(file(name, data)), /^url\("file:/, name);
-    const notPictures = {
-      "sound.png": Buffer.concat([Buffer.from("RIFF"), Buffer.alloc(4), Buffer.from("WAVEfmt ")]),
-      "empty.png": "",
-      "short.png": png.subarray(0, 8),
-      "text.webp": "not a picture at all",
-      "heic.avif": ftyp("heic\0\0\0\0mif1heic"),
-      "raster.svg": png,
-      "drawing.png": "<svg></svg>",
-      "no-root.svg": `<?xml version="1.0"?>\n<!-- ${"nothing after this ".repeat(400)} -->\n`,
-      "other-root.svg": '<svgish></svgish><x:svgish xmlns:x="urn:x"/>',
-    };
-    for (const [name, data] of Object.entries(notPictures)) assert.throws(() => backdropOf(file(name, data)), new RegExp(`--background: .*${name} is no picture the browser can draw`), name);
+    // A regular file under a picture's name goes to the browser, which
+    // says whether it can draw it (see the demo's tests); nothing else does.
+    const picture = path.join(dir, "a.png");
+    fs.writeFileSync(picture, "the browser says what this is");
+    assert.match(backdropOf(picture), /^url\("file:/);
     fs.mkdirSync(path.join(dir, "folder.png"));
     assert.throws(() => backdropOf(path.join(dir, "folder.png")), /is no picture the browser can draw/);
   } finally {
