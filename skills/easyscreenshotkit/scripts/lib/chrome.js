@@ -341,18 +341,18 @@ function fetchFolders(dir = os.tmpdir()) {
 }
 
 // Once a browser has ended, removes such folders that came since it started
-// (before: the names there then) and are empty: rmdir takes nothing else.
-// One that another browser made a moment ago costs that browser a download
-// of its own that it does again. before: null when the browser had a temp
-// folder of its own.
+// (before: the names there then), with what they hold: a browser that ended
+// in its first seconds left a part of its download in them. One that another
+// browser made a moment ago costs that browser a download of its own, which
+// it does again. before: null when the browser had a temp folder of its own.
 function removeFetchFolders(before, dir = os.tmpdir()) {
   if (!before) return;
   for (const name of fetchFolders(dir)) {
     if (before.has(name)) continue;
     try {
-      fs.rmdirSync(path.join(dir, name));
+      fs.rmSync(path.join(dir, name), { recursive: true, force: true });
     } catch {
-      // Not empty, or gone already.
+      // Held open by a browser still at it (Windows), or gone already.
     }
   }
 }

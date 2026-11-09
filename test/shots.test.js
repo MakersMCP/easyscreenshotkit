@@ -1366,6 +1366,7 @@ test("a run that ends in its first seconds leaves nothing in the temp folder", {
 // browser's first seconds left it there: it goes too.
 test("a run that ends in its first seconds leaves nothing in a temp folder with a long path", { skip: noBrowser, timeout: 120_000 }, async (t) => {
   const { server, origin } = await fixture();
+  const late = await serve((req, res) => setTimeout(() => res.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Disposition": 'attachment; filename="file.bin"' }).end("written by the site\n"), 1_000));
   const root = tempDir();
   const tmp = path.join(os.tmpdir(), `t-${"x".repeat(Math.max(1, 34 - os.tmpdir().length))}`);
   fs.mkdirSync(tmp, { recursive: true });
@@ -1376,6 +1377,14 @@ test("a run that ends in its first seconds leaves nothing in a temp folder with 
       const failed = await runCli([`${origin}/missing`, "--pages", "1", "--sizes", "desktop", "--out", path.join(root, "missing")], { env });
       assert.equal(failed.status, 1, failed.stderr);
       assert.match(failed.stderr, /answered 404/);
+      assert.deepEqual(fs.readdirSync(tmp), []);
+    }
+    // Refused about a second after the browser started: its folder for what
+    // it downloads for itself then has a file in it.
+    for (let i = 0; i < 2; i++) {
+      const refused = await runCli([`${late.origin}/file.bin`, "--pages", "1", "--sizes", "desktop", "--out", path.join(root, "refused")], { env });
+      assert.equal(refused.status, 1, refused.stderr);
+      assert.match(refused.stderr, /a file to download instead of a page/);
       assert.deepEqual(fs.readdirSync(tmp), []);
     }
     let opened = 0;
@@ -1391,14 +1400,15 @@ test("a run that ends in its first seconds leaves nothing in a temp folder with 
     assert.deepEqual(fs.readdirSync(tmp), []);
   } finally {
     server.close();
+    late.server.close();
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
 
-// Another browser's folder in the same temp folder stays: one that was
-// there before this browser started, and one with something in it.
-test("only the empty folders a browser left for its own downloads since it started are removed", () => {
+// A browser that ended in its first seconds left a part of its download in
+// such a folder. A folder that was there before this browser started stays.
+test("the folders a browser left for its own downloads since it started go with what they hold, and no others", () => {
   const root = tempDir();
   try {
     const names = ["com.google.Chrome.chrome_chrome_url_fetcher_.Aaaaaa", "com.google.Chrome.chrome_chrome_url_fetcher_.Bbbbbb", "chrome_url_fetcher_12_34", "com.google.Chrome.chrome_chrome_Unpacker_BeginUnzipping.Cccccc", "com.google.Chrome.chrome_chrome_url_fetcher_.Dddddd", "unrelated"];
@@ -1407,7 +1417,7 @@ test("only the empty folders a browser left for its own downloads since it start
     const before = new Set([names[0]]);
     assert.deepEqual([...fetchFolders(root)].sort(), names.slice(0, 5).sort());
     removeFetchFolders(before, root);
-    assert.deepEqual(fs.readdirSync(root).sort(), [names[0], names[4], "unrelated"].sort());
+    assert.deepEqual(fs.readdirSync(root).sort(), [names[0], "unrelated"].sort());
     // A browser with a temp folder of its own has left nothing here.
     fs.mkdirSync(path.join(root, names[1]));
     removeFetchFolders(null, root);
