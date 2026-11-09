@@ -108,12 +108,14 @@ const PRICING = page(
 
 const simple = (title, color = "rgb(240,240,240)", extra = "") => page(`${title} | Acme`, `<h1>${title}</h1><div style="height:1400px;background:${color}"></div><a href="/">Home</a>${extra}`);
 
-async function fixture() {
+// hold: what a request has to wait for before it is answered.
+async function fixture({ hold = null } = {}) {
   const seen = [];
   let origin = "";
-  const { server, origin: base } = await serve((req, res) => {
+  const { server, origin: base } = await serve(async (req, res) => {
     const agent = String(req.headers["user-agent"] || "");
     seen.push({ url: req.url, agent, lang: String(req.headers["accept-language"] || "") });
+    if (hold) await hold(req);
     const html = (body) => res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(body);
     const go = (code, to) => res.writeHead(code, { Location: to }).end();
     switch (req.url) {
@@ -1380,11 +1382,13 @@ test("a run whose picture came out cut short fails, and leaves the earlier run's
 
 // A preload for the CLI: writing a file whose path matches FULL_FOR fails as
 // a full disk fails it, or as a full quota does, which Node calls UNKNOWN.
+// FULL_TOLD, a file it makes the moment that happens.
 const FULL_DISK = `
   const fs = require("fs");
   const write = fs.writeFileSync;
   fs.writeFileSync = (file, ...rest) => {
     if (!new RegExp(process.env.FULL_FOR).test(String(file))) return write(file, ...rest);
+    if (process.env.FULL_TOLD) write(process.env.FULL_TOLD, "");
     throw Object.assign(new Error("full"), process.env.FULL_AS === "quota" ? { code: "UNKNOWN", errno: -122, syscall: "write" } : { code: "ENOSPC", errno: -28, syscall: "write" });
   };
 `;
@@ -1416,22 +1420,70 @@ test("a window after the first or a sheet that cannot be saved fails the run, an
   }
 });
 
-// Windows that are still to be taken once one could not be saved are not
-// opened: the run fails over that one, and the other pages cost it no time.
-test("a run stops opening pages once a window could not be saved", { skip: noBrowser, timeout: 120_000 }, async () => {
+// Windows and pages that are still to be taken once a window could not be
+// saved are not opened: the run fails over that one, and the rest cost it no
+// time. The page opened meanwhile is held back by the server until the save
+// has failed, so what comes after it is known to come after that.
+const untilMade = async (file) => {
+  for (let i = 0; i < 1_600 && !fs.existsSync(file); i++) await sleep(50);
+};
+
+test("a run opens no more windows once one could not be saved", { skip: noBrowser, timeout: 120_000 }, async () => {
   const { server, origin, seen } = await fixture();
   const root = tempDir();
   const dir = path.join(root, "shots");
   const preload = path.join(root, "full-disk.js");
   fs.writeFileSync(preload, FULL_DISK);
   try {
-    const failed = await runCli([origin, "--pages", "1", "--page", "/integrations", "--page", "/about", "--sizes", "desktop,mobile", "--out", dir], { env: { ...process.env, FULL_FOR: "-home-mobile\\.png$" }, preload });
+    // Two windows at a time: the phone's and the iPhone's cannot be saved,
+    // whichever ends first, and 1024x768 is the one still to come.
+    const failed = await runCli([origin, "--pages", "1", "--sizes", "desktop,mobile,iphone,1024x768", "--out", dir], { env: { ...process.env, FULL_FOR: "-home-(mobile|iphone)\\.png$" }, preload });
+    assert.equal(failed.status, 1, failed.stderr);
+    assert.match(failed.stderr, /Could not save 01-home-(mobile|iphone)\.png in .*: the disk, or your disk quota, is full/);
+    assert.equal(fs.existsSync(dir), false);
+    // The desktop's window, and no second one with a desktop's browser.
+    assert.equal(seen.filter(({ url, agent }) => url === "/" && !/Android|iPhone/.test(agent)).length, 1, seen.map(({ url }) => url).join(" "));
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a run opens no --page after a window could not be saved", { skip: noBrowser, timeout: 120_000 }, async () => {
+  const root = tempDir();
+  const told = path.join(root, "told");
+  const { server, origin, seen } = await fixture({ hold: (req) => (req.url === "/integrations" ? untilMade(told) : null) });
+  const dir = path.join(root, "shots");
+  const preload = path.join(root, "full-disk.js");
+  fs.writeFileSync(preload, FULL_DISK);
+  try {
+    const failed = await runCli([origin, "--pages", "1", "--page", "/integrations", "--page", "/about", "--sizes", "desktop,mobile", "--out", dir], { env: { ...process.env, FULL_FOR: "-home-mobile\\.png$", FULL_TOLD: told }, preload });
     assert.equal(failed.status, 1, failed.stderr);
     assert.match(failed.stderr, /Could not save 01-home-mobile\.png in .*: the disk, or your disk quota, is full/);
     assert.equal(fs.existsSync(dir), false);
-    // The home page's phone window was lost well before /about, the last
-    // page asked for, got as far as its own: it has no second window.
-    assert.ok(seen.filter(({ url }) => url === "/about").length <= 1, seen.map(({ url }) => url).join(" "));
+    assert.ok(seen.some(({ url }) => url === "/integrations"), seen.map(({ url }) => url).join(" "));
+    assert.deepEqual(seen.filter(({ url }) => url === "/about"), []);
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a tour opens no more pages after a window could not be saved", { skip: noBrowser, timeout: 120_000 }, async () => {
+  const root = tempDir();
+  const told = path.join(root, "told");
+  const { server, origin, seen } = await fixture({ hold: (req) => (req.url === "/pricing" ? untilMade(told) : null) });
+  const dir = path.join(root, "shots");
+  const preload = path.join(root, "full-disk.js");
+  fs.writeFileSync(preload, FULL_DISK);
+  try {
+    const failed = await runCli([origin, "--pages", "3", "--sizes", "desktop,mobile", "--out", dir], { env: { ...process.env, FULL_FOR: "-home-mobile\\.png$", FULL_TOLD: told }, preload });
+    assert.equal(failed.status, 1, failed.stderr);
+    assert.match(failed.stderr, /Could not save 01-home-mobile\.png in .*: the disk, or your disk quota, is full/);
+    assert.equal(fs.existsSync(dir), false);
+    // The first page of the tour may have been on its way. The others on
+    // the home page's menu get no request.
+    assert.deepEqual(seen.filter(({ url }) => ["/features", "/old-features", "/integrations", "/blog", "/about", "/docs"].includes(url)), []);
   } finally {
     server.close();
     fs.rmSync(root, { recursive: true, force: true });
