@@ -563,6 +563,30 @@ test("a run's folder: refused when it holds someone else's files, and an earlier
       assert.deepEqual(snapshot(elsewhere), emptied);
       assert.ok(fs.statSync(path.join(elsewhere, "screenshots")).isDirectory());
       assert.throws(() => openShots(dir, { pwa: true }), /shots\/pwa is a link, and this run saves a folder of that name there\./);
+      // One that comes while a --pwa run works fails the run at its end,
+      // which adds nothing, in the folder or where the link leads (here an
+      // empty folder, where the run saved its pwa/ files and ended well);
+      // so does a file that comes there.
+      const outputs = ["01-home-desktop.png", "pwa/screenshots/wide-01.png", "pwa/manifest-screenshots.json", "manifest.json"];
+      const listed = () => fs.readdirSync(dir).filter((name) => !name.startsWith(".easyscreenshotkit-part-")).sort();
+      const home = fs.readFileSync(path.join(dir, "01-home-desktop.png"), "utf8");
+      const outside = path.join(root, "outside");
+      fs.mkdirSync(outside);
+      for (const [what, put] of [
+        ["a link", () => fs.symlinkSync(outside, path.join(dir, "pwa"), "junction")],
+        ["a file", () => fs.writeFileSync(path.join(dir, "pwa"), "a file of the user's\n")],
+      ]) {
+        fs.rmSync(path.join(dir, "pwa"));
+        const during = openShots(dir, { pwa: true });
+        for (const rel of outputs) during.write(rel, rel === "manifest.json" ? JSON.stringify({ version: 1, tool: "easyscreenshotkit 0.1.2" }) : "during");
+        put();
+        const names = listed();
+        assert.throws(() => during.commit(outputs), new RegExp(`^Error: Could not move this run's files into .*shots: .*shots/pwa is ${what}, and this run saves a folder of that name there\\. What the folder held before this run is as it was\\.$`));
+        assert.deepEqual(fs.readdirSync(dir).sort(), names);
+        assert.equal(fs.readFileSync(path.join(dir, "01-home-desktop.png"), "utf8"), home);
+        assert.deepEqual(fs.readdirSync(outside), []);
+      }
+      assert.equal(fs.readFileSync(path.join(dir, "pwa"), "utf8"), "a file of the user's\n");
       fs.rmSync(path.join(dir, "pwa"));
     }
 

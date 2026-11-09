@@ -244,7 +244,10 @@ function checkDir(dir, spec) {
 
 // Makes the folders of rel inside root one at a time, never root itself: a
 // write that comes after the run was stopped finds no part folder and
-// fails, instead of making it again. made, when given, gets the ones made.
+// fails, instead of making it again. One that is there already has to be a
+// folder of its own: through a link, the run would make its folders and
+// put its files elsewhere, and a file is in the way. made, when given, gets
+// the ones made.
 function folders(root, rel, made = null) {
   let at = root;
   for (const name of String(rel).split(/[\\/]/).filter((part) => part && part !== ".")) {
@@ -254,6 +257,8 @@ function folders(root, rel, made = null) {
       if (made) made.push(at);
     } catch (err) {
       if (err.code !== "EEXIST") throw err;
+      const s = lstat(at);
+      if (s && !s.isDirectory()) throw Object.assign(new Error(`${at} is ${s.isSymbolicLink() ? "a link" : "a file"}`), { code: "ENOTDIR", at, link: s.isSymbolicLink() });
     }
   }
 }
@@ -301,6 +306,7 @@ const WHY = {
 };
 
 function reasonOf(run, err) {
+  if (err.told) return err.told;
   const name = err.rel ? path.join(run.dir, err.rel) : run.dir;
   return `${name}: ${WHY[err.code] || err.message}`;
 }
@@ -344,7 +350,11 @@ function commit(run, outputs) {
       try {
         folders(target, path.dirname(rel), madeHere);
       } catch (err) {
-        throw Object.assign(err, { rel: path.dirname(rel) });
+        if (!err.at) throw Object.assign(err, { rel: path.dirname(rel) });
+        // A link or a file that came, while the run worked, where it saves
+        // a folder (pwa/): refused as it is before a run.
+        const at = path.relative(target, err.at);
+        throw Object.assign(err, { rel: at, told: `${path.join(run.dir, at)} is ${err.link ? "a link" : "a file"}, and this run saves a folder of that name there` });
       }
       const there = lstat(path.join(target, rel));
       if (there) throw Object.assign(new Error(there.isDirectory() ? WHY.EISDIR : "a file of that name came there while the run worked"), { rel });
