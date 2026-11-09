@@ -531,6 +531,9 @@ test("a #route in the address and in --page: each view opened, waited for and na
       timeLimit: 130_000,
     });
     assert.equal(manifest.url, `${origin}/app/#/plants`);
+    // Named by the last part of the view's title, not by the view.
+    assert.equal(manifest.site, "Acme");
+    assert.match(fs.readFileSync(path.join(dir, "SCREENSHOTS.md"), "utf8"), /^# Screenshots of Acme\n/);
     assert.deepEqual(
       manifest.pages.map((p) => [p.n, p.slug, p.url, p.heading, p.shots.map((s) => s.file)]),
       [

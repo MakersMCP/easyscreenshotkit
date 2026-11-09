@@ -321,11 +321,14 @@ function movedOn(asked, landed) {
 }
 
 // The site's name: og:site_name, else the title up to its first separator
-// ("Acme | Payments for teams" is Acme), else the host name.
+// ("Acme | Payments for teams" is Acme), else the host name. The title of a
+// #route view starts with the view, as a rule ("Plants · Brightmoss"), so
+// of a view it is the title's last part.
 function siteName(info, url) {
   if (info.siteName) return info.siteName;
-  const first = String(info.title || "").split(/\s+[|·•:–—-]\s+/)[0].trim();
-  if (first && first.length <= 40) return first;
+  const parts = String(info.title || "").split(/\s+[|·•:–—-]\s+/);
+  const part = (routeOf(url) ? parts[parts.length - 1] : parts[0]).trim();
+  if (part && part.length <= 40) return part;
   const label = new URL(url).hostname.replace(/^www\./, "").split(".")[0];
   return label.charAt(0).toUpperCase() + label.slice(1);
 }

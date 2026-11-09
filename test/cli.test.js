@@ -184,6 +184,15 @@ test("addresses, page names and the site's name", () => {
   assert.equal(siteName({ siteName: "Acme Inc", title: "Home" }, home), "Acme Inc");
   assert.equal(siteName({ siteName: "", title: "Acme | Payments for teams" }, home), "Acme");
   assert.equal(siteName({ siteName: "", title: "" }, "https://www.acme.com/"), "Acme");
+  // The title of a #route view starts with the view: the site is its last
+  // part, or the whole of a title that names no view.
+  const view = "https://acme.com/app/#/plants";
+  assert.equal(siteName({ siteName: "", title: "Plants · Brightmoss" }, view), "Brightmoss");
+  assert.equal(siteName({ siteName: "", title: "Plant - Fern | Brightmoss" }, view), "Brightmoss");
+  assert.equal(siteName({ siteName: "", title: "Brightmoss" }, view), "Brightmoss");
+  assert.equal(siteName({ siteName: "Brightmoss Inc", title: "Plants · Brightmoss" }, view), "Brightmoss Inc");
+  assert.equal(siteName({ siteName: "", title: "" }, "https://www.acme.com/#/plants"), "Acme");
+  assert.equal(siteName({ siteName: "", title: "Plants · Brightmoss" }, "https://acme.com/app/#pricing"), "Plants");
 });
 
 test("the summary and the sheet show a view's #route with its path", () => {
