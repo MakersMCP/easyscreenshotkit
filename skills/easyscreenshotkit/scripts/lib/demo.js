@@ -66,13 +66,19 @@ Options:
 A #route (#/ or #!) in the address, in --page or in a visit step is kept,
 and every view the video shows, one a click opened included, is a page of
 its own in steps.json. A --page that is only a route, such as '#/plants',
-is that view of the address given. Any other fragment in the address or in
+is that view of the address given, with its query, and a --page with a
+query and a route keeps both. Any other fragment in the address or in
 --page, such as #pricing or #inbox, is left out, with a note; a visit step
 keeps it. A tour follows paths only: the notes in steps.json name the
 #route links on the home page, the address given and each --page, and the
 #routes in the site's sitemap. An address that answers with a file to
 download is refused: a tour leaves it out and says so, a visit step to one
 stops the demo, and the browser saves nothing.
+
+When the address given is another page than the home page, or a #route of
+it, a tour whose home page answers an error or a bot check, or cannot be
+opened, leaves it out with a note and starts at the address given. An
+address given that is itself the home page still fails.
 
 A demo builds its files inside the folder it saves in and moves them into
 place once it has ended well, replacing an earlier demo's. One that fails or
