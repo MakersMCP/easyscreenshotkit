@@ -270,8 +270,11 @@ async function* tourSteps(recorder, pages) {
       yield { action: "wait", seconds: stops.length ? 0.6 : 1.2 };
       return;
     }
-    let link = await linkOnScreen(recorder, next.url);
-    if (!link && stops.length && (await linkAtTop(recorder, next.url))) {
+    // A link to a #route goes by the query of the page it is on: a view
+    // asked for with a query of its own is visited.
+    const linkable = !routeOf(next.url) || new URL(next.url).search === new URL(pages[i].url).search;
+    let link = linkable ? await linkOnScreen(recorder, next.url) : null;
+    if (!link && linkable && stops.length && (await linkAtTop(recorder, next.url))) {
       yield { action: "scroll", to: "top", label: "Back to the top" };
       link = await linkOnScreen(recorder, next.url);
     }

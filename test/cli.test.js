@@ -169,6 +169,9 @@ test("addresses, page names and the site's name", () => {
   // The pages asked for with --page keep their route; a fragment alone is a
   // view of the address given.
   assert.deepEqual(pagesAsked(["/app/#/plants", "#/light", "/pricing?plan=pro", "/docs#intro"], "https://acme.com/app/#/today", home), ["https://acme.com/app/#/plants", "https://acme.com/app/#/light", "https://acme.com/pricing", "https://acme.com/docs"]);
+  // The query of the address given goes with a view of it, and a --page
+  // with a query and a route keeps both.
+  assert.deepEqual(pagesAsked(["#/light", "/app/?mode=b#/plants"], "https://acme.com/app/?mode=a#/today", home), ["https://acme.com/app/?mode=a#/light", "https://acme.com/app/?mode=b#/plants"]);
   assert.throws(() => pagesAsked(["https://other.com/#/x"], "https://acme.com/", home), /is not a page of acme\.com/);
   // Asked with a route, a page is the view it ended on; asked without, its
   // page, whatever route the app went to by itself.

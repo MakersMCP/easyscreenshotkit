@@ -554,6 +554,37 @@ test("a #route in the address and in --page: each view opened, waited for and na
   }
 });
 
+// An app read by its query as well as by its route, on any of its views:
+// a --page that is only a route is that view of the address given, query
+// and all, and one with a query and a route keeps both. The query was
+// dropped without a word, and the view opened on another address.
+test("a --page with a #route keeps the query of the address it is a view of, or its own", { skip: noBrowser, timeout: 150_000 }, async () => {
+  const seen = [];
+  const { server, origin } = await serve((req, res) => {
+    seen.push(req.url);
+    if (new URL(req.url, "http://x").pathname === "/spa/") return res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Spa | Acme", '<h1 id="h">Spa</h1><p><a href="#/one">One</a></p><script>const say = () => { document.getElementById("h").textContent = location.search + location.hash; }; addEventListener("hashchange", say); say();</script>'));
+    res.writeHead(404).end("not found");
+  });
+  const dir = path.join(tempDir(), "shots");
+  try {
+    const { manifest } = await takeShots(`${origin}/spa/?mode=a#/one`, { dir, pages: 1, sizes: "desktop", extra: ["#/two", "/spa/?mode=b#/three", "/spa/?mode=c"], timeLimit: 130_000 });
+    assert.deepEqual(
+      manifest.pages.map((p) => [p.slug, p.url, p.heading]),
+      [
+        ["spa-one", `${origin}/spa/?mode=a#/one`, "?mode=a#/one"],
+        ["spa-two", `${origin}/spa/?mode=a#/two`, "?mode=a#/two"],
+        ["spa-three", `${origin}/spa/?mode=b#/three`, "?mode=b#/three"],
+        ["spa", `${origin}/spa/`, ""],
+      ],
+    );
+    assert.deepEqual(manifest.notes, []);
+    assert.deepEqual([...new Set(seen.filter((at) => at.startsWith("/spa/")))].sort(), ["/spa/", "/spa/?mode=a", "/spa/?mode=b"]);
+  } finally {
+    server.close();
+    fs.rmSync(path.dirname(dir), { recursive: true, force: true });
+  }
+});
+
 // A home page the run chose to open by itself is left out when it cannot be
 // taken and the address given is another page or a #route of it: a project
 // site's root is often a 404. It stopped the run. What stops a run is the

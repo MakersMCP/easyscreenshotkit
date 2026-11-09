@@ -320,8 +320,10 @@ function linkUrl(raw, base) {
 }
 
 // The address to open for a page asked for by name: as for a link, but
-// with its #route, so it opens that view. Any other fragment goes, as for
-// a link: an anchor is a place on the page.
+// with its #route, so it opens that view, and with the query in front of
+// the route, which an app can read as a part of the view. Without a #route
+// the query goes, and any other fragment, as for a link: an anchor is a
+// place on the page.
 function pageUrl(raw, base) {
   let url;
   try {
@@ -330,8 +332,10 @@ function pageUrl(raw, base) {
     return null;
   }
   if (!/^https?:$/.test(url.protocol)) return null;
-  url.search = "";
-  if (!routeOf(url.href)) url.hash = "";
+  if (!routeOf(url.href)) {
+    url.search = "";
+    url.hash = "";
+  }
   return url;
 }
 

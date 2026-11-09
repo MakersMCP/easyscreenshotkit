@@ -13,7 +13,7 @@ const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const test = require("node:test");
 const { parseDemo, prepareDemoDir, openDemo, makeDemo, routesNote, what, frameAt, stepEntries, pageEntries } = require("../skills/easyscreenshotkit/scripts/lib/demo");
-const { pickPages } = require("../skills/easyscreenshotkit/scripts/lib/tour");
+const { pickPages, tourSteps } = require("../skills/easyscreenshotkit/scripts/lib/tour");
 const { setTimeLimit } = require("../skills/easyscreenshotkit/scripts/lib/time");
 const { readSteps } = require("../skills/easyscreenshotkit/scripts/lib/steps");
 const { findChrome, launch, openTab, closeTab, navigate } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
@@ -734,6 +734,28 @@ test("a tour leaves out a --page that cannot be opened, and goes on", { skip: !f
     await chrome.close();
     server.close();
   }
+});
+
+// A link to a #route goes by the query of the page it is on: clicked, a view
+// asked for with a query of its own would open on the page's query.
+test("a tour clicks to a view by its link only when the view has the query of the page before it", async () => {
+  const recorder = {
+    viewport: { width: 1600, height: 900 },
+    eval: async () => 0,
+    locate: async () => ({ left: 10, top: 10, width: 50, height: 20, covered: false, text: "Next", attribute: "#/two" }),
+    scrollState: async () => ({ y: 0 }),
+  };
+  setTimeLimit(300_000);
+  const moves = async (pages) => {
+    const found = [];
+    for await (const step of tourSteps(recorder, pages)) if (step.action === "click" || step.action === "visit") found.push(step.action);
+    return found;
+  };
+  const at = (url) => ({ url: `https://acme.com${url}` });
+  assert.deepEqual(await moves([at("/spa/?mode=a#/one"), at("/spa/?mode=a#/two")]), ["visit", "click"]);
+  assert.deepEqual(await moves([at("/spa/?mode=a#/one"), at("/spa/?mode=b#/two")]), ["visit", "visit"]);
+  // A page with no #route is the link's whatever query the page before has.
+  assert.deepEqual(await moves([at("/spa/?mode=a#/one"), at("/pricing")]), ["visit", "click"]);
 });
 
 // A home page the tour chose to open by itself is left out when it cannot
