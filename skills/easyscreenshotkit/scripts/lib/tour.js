@@ -55,40 +55,66 @@ async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = 
   const asks = pagesAsked(extra, asked, home);
   log(`Opening ${home}`);
   const indexing = wanted > 1 ? readSiteIndex(new URL(home).origin).catch(() => ({ robots: null, urls: [] })) : Promise.resolve({ robots: null, urls: [] });
-  const tab = await openTab(chrome, PROBE, ctx);
-  let nav;
-  let info;
-  let links = [];
-  try {
-    await watchRequests(tab);
-    nav = await navigate(tab, home);
-    if (nav.status >= 400) throw new Error(`${nav.url} answered ${nav.status}, so no demo was recorded.`);
-    await waitForView(tab, nav, home, false);
-    await waitForContent(tab, 20_000);
-    await settle(tab, 6_000);
-    info = await readInfo(tab);
-    if (info.challenge) throw new Error(`${nav.url} answered with a bot check ("${info.title || "a challenge page"}") instead of its page, so no demo was recorded. Open the site in a normal browser to check it.`);
-    // The site's own home page in the language asked for, when it names one.
-    const alternate = alternateFor(info.alternates, lang);
-    if (alternate && pageKey(alternate.href) !== pageKey(nav.url) && siteOf(alternate.href) === siteOf(home)) {
-      log(`Opening its ${alternate.lang} version, ${alternate.href}`);
-      home = homeOf(alternate.href);
-      nav = await navigate(tab, alternate.href);
+  // Opens the page the tour starts at. refused: why it cannot be, in the
+  // words of the pages left out. alternates: look for its version in the
+  // language asked for.
+  const opening = async (url, { alternates = false } = {}) => {
+    const tab = await openTab(chrome, PROBE, ctx);
+    try {
+      await watchRequests(tab);
+      let nav = await navigate(tab, url);
+      if (nav.status >= 400) throw Object.assign(new Error(`${nav.url} answered ${nav.status}, so no demo was recorded.`), { refused: `the page answered ${nav.status}` });
+      await waitForView(tab, nav, url, false);
       await waitForContent(tab, 20_000);
       await settle(tab, 6_000);
-      info = await readInfo(tab);
+      let info = await readInfo(tab);
+      if (info.challenge) throw Object.assign(new Error(`${nav.url} answered with a bot check ("${info.title || "a challenge page"}") instead of its page, so no demo was recorded. Open the site in a normal browser to check it.`), { refused: "a bot check instead of the page" });
+      // The site's own home page in the language asked for, when it names one.
+      const alternate = alternates && alternateFor(info.alternates, lang);
+      if (alternate && pageKey(alternate.href) !== pageKey(nav.url) && siteOf(alternate.href) === siteOf(home)) {
+        log(`Opening its ${alternate.lang} version, ${alternate.href}`);
+        home = homeOf(alternate.href);
+        nav = await navigate(tab, alternate.href);
+        await waitForContent(tab, 20_000);
+        await settle(tab, 6_000);
+        info = await readInfo(tab);
+      }
+      let links = [];
+      if (wanted > 1) {
+        await walk(tab, 12_000);
+        links = await readLinks(tab);
+      }
+      return { nav, info, links };
+    } finally {
+      await closeTab(chrome, tab);
     }
-    if (wanted > 1) {
-      await walk(tab, 12_000);
-      links = await readLinks(tab);
-    }
-  } finally {
-    await closeTab(chrome, tab);
-  }
-  const homeKey = pageKey(nav.url);
-  const homeKeys = identity(home, nav.url, info.canonical).keys;
-  const kept = [{ url: nav.url, kind: "home", why: "the home page", title: info.title, slug: "home", textHash: info.textHash, keys: homeKeys.add(pageKey(home)) }];
+  };
   const skipped = [];
+  // A home page the tour chose to open by itself is left out when it cannot
+  // be taken and the address given is there to start at: what stops a demo
+  // is the address the user gave.
+  let opened;
+  let homeLost = "";
+  try {
+    opened = await opening(home, { alternates: true });
+  } catch (err) {
+    if (!given || chrome.gone()) throw err;
+    homeLost = notOpened(err);
+    skipped.push({ url: home, reason: homeLost });
+    home = homeOf(asked);
+    log(`Opening ${asked}`);
+    opened = await opening(asked);
+  }
+  const { nav, info, links } = opened;
+  const homeKey = pageKey(nav.url);
+  const kept = [];
+  if (homeLost) {
+    const { keys, named } = identity(asked, nav.url, info.canonical);
+    kept.push({ url: nav.url, kind: (kindOf(new URL(asked), "") || { kind: "other" }).kind, why: "the address given", title: info.title, slug: slugOf(named, home), textHash: info.textHash, keys });
+  } else {
+    const homeKeys = identity(home, nav.url, info.canonical).keys;
+    kept.push({ url: nav.url, kind: "home", why: "the home page", title: info.title, slug: "home", textHash: info.textHash, keys: homeKeys.add(pageKey(home)) });
+  }
   // The links on the pages given and asked for, for their #routes.
   const namedLinks = [];
   const keep = (url, kind, why, got) => {
@@ -100,7 +126,7 @@ async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = 
   // The page given and the ones asked for come whatever they are, unless
   // they fail to open, as a link to a file does; one the tour has already
   // is said so. A page that fails because the browser ended fails the demo.
-  for (const [url, why] of [...(given ? [[given, "the address given"]] : []), ...asks.map((url) => [url, "asked for with --page"])]) {
+  for (const [url, why] of [...(given && !homeLost ? [[given, "the address given"]] : []), ...asks.map((url) => [url, "asked for with --page"])]) {
     const same = kept.find((page) => page.keys.has(viewKey(url)));
     if (same) {
       skipped.push({ url, reason: `the same page as ${same.slug}` });
@@ -127,7 +153,8 @@ async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = 
       robots: index.robots,
       alternates: (info.alternates || []).map((alt) => alt.href),
       exclude: kept.map((page) => page.url),
-      keys: kept.flatMap((page) => [...page.keys]),
+      // A home page left out is not opened again from a link to it.
+      keys: [...kept.flatMap((page) => [...page.keys]), ...(homeLost ? [pageKey(home)] : [])],
     });
     const queue = visitOrder(ranked.candidates);
     let visits = 0;

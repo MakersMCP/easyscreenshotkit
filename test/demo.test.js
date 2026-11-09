@@ -393,7 +393,7 @@ const APP_VIEWS = {
 
 // sitemap: the addresses the site's sitemap lists, as paths; it has none
 // without.
-async function fixture({ sitemap = null } = {}) {
+async function fixture({ sitemap = null, home = null } = {}) {
   const seen = [];
   let origin = "";
   const { server, origin: base } = await serve((req, res) => {
@@ -401,7 +401,7 @@ async function fixture({ sitemap = null } = {}) {
     const html = (body) => res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(body);
     const url = new URL(req.url, "http://x");
     if (url.pathname === "/sitemap.xml" && sitemap) return res.writeHead(200, { "Content-Type": "application/xml" }).end(`<urlset>${sitemap.map((at) => `<url><loc>${origin}${at}</loc></url>`).join("")}</urlset>`);
-    if (url.pathname === "/") return html(HOME);
+    if (url.pathname === "/") return home ? home(res) : html(HOME);
     if (url.pathname === "/features") return html(plain("Features", "rgb(0,200,200)"));
     if (url.pathname === "/pricing") return html(plain("Pricing", "rgb(0,120,255)"));
     if (url.pathname === "/login") return html(plain("Log in", "#eee"));
@@ -733,6 +733,75 @@ test("a tour leaves out a --page that cannot be opened, and goes on", { skip: !f
   } finally {
     await chrome.close();
     server.close();
+  }
+});
+
+// A home page the tour chose to open by itself is left out when it cannot
+// be taken and the address given is another page: a project site's root is
+// often a 404. It stopped the demo, with --pages 1 too. What stops a demo is
+// the address the user gave.
+const HOME_LOST = [
+  ["the page answered 404", (res) => res.writeHead(404).end("not found")],
+  ["a bot check instead of the page", (res) => res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Just a moment...", "<p>Checking your browser.</p>", ""))],
+  [/^could not be opened: net::ERR_[A-Z_]+$/, (res) => res.socket.destroy()],
+  ["a file to download instead of a page", (res) => res.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Disposition": 'attachment; filename="x.bin"' }).end("x")],
+];
+
+test("a tour starts at the address given when the home page cannot be taken, and says what it answered", { skip: !findChrome() && "no Chrome, Chromium, Edge or Brave installed", timeout: 200_000 }, async () => {
+  setTimeLimit(180_000);
+  const chrome = await launch();
+  try {
+    for (const [reason, home] of HOME_LOST) {
+      const { server, origin } = await fixture({ home });
+      try {
+        const tour = await pickPages(chrome, `${origin}/app/#/plants`, { pages: 2 });
+        assert.deepEqual(tour.pages.map((p) => [p.url.slice(origin.length), p.why]), [["/app/#/plants", "the address given"]], String(reason));
+        assert.equal(tour.skipped.length, 1);
+        assert.equal(tour.skipped[0].url, `${origin}/`);
+        assert.match(tour.skipped[0].reason, typeof reason === "string" ? new RegExp(`^${reason}$`) : reason);
+      } finally {
+        server.close();
+      }
+    }
+    // A deeper page that is the address given, and the pages found on it.
+    // Every page links to the home page, which is not opened again.
+    const deep = await fixture({ home: HOME_LOST[0][1] });
+    // A tour looks for pages while four minutes of the run are left.
+    setTimeLimit(300_000);
+    try {
+      const tour = await pickPages(chrome, `${deep.origin}/features`, { pages: 3 });
+      assert.deepEqual(tour.pages.map((p) => [p.url.slice(deep.origin.length), p.kind, p.why]), [["/features", "product", "the address given"], ["/pricing", "pricing", 'menu link "Pricing"']]);
+      assert.deepEqual(tour.skipped, [{ url: `${deep.origin}/`, reason: "the page answered 404" }]);
+      assert.equal(deep.seen.filter((url) => url === "/").length, 1, deep.seen.join(" "));
+    } finally {
+      deep.server.close();
+    }
+    // An address given that is the home page, or that cannot be taken
+    // either, still stops the demo.
+    const { server, origin } = await fixture({ home: HOME_LOST[0][1] });
+    try {
+      await assert.rejects(pickPages(chrome, origin, { pages: 2 }), new RegExp(`^Error: ${origin}/ answered 404, so no demo was recorded\\.$`));
+      await assert.rejects(pickPages(chrome, `${origin}/nowhere/#/x`, { pages: 2 }), new RegExp(`^Error: ${origin}/nowhere/#/x answered 404, so no demo was recorded\\.$`));
+    } finally {
+      server.close();
+    }
+  } finally {
+    await chrome.close();
+  }
+});
+
+test("a demo of a #route view on a site whose root is a 404, with --pages 1", { skip: missing, timeout: 240_000 }, async () => {
+  const { server, origin } = await fixture({ home: HOME_LOST[0][1] });
+  const root = tempDir();
+  try {
+    const { manifest } = await makeDemo(`${origin}/app/#/plants`, { dir: path.join(root, "demo"), pages: 1, gif: false, timeLimit: 200_000 });
+    assert.deepEqual(manifest.pages.map((p) => [p.url.slice(origin.length), p.why]), [["/app/#/plants", "the address given"]]);
+    assert.deepEqual(manifest.notes.filter((note) => !/slow motion/.test(note)), [`Left out ${origin}/: the page answered 404.`]);
+    assert.equal(manifest.site, "Plants");
+    assert.deepEqual(fs.readdirSync(path.join(root, "demo")).sort(), ["demo.mp4", "demo.yaml", "poster.png", "steps.json"]);
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });
 

@@ -492,14 +492,14 @@ const APP = (root, { hit = false } = {}) =>
     { style: "nav{height:60px;background:rgb(30,30,30)} nav a{color:#fff;margin:0 10px} h1{margin:0;height:60px} .band{height:1200px;background:rgb(240,240,240)}" },
   );
 
-async function appFixture({ delay = 5_000, early = false, sitemap = null } = {}) {
+async function appFixture({ delay = 5_000, early = false, sitemap = null, home = null } = {}) {
   let origin = "";
   const { server, origin: base } = await serve((req, res) => {
     const url = new URL(req.url, "http://x");
     const html = (body) => res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(body);
     // sitemap: the addresses it lists, as paths.
     if (url.pathname === "/sitemap.xml" && sitemap) return res.writeHead(200, { "Content-Type": "application/xml" }).end(`<urlset>${sitemap.map((at) => `<url><loc>${origin}${at}</loc></url>`).join("")}</urlset>`);
-    if (url.pathname === "/") return html(APP(true));
+    if (url.pathname === "/") return home ? home(res) : html(APP(true));
     if (url.pathname === "/app/") return html(APP(false));
     if (url.pathname === "/hit/") return html(APP(false, { hit: true }));
     if (url.pathname === "/api/hit") return res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" }).end("{}");
@@ -551,6 +551,69 @@ test("a #route in the address and in --page: each view opened, waited for and na
   } finally {
     server.close();
     fs.rmSync(path.dirname(dir), { recursive: true, force: true });
+  }
+});
+
+// A home page the run chose to open by itself is left out when it cannot be
+// taken and the address given is another page or a #route of it: a project
+// site's root is often a 404. It stopped the run. What stops a run is the
+// address the user gave.
+const HOME_LOST = [
+  ["the page answered 404", (res) => res.writeHead(404).end("not found")],
+  ["a bot check instead of the page", (res) => res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Just a moment...", "<p>Checking your browser.</p>"))],
+  [/^could not be opened: net::ERR_[A-Z_]+$/, (res) => res.socket.destroy()],
+  ["a file to download instead of a page", (res) => res.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Disposition": 'attachment; filename="x.bin"' }).end("x")],
+];
+
+test("a run starts at the address given when the home page cannot be taken, and says what it answered", { skip: noBrowser, timeout: 280_000 }, async () => {
+  const root = tempDir();
+  const ROUTE = "a #route, which the tour does not follow: give it with --page";
+  try {
+    for (const [i, [reason, home]] of HOME_LOST.entries()) {
+      const { server, origin } = await appFixture({ delay: 300, home });
+      try {
+        const dir = path.join(root, `shots-${i}`);
+        const { manifest } = await takeShots(`${origin}/app/#/plants`, { dir, pages: 2, sizes: "desktop", timeLimit: 100_000 });
+        assert.deepEqual(manifest.pages.map((p) => [p.n, p.slug, p.url, p.kind, p.why, p.heading]), [[1, "app-plants", `${origin}/app/#/plants`, "given", "the address given", "Your plants"]], String(reason));
+        assert.ok(fs.existsSync(path.join(dir, "01-app-plants-desktop.png")));
+        // Named in the notes with what it answered, and first of the pages
+        // left out, then the view's own #route links.
+        const [left, ...routes] = manifest.skipped;
+        assert.equal(left.url, `${origin}/`);
+        assert.match(left.reason, typeof reason === "string" ? new RegExp(`^${reason}$`) : reason);
+        assert.deepEqual(manifest.notes, [`The home page, ${origin}/, was left out (${left.reason}), and the run started at the address given.`]);
+        assert.deepEqual(routes, ["today", "light", "settings"].map((view) => ({ url: `${origin}/app/#/${view}`, reason: ROUTE })));
+      } finally {
+        server.close();
+      }
+    }
+    // A deeper page that is the address given, and the pages found on it.
+    let rootAsked = 0;
+    const { server, origin } = await serve((req, res) => {
+      const html = (body) => res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(body);
+      if (req.url === "/") rootAsked++;
+      if (req.url === "/deep/") return html(page("Deep | Acme", '<h1>Deep</h1><nav><a href="/">Home</a> <a href="/pricing">Pricing</a></nav><div style="height:1400px"></div>'));
+      if (req.url === "/pricing") return html(page("Pricing | Acme", '<h1>Pricing</h1><div style="height:1400px"></div>'));
+      res.writeHead(404).end("not found");
+    });
+    try {
+      const { manifest } = await takeShots(`${origin}/deep/`, { dir: path.join(root, "deep"), pages: 3, sizes: "desktop", timeLimit: 100_000 });
+      assert.deepEqual(manifest.pages.map((p) => [p.slug, p.kind]), [["deep", "given"], ["pricing", "pricing"]]);
+      // A link to the home page that was left out does not open it again.
+      assert.deepEqual(manifest.skipped, [{ url: `${origin}/`, reason: "the page answered 404" }]);
+      assert.equal(rootAsked, 1);
+
+      // An address given that is the home page still fails, and so does one
+      // that cannot be taken either.
+      const out = path.join(root, "none");
+      await assert.rejects(takeShots(origin, { dir: out, pages: 2, sizes: "desktop", timeLimit: 60_000 }), new RegExp(`^Error: ${origin}/ answered 404, so no screenshots were taken\\.$`));
+      await assert.rejects(takeShots(`${origin}/nowhere/#/x`, { dir: out, pages: 2, sizes: "desktop", timeLimit: 60_000 }), new RegExp(`^Error: ${origin}/nowhere/#/x answered 404, so no screenshots were taken\\.$`));
+      assert.equal(fs.existsSync(out), false);
+    } finally {
+      server.close();
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
@@ -1245,9 +1308,11 @@ const HELD_BACK = "/held-back";
 
 test("a tab that crashes fails the run on its first page and is named in the notes on a --page or a later window", { skip: noBrowser || (process.platform !== "linux" && "the browser's processes are read from /proc"), timeout: 200_000 }, async () => {
   let hold = null;
+  let homeHeld = false;
   const { server, origin } = await serve((req, res) => {
     const html = (body) => res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(body);
-    if (req.url === "/") return html(page("Acme", '<h1>Acme</h1><p><a href="/about">About</a></p>'));
+    if (req.url === "/") return html(page("Acme", `<h1>Acme</h1><p><a href="/about">About</a></p>${homeHeld ? `<img src="${HELD_BACK}" width="100" height="100">` : ""}`));
+    if (req.url === "/deep") return html(page("Deep", '<h1>Deep</h1><p><a href="/about">About</a></p>'));
     if (req.url === "/picture") return html(page("Picture", `<h1>Picture</h1><img src="${HELD_BACK}" width="100" height="100">`));
     if (req.url === "/app/") return html(page("App", `<h1>App</h1><script>fetch("${HELD_BACK}");</script>`));
     if (req.url === HELD_BACK) {
@@ -1293,6 +1358,16 @@ test("a tab that crashes fails the run on its first page and is named in the not
       assert.ok(crashed.seconds < limit, `${address}: ${crashed.seconds} s after the kill`);
       assert.deepEqual(snapshot(dir), before, address);
     }
+    // A home page the run chose to open by itself: left out, as one that
+    // cannot be opened, and the run starts at the address given.
+    homeHeld = true;
+    const deep = path.join(root, "deep");
+    const home = await run([`${origin}/deep`, "--pages", "2", "--sizes", "desktop", "--out", deep]);
+    homeHeld = false;
+    assert.ok(home.killed, home.stderr);
+    assert.equal(home.status, 0, home.stderr);
+    assert.deepEqual(manifestOf(deep).pages.map((p) => p.slug), ["deep"]);
+    assert.deepEqual(manifestOf(deep).skipped[0], { url: `${origin}/`, reason: "could not be opened: the browser's tab crashed" });
     // A --page: named in the notes and left out, and the run goes on.
     const asked = path.join(root, "asked");
     const named = await run([origin, "--pages", "1", "--page", "/app/#/today", "--sizes", "desktop", "--out", asked]);

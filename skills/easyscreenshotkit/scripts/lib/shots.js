@@ -971,19 +971,41 @@ async function takeShots(rawUrl, options = {}) {
     const indexing = wanted > 1 ? readSiteIndex(new URL(home).origin).catch(() => ({ robots: null, urls: [] })) : Promise.resolve({ robots: null, urls: [] });
     let start = newPage(startUrl, wanted === 1 && given ? "given" : "home", wanted === 1 && given ? "the address given" : "the home page");
     let begun = Date.now();
-    let result = await visit(chrome, start, first, firstTheme, ctx, { links: wanted > 1 });
-    // The site's own page in the language asked for, when it names one.
-    if (lang && wanted > 1) {
-      const alternate = alternateFor(result.info.alternates, lang);
-      if (alternate && pageKey(alternate.href) !== pageKey(result.nav.url) && siteOf(alternate.href) === siteOf(home)) {
-        log(`Opening its ${alternate.lang} version, ${alternate.href}`);
-        home = homeOf(alternate.href);
-        start = newPage(alternate.href, "home", `the home page in ${alternate.lang}`);
-        begun = Date.now();
-        result = await visit(chrome, start, first, firstTheme, ctx, { links: true });
-      } else if (!alternate) {
-        notes.push(`The home page names no ${lang} version of itself, so it was opened with ${lang} as the browser's language.`);
+    let result = null;
+    // Why the home page is left out, when it is one the run chose to open
+    // by itself: the address given is there to start at, and what stops a
+    // run is the address the user gave.
+    let homeLost = "";
+    const spare = wanted > 1 && given;
+    const failure = (got) => (got.nav.status >= 400 ? `the page answered ${got.nav.status}` : got.info.challenge ? "a bot check instead of the page" : "");
+    try {
+      result = await visit(chrome, start, first, firstTheme, ctx, { links: wanted > 1 });
+      // The site's own page in the language asked for, when it names one.
+      if (lang && wanted > 1 && !(spare && failure(result))) {
+        const alternate = alternateFor(result.info.alternates, lang);
+        if (alternate && pageKey(alternate.href) !== pageKey(result.nav.url) && siteOf(alternate.href) === siteOf(home)) {
+          log(`Opening its ${alternate.lang} version, ${alternate.href}`);
+          home = homeOf(alternate.href);
+          start = newPage(alternate.href, "home", `the home page in ${alternate.lang}`);
+          begun = Date.now();
+          result = await visit(chrome, start, first, firstTheme, ctx, { links: true });
+        } else if (!alternate) {
+          notes.push(`The home page names no ${lang} version of itself, so it was opened with ${lang} as the browser's language.`);
+        }
       }
+      if (spare) homeLost = failure(result);
+    } catch (err) {
+      if (!spare || chrome.gone()) throw err;
+      homeLost = notOpened(err);
+    }
+    if (homeLost) {
+      rejected.push({ url: start.url, reason: homeLost });
+      notes.push(`The home page, ${start.url}, was left out (${homeLost}), and the run started at the address given.`);
+      home = homeOf(asked);
+      log(`Opening ${asked}`);
+      start = newPage(asked, "given", "the address given");
+      begun = Date.now();
+      result = await visit(chrome, start, first, firstTheme, ctx, { links: true });
     }
     if (result.nav.status >= 400) throw new Error(`${result.nav.url} answered ${result.nav.status}, so no screenshots were taken.`);
     if (result.info.challenge) {
@@ -1055,7 +1077,8 @@ async function takeShots(rawUrl, options = {}) {
         robots: index.robots,
         alternates: (result.info.alternates || []).map((alt) => alt.href),
         exclude: kept.map((page) => page.url),
-        keys: kept.flatMap((page) => [...page.keys]),
+        // A home page left out is not opened again from a link to it.
+        keys: [...kept.flatMap((page) => [...page.keys]), ...(homeLost ? [pageKey(home)] : [])],
       });
       skipped.push(...ranked.skipped);
       const queue = visitOrder(ranked.candidates);
