@@ -495,7 +495,7 @@ async function capturePage(cdp, { scale = 1, maxHeight = 15_000 } = {}) {
     await sleep(300);
   }
   if (!shots.length) return null;
-  const joined = joinScreens(shots, m.width, height);
+  const joined = await joinScreens(shots, m.width, height);
   return { png: joined.png, height: joined.height, truncated: m.height > maxHeight || shots.length < tops.length };
 }
 

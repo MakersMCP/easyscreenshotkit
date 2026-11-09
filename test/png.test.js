@@ -17,11 +17,11 @@ const { readPng, pngOf } = require("./helpers");
 // screen's first row uses another of the five filters.
 const PAGE_COLOR = (x, y) => [(y * 7) % 256, (x * 13 + y) % 256, (1000 - y * 3) % 256];
 
-test("screens join row for row, whatever filter each row was written with", () => {
+test("screens join row for row, whatever filter each row was written with", async () => {
   const width = 24;
   const tops = [0, 20, 40, 55, 70];
   const shots = tops.map((top, i) => ({ top, png: pngOf(width, 30, (x, y) => PAGE_COLOR(x, top + y), (y) => (y + i) % 5) }));
-  const joined = joinScreens(shots, width, 100);
+  const joined = await joinScreens(shots, width, 100);
   assert.equal(joined.height, 100);
   const png = readPng(joined.png);
   assert.equal(png.width, width);
@@ -31,16 +31,16 @@ test("screens join row for row, whatever filter each row was written with", () =
   }
 });
 
-test("screens at 2x join at the right rows", () => {
+test("screens at 2x join at the right rows", async () => {
   const shots = [0, 30].map((top) => ({ top, png: pngOf(20, 60, (x, y) => PAGE_COLOR(x, top * 2 + y), () => 4) }));
-  const joined = joinScreens(shots, 10, 60);
+  const joined = await joinScreens(shots, 10, 60);
   const png = readPng(joined.png);
   assert.equal(png.height, 120);
   assert.equal(joined.height, 60);
   for (let y = 0; y < 120; y++) assert.deepEqual(png.pixel(3, y), PAGE_COLOR(3, y));
 });
 
-test("a screen that came back as RGBA joins the RGB ones, its see-through pixels on white", () => {
+test("a screen that came back as RGBA joins the RGB ones, its see-through pixels on white", async () => {
   const rgb = (top) => pngOf(10, 20, (x, y) => PAGE_COLOR(x, top + y), (y) => y % 5);
   // The first screen as RGBA: the top-left pixel half see-through black.
   const rgba = (() => {
@@ -59,11 +59,23 @@ test("a screen that came back as RGBA joins the RGB ones, its see-through pixels
     header[9] = 6;
     return Buffer.concat([png.subarray(0, 8), pngChunk("IHDR", header), pngChunk("IDAT", zlib.deflateSync(raw)), pngChunk("IEND", Buffer.alloc(0))]);
   })();
-  const joined = joinScreens([{ top: 0, png: rgba }, { top: 20, png: rgb(20) }], 10, 40);
+  const joined = await joinScreens([{ top: 0, png: rgba }, { top: 20, png: rgb(20) }], 10, 40);
   const png = readPng(joined.png);
   assert.equal(png.height, 40);
   assert.deepEqual(png.pixel(0, 0), [127, 127, 127]);
   for (let y = 1; y < 40; y++) assert.deepEqual(png.pixel(4, y), PAGE_COLOR(4, y), `row ${y}`);
+});
+
+// A long page took seconds to join in one go, in which a stop was not handled.
+test("joining screens leaves the event loop free for a stop that comes meanwhile", async () => {
+  const noise = (x, y) => [(x * x + y * 31) % 256, (y * y + x * 17) % 256, (x * y) % 256];
+  const shots = [0, 200, 400, 600].map((top) => ({ top, png: pngOf(400, 200, (x, y) => noise(x, top + y), (y) => (y + top) % 5) }));
+  let turns = 0;
+  const timer = setInterval(() => turns++, 0);
+  const joined = await joinScreens(shots, 400, 800);
+  clearInterval(timer);
+  assert.equal(readPng(joined.png).height, 800);
+  assert.ok(turns >= 3, `${turns} turns of the event loop`);
 });
 
 test("a PNG file is whole only when it starts and ends as a PNG does", () => {

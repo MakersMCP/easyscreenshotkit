@@ -11,6 +11,12 @@
 
 const fs = require("fs");
 const zlib = require("zlib");
+const { promisify } = require("util");
+
+const inflate = promisify(zlib.inflate);
+const deflate = promisify(zlib.deflate);
+// A turn of the event loop, between two long steps.
+const breathe = () => new Promise((resolve) => setImmediate(resolve));
 
 const SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const CHANNELS = { 0: 1, 2: 3, 4: 2, 6: 4 };
@@ -63,7 +69,8 @@ function pngSize(png) {
   return { width: png.readUInt32BE(16), height: png.readUInt32BE(20) };
 }
 
-function pngRows(png) {
+// A PNG's parts, its pixels still compressed.
+function pngParts(png) {
   let header = null;
   const extra = [];
   const data = [];
@@ -83,13 +90,21 @@ function pngRows(png) {
   }
   const width = header.readUInt32BE(0);
   const height = header.readUInt32BE(4);
-  return { header, extra, width, height, bpp: channels, rows: zlib.inflateSync(Buffer.concat(data)) };
+  return { header, extra, width, height, bpp: channels, compressed: Buffer.concat(data) };
+}
+
+function pngRows(png) {
+  const { compressed, ...parts } = pngParts(png);
+  return { ...parts, rows: zlib.inflateSync(compressed) };
 }
 
 // A screen as plain RGB rows (each with filter byte 0), see-through pixels
 // laid on white: for joining screens that came back in different formats.
 function toRgb(png) {
-  const { width, height, bpp, rows } = pngRows(png);
+  return plainRgb(pngRows(png));
+}
+
+function plainRgb({ width, height, bpp, rows }) {
   const stride = width * bpp;
   const plain = Buffer.alloc(height * stride);
   for (let y = 0; y < height; y++) {
@@ -130,13 +145,28 @@ function toRgb(png) {
 }
 
 // shots: [{top, png}] in page order, tops in CSS px; height: the page's end
-// in CSS px. Returns the joined PNG and the CSS height it shows.
-function joinScreens(shots, cssWidth, height) {
-  let screens = shots.map((shot) => ({ top: shot.top, ...pngRows(shot.png) }));
+// in CSS px. Resolves to the joined PNG and the CSS height it shows. A long
+// page takes seconds to unpack and pack again: that is done off the main
+// thread and in steps, so a stop that comes meanwhile is handled at once.
+// Done in one go, a supervisor's kill a second after its stop came first,
+// and the run's part folder and the browser's profile stayed behind.
+async function joinScreens(shots, cssWidth, height) {
+  let screens = [];
+  for (const shot of shots) {
+    const { compressed, ...parts } = pngParts(shot.png);
+    screens.push({ top: shot.top, ...parts, rows: await inflate(compressed) });
+  }
   if (screens.some((screen) => screen.width !== screens[0].width)) throw new Error("the screens came back in different widths");
   // A screen with see-through pixels comes back as RGBA and the next one as
   // RGB: then every screen is made plain RGB first.
-  if (screens.some((screen) => screen.bpp !== screens[0].bpp)) screens = shots.map((shot) => ({ top: shot.top, ...toRgb(shot.png) }));
+  if (screens.some((screen) => screen.bpp !== screens[0].bpp)) {
+    const plain = [];
+    for (const screen of screens) {
+      plain.push({ top: screen.top, ...plainRgb(screen) });
+      await breathe();
+    }
+    screens = plain;
+  }
   const first = screens[0];
   // Device pixels per CSS pixel: 1 for a page taken at 1x, 2 at 2x.
   const ratio = first.width / cssWidth;
@@ -161,9 +191,12 @@ function joinScreens(shots, cssWidth, height) {
   });
   const header = Buffer.from(first.header);
   header.writeUInt32BE(rows, 4);
-  const pixels = zlib.deflateSync(Buffer.concat(parts));
+  const pixels = await deflate(Buffer.concat(parts));
   const idat = [];
-  for (let at = 0; at < pixels.length; at += 1 << 20) idat.push(pngChunk("IDAT", pixels.subarray(at, at + (1 << 20))));
+  for (let at = 0; at < pixels.length; at += 1 << 20) {
+    idat.push(pngChunk("IDAT", pixels.subarray(at, at + (1 << 20))));
+    await breathe();
+  }
   const png = Buffer.concat([SIGNATURE, pngChunk("IHDR", header), ...first.extra, ...idat, pngChunk("IEND", Buffer.alloc(0))]);
   return { png, height: Math.round(rows / ratio) };
 }
