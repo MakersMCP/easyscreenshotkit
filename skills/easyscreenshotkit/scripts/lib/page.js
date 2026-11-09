@@ -485,8 +485,9 @@ async function capturePage(cdp, { scale = 1, maxHeight = 15_000 } = {}) {
         shots.push({ top, png: Buffer.from(shot.data || "", "base64") });
       } catch (err) {
         // A page too busy to answer partway down keeps the screens taken so
-        // far, and says it was cut.
-        if (!shots.length) throw err;
+        // far, and says it was cut. A tab that crashed, or a browser that
+        // ended, answers nothing more: that window is lost, not cut.
+        if (!shots.length || (cdp.closed && cdp.closed())) throw err;
         break;
       }
     }

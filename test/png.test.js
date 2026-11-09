@@ -9,7 +9,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { joinScreens, tagPng, pngText, pngSize, pngFileIsWhole } = require("../skills/easyscreenshotkit/scripts/lib/png");
-const { screenTops } = require("../skills/easyscreenshotkit/scripts/lib/page");
+const { screenTops, capturePage } = require("../skills/easyscreenshotkit/scripts/lib/page");
 const { readPng, pngOf } = require("./helpers");
 
 // A page 100 px tall whose every row has its own color, captured as
@@ -76,6 +76,30 @@ test("joining screens leaves the event loop free for a stop that comes meanwhile
   clearInterval(timer);
   assert.equal(readPng(joined.png).height, 800);
   assert.ok(turns >= 3, `${turns} turns of the event loop`);
+});
+
+// A tab that stops answering partway down a whole page: one too busy keeps
+// the screens taken so far and says it was cut, one that crashed is no page
+// cut short, as it would be saved as one.
+test("a whole page whose tab crashed partway is lost, and one too busy to answer is cut", { timeout: 30_000 }, async () => {
+  const tab = (dead) => {
+    let shots = 0;
+    return {
+      closed: () => dead && shots >= 1,
+      async send(method) {
+        if (method === "Page.getLayoutMetrics") return { cssLayoutViewport: { clientWidth: 10, clientHeight: 20 }, cssVisualViewport: { pageY: 0, clientWidth: 10, clientHeight: 20 }, cssContentSize: { height: 50 } };
+        if (method === "Page.captureScreenshot") {
+          if (++shots > 1) throw new Error("Page.captureScreenshot timed out");
+          return { data: pngOf(10, 20, (x, y) => PAGE_COLOR(x, y)).toString("base64") };
+        }
+        return { result: { value: 0 } };
+      },
+    };
+  };
+  const busy = await capturePage(tab(false));
+  assert.equal(busy.truncated, true);
+  assert.equal(readPng(busy.png).height, 20);
+  await assert.rejects(capturePage(tab(true)), /timed out/);
 });
 
 test("a PNG file is whole only when it starts and ends as a PNG does", () => {
