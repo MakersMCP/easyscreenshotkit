@@ -330,6 +330,17 @@ function commit(run, outputs) {
     abort(run);
     throw err;
   }
+  // The folder is judged again, as it stands now: something else saved
+  // there while the run worked, another tool's manifest or a run of another
+  // kind, is not written over. A marker this kind of run accepts passes, so
+  // two runs of one kind take turns.
+  try {
+    check(run.dir, target, spec);
+  } catch (err) {
+    remove(held);
+    abort(run);
+    throw new Error(`Could not move this run's files into ${run.dir}: ${err.message} This run added nothing to the folder.`);
+  }
   const aside = path.join(part, "earlier");
   const moved = [];
   const madeHere = [];

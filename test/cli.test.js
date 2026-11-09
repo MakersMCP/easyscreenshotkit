@@ -481,6 +481,56 @@ test("a named pipe where a run looks for an earlier run's manifest holds no earl
   }
 });
 
+// The folder is judged when a run ends too. Its other names were guarded
+// there, but its manifest was written over without a look, and two kinds of
+// run started together in one new folder mixed their files.
+test("something else saved in the folder while a run worked is not written over", () => {
+  const { openDemo } = require("../skills/easyscreenshotkit/scripts/lib/demo");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-came-"));
+  const ours = JSON.stringify({ version: 1, tool: "easyscreenshotkit 0.1.2", pages: [] });
+  const refusal = (dir, what) => `Could not move this run's files into ${dir}: ${dir} is not empty and holds no earlier easyscreenshotkit ${what}. Pick another folder with --out. This run added nothing to the folder.`;
+  try {
+    // Another tool's manifest, which came while the run worked.
+    const dir = path.join(root, "a");
+    const run = openShots(dir);
+    run.write("manifest.json", ours);
+    run.write("SCREENSHOTS.md", "ours\n");
+    const theirs = '{"mine":"a file of someone else, made while the run worked"}\n';
+    fs.writeFileSync(path.join(dir, "manifest.json"), theirs);
+    assert.throws(() => run.commit(["SCREENSHOTS.md", "manifest.json"]), { message: refusal(dir, "run") });
+    assert.deepEqual(fs.readdirSync(dir), ["manifest.json"]);
+    assert.equal(fs.readFileSync(path.join(dir, "manifest.json"), "utf8"), theirs);
+
+    // A screenshot run and a demo begun together in one new folder: the
+    // first to end has the folder, and the other adds nothing.
+    const mixed = path.join(root, "b");
+    const shots = openShots(mixed);
+    const demo = openDemo(mixed, { tour: true });
+    shots.write("manifest.json", ours);
+    shots.write("SCREENSHOTS.md", "ours\n");
+    shots.commit(["SCREENSHOTS.md", "manifest.json"]);
+    for (const file of ["demo.mp4", "poster.png", "demo.yaml"]) demo.write(file, "x");
+    demo.write("steps.json", JSON.stringify({ kind: "demo", tool: "easyscreenshotkit 0.1.2" }));
+    assert.throws(() => demo.commit(["demo.mp4", "poster.png", "demo.yaml", "steps.json"]), { message: refusal(mixed, "demo") });
+    assert.deepEqual(fs.readdirSync(mixed).sort(), ["SCREENSHOTS.md", "manifest.json"]);
+
+    // Two of one kind take turns, and a file of the user's that came beside
+    // an earlier run's manifest does no harm.
+    const turns = path.join(root, "c");
+    const first = openShots(turns);
+    const second = openShots(turns);
+    first.write("manifest.json", ours);
+    first.commit(["manifest.json"]);
+    fs.writeFileSync(path.join(turns, "notes.txt"), "mine");
+    second.write("manifest.json", JSON.stringify({ version: 1, tool: "easyscreenshotkit 0.1.2", second: true }));
+    second.commit(["manifest.json"]);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(turns, "manifest.json"), "utf8")).second, true);
+    assert.deepEqual(fs.readdirSync(turns).sort(), ["manifest.json", "notes.txt"]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a run's folder: refused when it holds someone else's files, and an earlier run's files stay until a new run has ended well", () => {
   // Absolute, so a link made to a folder in it leads there under a TMPDIR
   // given as a relative path too.
