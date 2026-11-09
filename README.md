@@ -209,7 +209,7 @@ pwa/
   screenshots/narrow-01.png   the same page on a phone, 1080x1920
 ```
 
-Put the `screenshots` folder next to your manifest and add the entries from `manifest-screenshots.json` to it. Each label is the main heading on that screen, so read them and change any that does not say what the screen shows. A view of a web app that was still loading its data when it was taken is left out, with the reason. The run also reads the manifest your home page links and tells you what it is missing.
+Put the `screenshots` folder next to your manifest and add the entries from `manifest-screenshots.json` to it. Each label is the main heading on that screen, so read them and change any that does not say what the screen shows. A capture of a web app's #route view taken before the view's data had come, as its wait ran out or the run's time ran short, is left out, with the reason; any other page keeps its captures. The run also reads the manifest your home page links and tells you what it is missing.
 
 Every screenshot is checked against Chrome's rules before it goes in:
 

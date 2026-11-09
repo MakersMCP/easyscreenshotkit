@@ -348,6 +348,38 @@ test("--pwa: screenshots for a web app manifest, cleaned like the rest, and the 
   }
 });
 
+// A page drawn with no link and no picture, no taller than the screen (a
+// calculator: fields, buttons, an inline SVG), looks like a bare loading
+// screen to the wait for a page's content, and its notes say so, as they
+// did. Its captures for a manifest stay: only those of a #route view taken
+// before its data had come are left out, where both of these were.
+const CALC = page(
+  "Tip calculator",
+  `<main><h1><svg width="24" height="24" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="#1f6f4a"/></svg> Tip calculator</h1>
+  <input value="48.00"><input value="2"><button>10%</button><button>15%</button><button>20%</button><p>$27.60 each</p></main>`,
+);
+
+test("--pwa keeps the captures of a page drawn with no link and no picture", { skip: noBrowser, timeout: 150_000 }, async () => {
+  const { server, origin } = await serve((req, res) => (req.url === "/" ? res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(CALC) : res.writeHead(404).end("not found")));
+  const dir = path.join(tempDir(), "shots");
+  try {
+    const { manifest } = await takeShots(origin, { dir, pages: 1, sizes: "desktop,mobile", pwa: true, timeLimit: 130_000 });
+    assert.equal(manifest.pages[0].notes[0], "still showed a loading screen after 20 s");
+    assert.deepEqual(manifest.pwa.leftOut, []);
+    assert.deepEqual(
+      manifest.pwa.screenshots.map((s) => [s.file, s.label]),
+      [
+        ["pwa/screenshots/wide-01.png", "Tip calculator"],
+        ["pwa/screenshots/narrow-01.png", "Tip calculator"],
+      ],
+    );
+    for (const s of manifest.pwa.screenshots) assert.ok(fs.existsSync(path.join(dir, s.file)), s.file);
+  } finally {
+    server.close();
+    fs.rmSync(path.dirname(dir), { recursive: true, force: true });
+  }
+});
+
 test("a language the site names: its own page in that language, and the browser asks for it", { skip: noBrowser, timeout: 120_000 }, async () => {
   const { server, origin, seen } = await fixture();
   const dir = path.join(tempDir(), "shots");

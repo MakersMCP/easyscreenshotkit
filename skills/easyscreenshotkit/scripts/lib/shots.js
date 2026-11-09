@@ -516,14 +516,23 @@ async function waitForView(tab, nav, asked, busy) {
   return state;
 }
 
+// What the wait for a #route view's data saw by the time a window of it
+// was taken, as a note: "" when the data had come. A window taken before it
+// had come shows the view's loading screen.
+function dataNote(result) {
+  if (result.busy) return `still loading data after ${result.waited / 1000} s`;
+  if (result.short) return "taken before its data had come: time ran short; give more with --timeout";
+  return "";
+}
+
 // What the waits for a window of a page saw by the time it was taken, as
 // notes, and only what they waited for: a run short of time waits less.
 function waitNotes(result) {
   const notes = [];
   if (result.loaded === false) notes.push("still showed a loading screen after 20 s");
-  if (result.busy) notes.push(`still loading data after ${result.waited / 1000} s`);
-  if (result.short) notes.push("taken before its data had come: time ran short; give more with --timeout");
-  else if (result.loaded === null) notes.push("taken while it still showed a loading screen: time ran short; give more with --timeout");
+  const data = dataNote(result);
+  if (data) notes.push(data);
+  if (!result.short && result.loaded === null) notes.push("taken while it still showed a loading screen: time ran short; give more with --timeout");
   return notes;
 }
 
@@ -631,9 +640,12 @@ function saveShots(page, result, theme, run, written) {
   for (const shot of result.shots) {
     // A capture for a web app manifest waits for the end of the run, when
     // the ones that go in are picked and numbered. One taken before its
-    // view was ready is left out then, with the reason (see planPwa).
+    // #route view's data had come is left out then, with the reason (see
+    // planPwa). Any other goes in, that of a page drawn with no link and no
+    // picture that fits the screen too, which the wait for a page's content
+    // takes for a loading screen.
     if (shot.pwa) {
-      page.pwa[shot.pwa] = { png: shot.png, headings: shot.headings, unready: waitNotes(result)[0] || "" };
+      page.pwa[shot.pwa] = { png: shot.png, headings: shot.headings, unready: dataNote(result) };
       continue;
     }
     const file = `${String(page.n).padStart(2, "0")}-${page.slug}-${shot.size}${theme === "dark" ? "-dark" : ""}.png`;
