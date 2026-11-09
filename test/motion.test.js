@@ -165,6 +165,11 @@ test("layout, backdrop and the address in the title bar", () => {
       // The browser reads these by their bytes, not their names.
       "jpeg-named.png": Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(16)]),
       "a.svg": '<?xml version="1.0"?>\n<!-- a drawing -->\n<svg xmlns="http://www.w3.org/2000/svg"></svg>',
+      // An SVG's root can come late, after a long comment or doctype, have a
+      // namespace prefix, and be written in UTF-16.
+      "long-head.svg": `<?xml version="1.0"?>\n<!-- ${"a long comment ".repeat(400)} -->\n<svg xmlns="http://www.w3.org/2000/svg"></svg>`,
+      "prefixed.svg": '<svg:svg xmlns:svg="http://www.w3.org/2000/svg"><svg:rect width="1" height="1"/></svg:svg>',
+      "utf16.svg": Buffer.from('\ufeff<?xml version="1.0" encoding="UTF-16"?>\n<svg xmlns="http://www.w3.org/2000/svg"></svg>', "utf16le"),
     };
     for (const [name, data] of Object.entries(pictures)) assert.match(backdropOf(file(name, data)), /^url\("file:/, name);
     const notPictures = {
@@ -175,6 +180,8 @@ test("layout, backdrop and the address in the title bar", () => {
       "heic.avif": ftyp("heic\0\0\0\0mif1heic"),
       "raster.svg": png,
       "drawing.png": "<svg></svg>",
+      "no-root.svg": `<?xml version="1.0"?>\n<!-- ${"nothing after this ".repeat(400)} -->\n`,
+      "other-root.svg": '<svgish></svgish><x:svgish xmlns:x="urn:x"/>',
     };
     for (const [name, data] of Object.entries(notPictures)) assert.throws(() => backdropOf(file(name, data)), new RegExp(`--background: .*${name} is no picture the browser can draw`), name);
     fs.mkdirSync(path.join(dir, "folder.png"));

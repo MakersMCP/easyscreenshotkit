@@ -49,12 +49,18 @@ const LOOKS = {
 
 const COLOR = /^(#[0-9a-f]{3,8}|(rgb|rgba|hsl|hsla)\([\d\s.,%/+-]+\)|[a-z]{3,30})$/i;
 
+// How much of a file is read to tell whether it is a picture. An SVG's root
+// can come after a long comment or doctype.
+const PICTURE_HEAD = 4096;
+const SVG_HEAD = 1024 * 1024;
+
 // Whether a file's first bytes fit what the browser does with it: it reads a
 // PNG, JPEG, WebP, GIF or AVIF by its bytes, whatever its name says, and a
-// file named .svg as text that has to be an SVG.
+// file named .svg as text that has to hold an SVG root, which can have a
+// namespace prefix (<svg:svg>) and be in UTF-16.
 function isPicture(head, name) {
   const text = (from, to) => head.toString("latin1", from, to);
-  if (/\.svg$/i.test(name)) return /<svg[\s>]/i.test(head.toString("utf8"));
+  if (/\.svg$/i.test(name)) return /<(?:[^\s<>:]+:)?svg[\s>]/i.test(text(0, head.length).replace(/\0/g, ""));
   if (head.length < 12) return false;
   return (
     head.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) ||
@@ -65,13 +71,14 @@ function isPicture(head, name) {
   );
 }
 
-// The first bytes of a file, or null when it cannot be read as a file.
-function firstBytes(file) {
+// The first bytes of a file, up to length, or null when it cannot be read as
+// a file.
+function firstBytes(file, length) {
   let fd;
   try {
     fd = fs.openSync(file, "r");
-    const head = Buffer.alloc(4096);
-    return head.subarray(0, fs.readSync(fd, head, 0, head.length, 0));
+    const head = Buffer.alloc(length);
+    return head.subarray(0, fs.readSync(fd, head, 0, length, 0));
   } catch {
     return null;
   } finally {
@@ -87,7 +94,7 @@ function backdropOf(value) {
   if (!text) return "";
   if (/\.(png|jpe?g|webp|gif|avif|svg)$/i.test(text)) {
     if (!fs.existsSync(text)) throw new Error(`--background: no such picture file: ${text}`);
-    const head = firstBytes(text);
+    const head = firstBytes(text, /\.svg$/i.test(text) ? SVG_HEAD : PICTURE_HEAD);
     if (!head || !isPicture(head, text)) throw new Error(`--background: ${text} is no picture the browser can draw: PNG, JPEG, WebP, GIF, AVIF or SVG.`);
     return `url("${pathToFileURL(path.resolve(text)).href}") center / cover no-repeat, #222`;
   }
