@@ -4,6 +4,9 @@
 // pointer's path, the zoom on clicks, and what each frame of the video shows.
 
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const test = require("node:test");
 const { ease, curve, pointAt, moveDuration, scrollDuration, cursorAt, planCamera, cameraAt, ringsAt, keyAt, ZOOM_IN } = require("../skills/easyscreenshotkit/scripts/lib/motion");
 const { layoutOf, backdropOf, addressOf, frameAt, stateAt } = require("../skills/easyscreenshotkit/scripts/lib/compose");
@@ -143,6 +146,42 @@ test("layout, backdrop and the address in the title bar", () => {
   assert.equal(backdropOf("#a1c4fd, rgb(194, 233, 251)"), "linear-gradient(135deg, #a1c4fd, rgb(194, 233, 251))");
   assert.throws(() => backdropOf("red; } body { display:none"), /--background takes a colour/);
   assert.throws(() => backdropOf("missing.png"), /no such picture file/);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-backdrop-"));
+  try {
+    const file = (name, data) => {
+      const at = path.join(dir, name);
+      fs.writeFileSync(at, data);
+      return at;
+    };
+    const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(16)]);
+    const ftyp = (brands) => Buffer.concat([Buffer.from([0, 0, 0, 8 + brands.length]), Buffer.from(`ftyp${brands}`, "latin1"), Buffer.alloc(8)]);
+    const pictures = {
+      "a.png": png,
+      "a.jpg": Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(16)]),
+      "a.gif": Buffer.concat([Buffer.from("GIF89a"), Buffer.alloc(16)]),
+      "a.webp": Buffer.concat([Buffer.from("RIFF"), Buffer.alloc(4), Buffer.from("WEBPVP8 ")]),
+      "a.avif": ftyp("avif\0\0\0\0mif1miaf"),
+      "b.avif": ftyp("mif1\0\0\0\0avifmiaf"),
+      // The browser reads these by their bytes, not their names.
+      "jpeg-named.png": Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(16)]),
+      "a.svg": '<?xml version="1.0"?>\n<!-- a drawing -->\n<svg xmlns="http://www.w3.org/2000/svg"></svg>',
+    };
+    for (const [name, data] of Object.entries(pictures)) assert.match(backdropOf(file(name, data)), /^url\("file:/, name);
+    const notPictures = {
+      "sound.png": Buffer.concat([Buffer.from("RIFF"), Buffer.alloc(4), Buffer.from("WAVEfmt ")]),
+      "empty.png": "",
+      "short.png": png.subarray(0, 8),
+      "text.webp": "not a picture at all",
+      "heic.avif": ftyp("heic\0\0\0\0mif1heic"),
+      "raster.svg": png,
+      "drawing.png": "<svg></svg>",
+    };
+    for (const [name, data] of Object.entries(notPictures)) assert.throws(() => backdropOf(file(name, data)), new RegExp(`--background: .*${name} is no picture the browser can draw`), name);
+    fs.mkdirSync(path.join(dir, "folder.png"));
+    assert.throws(() => backdropOf(path.join(dir, "folder.png")), /is no picture the browser can draw/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
   assert.equal(addressOf("https://www.acme.com/"), "acme.com");
   assert.equal(addressOf("https://acme.com/pricing/"), "acme.com/pricing");
   assert.equal(addressOf("http://localhost:3000/app?x=1"), "localhost:3000/app");

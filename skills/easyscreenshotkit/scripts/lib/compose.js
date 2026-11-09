@@ -49,12 +49,46 @@ const LOOKS = {
 
 const COLOR = /^(#[0-9a-f]{3,8}|(rgb|rgba|hsl|hsla)\([\d\s.,%/+-]+\)|[a-z]{3,30})$/i;
 
-// --background: a colour, two colours for a gradient, or a picture file.
+// Whether a file's first bytes fit what the browser does with it: it reads a
+// PNG, JPEG, WebP, GIF or AVIF by its bytes, whatever its name says, and a
+// file named .svg as text that has to be an SVG.
+function isPicture(head, name) {
+  const text = (from, to) => head.toString("latin1", from, to);
+  if (/\.svg$/i.test(name)) return /<svg[\s>]/i.test(head.toString("utf8"));
+  if (head.length < 12) return false;
+  return (
+    head.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) ||
+    (head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff) ||
+    /^GIF8[79]a$/.test(text(0, 6)) ||
+    (text(0, 4) === "RIFF" && text(8, 12) === "WEBP") ||
+    (text(4, 8) === "ftyp" && /avi[fs]/.test(text(8, Math.min(head.length, head.readUInt32BE(0)))))
+  );
+}
+
+// The first bytes of a file, or null when it cannot be read as a file.
+function firstBytes(file) {
+  let fd;
+  try {
+    fd = fs.openSync(file, "r");
+    const head = Buffer.alloc(4096);
+    return head.subarray(0, fs.readSync(fd, head, 0, head.length, 0));
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+}
+
+// --background: a colour, two colours for a gradient, or a picture file. A
+// file is read before the run: the browser draws nothing for one that is no
+// picture, and the backdrop came out plain grey with no word of why.
 function backdropOf(value) {
   const text = String(value || "").trim();
   if (!text) return "";
   if (/\.(png|jpe?g|webp|gif|avif|svg)$/i.test(text)) {
     if (!fs.existsSync(text)) throw new Error(`--background: no such picture file: ${text}`);
+    const head = firstBytes(text);
+    if (!head || !isPicture(head, text)) throw new Error(`--background: ${text} is no picture the browser can draw: PNG, JPEG, WebP, GIF, AVIF or SVG.`);
     return `url("${pathToFileURL(path.resolve(text)).href}") center / cover no-repeat, #222`;
   }
   const colors = text.split(/\s*,\s*(?![^()]*\))/);
