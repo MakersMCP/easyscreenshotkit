@@ -157,7 +157,14 @@ test("addresses, page names and the site's name", () => {
   assert.equal(slugOf("https://acme.com/app/#/растения/", home), `app-${mark("растения")}`);
   assert.equal(slugOf("https://acme.com/app/#/растения/кактус", home), `app-${mark("растения/кактус")}`);
   assert.notEqual(mark("растения"), mark("растения/кактус"));
-  assert.equal(slugOf("https://acme.com/app/#/растения/42", home), "app-42");
+  // Next to words a file name keeps, the mark too: without it these were
+  // all app-plant, told apart only by the order they were given in.
+  assert.equal(slugOf("https://acme.com/app/#/растения/42", home), `app-42-${mark("растения/42")}`);
+  assert.equal(slugOf("https://acme.com/app/#/plant/Фикус", home), `app-plant-${mark("plant/Фикус")}`);
+  assert.equal(slugOf("https://acme.com/app/#/plant/%D0%9C%D0%BE%D0%BD%D1%81%D1%82%D0%B5%D1%80%D0%B0", home), `app-plant-${mark("plant/Монстера")}`);
+  assert.equal(slugOf("https://acme.com/app/#/plant/植物", home), `app-plant-${mark("plant/植物")}`);
+  assert.equal(slugOf("https://acme.com/app/#/plant/🌿", home), `app-plant-${mark("plant/🌿")}`);
+  assert.equal(slugOf("https://acme.com/app/#/plant", home), "app-plant");
   assert.equal(slugOf("https://acme.com/uygulama%20%C3%A7al%C4%B1%C5%9Fma/#/%C5%9Fehir/%C4%B0zmir", home), "uygulama-calisma-sehir-izmir");
   // The pages asked for with --page keep their route; a fragment alone is a
   // view of the address given.

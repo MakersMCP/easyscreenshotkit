@@ -268,9 +268,10 @@ const slugWords = (text) =>
 
 // A page's name in file names: home, pricing, product-teams. A view of a
 // single page app adds its #route: app-plants for /app/#/plants,
-// home-plant-fern for /#/plant/Fern. A route with no letter or digit a
-// file name keeps (#/растения, #/植物) adds view and six hex digits of its
-// own, so it is told from its page and from the app's other views.
+// home-plant-fern for /#/plant/Fern. A route with letters or digits a file
+// name does not keep adds view and six hex digits of its own, alone
+// (#/растения, #/植物) or after the words it does keep (#/plant/Фикус), so
+// it is told from its page and from the app's other views.
 function slugOf(url, home) {
   let slug = "home";
   if (pageKey(url) !== pageKey(home)) {
@@ -281,8 +282,10 @@ function slugOf(url, home) {
   const route = routeOf(url);
   if (!route) return slug;
   const parts = route.replace(/^#(?:\/|!\/?)/, "").split("/").filter(Boolean).map(decoded);
-  const words = slugWords(parts.join("-")) || `view-${crypto.createHash("sha1").update(parts.join("/")).digest("hex").slice(0, 6)}`;
-  return `${slug}-${words}`;
+  const words = slugWords(parts.join("-"));
+  const lost = /[\p{L}\p{N}\p{Extended_Pictographic}]/u.test(fold(parts.join("-")).replace(/[a-z0-9]/g, ""));
+  const own = `view-${crypto.createHash("sha1").update(parts.join("/")).digest("hex").slice(0, 6)}`;
+  return [slug, ...(words ? [words] : []), ...(lost || !words ? [own] : [])].join("-");
 }
 
 // The keys a page kept is known by, so another address for it is not taken
