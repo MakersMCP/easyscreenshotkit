@@ -141,7 +141,27 @@ async function launch({ lang = "", args = [] } = {}) {
   if (!binary) {
     throw new Error("No Chrome, Chromium, Edge or Brave found. Install one, or point CHROME_PATH at its binary.");
   }
+  // A browser whose lock has a longer name than room was left for in its
+  // profile (see roomIn) does not start there: it starts again with the
+  // temp folder as its own.
+  let tried = await start(binary, { lang, args, own: true });
+  if (tried.tooDeep && tried.own) tried = await start(binary, { lang, args, own: false });
+  if (tried.chrome) return tried.chrome;
+  if (tried.tooDeep) throw new Error(`${path.basename(binary)} did not start: the temp folder's path, ${os.tmpdir()}, is too long for the socket it opens there. Point TMPDIR at a folder with a shorter path.`);
+  throw new Error(`${path.basename(binary)} did not start. Try again, or point CHROME_PATH at another browser.`);
+}
+
+// Starts the browser once. On Linux, with own, its profile is its temp
+// folder too, when there is room for its lock's socket there: the browser
+// makes its lock in its temp folder, and in its first seconds a folder for
+// what it downloads for itself, which it leaves behind when it quits or is
+// killed before the download has ended. Both go with the profile then.
+// Returns {chrome} once it answers, else {own, tooDeep}: whether its profile
+// was its temp folder, and whether it ended because its lock's socket did
+// not fit in that folder.
+async function start(binary, { lang, args, own }) {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-chrome-"));
+  const inProfile = own && process.platform === "linux" && roomIn(profile);
   const locksBefore = lockFolders();
   const child = spawn(
     binary,
@@ -168,7 +188,7 @@ async function launch({ lang = "", args = [] } = {}) {
       ...(process.getuid && process.getuid() === 0 ? ["--no-sandbox"] : []),
       "about:blank",
     ],
-    { stdio: "ignore" },
+    { stdio: "ignore", env: inProfile ? { ...process.env, TMPDIR: profile } : process.env },
   );
   let exited = false;
   // Whether the browser ended, or its connection closed, before close()
@@ -228,31 +248,39 @@ async function launch({ lang = "", args = [] } = {}) {
         // not know this command.
         await browser.send("Browser.setDownloadBehavior", { behavior: "deny" }, 5_000).catch(() => {});
         // Read now: a browser that is quitting removes the link to it
-        // before the folder, and a stop can land in between.
+        // before the folder, and a stop can land in between. In a profile
+        // that is the browser's temp folder, it goes with the profile.
         started.lock = lockFolderOf(profile);
         const { userAgent = "" } = await browser.send("Browser.getVersion").catch(() => ({}));
         // gone(): whether the browser ended in the middle of the run.
-        return { base, browser, userAgent, close, gone: () => lost };
+        return { chrome: { base, browser, userAgent, close, gone: () => lost } };
       }
     } catch {
       // Not written yet, or not answering yet.
     }
     await sleep(100);
   }
+  // A browser that ends before it answers, as Chrome does in a temp folder
+  // whose path leaves no room for its lock's socket, leaves its lock folder
+  // there, empty and with no link to it in the profile, and one of its
+  // helpers can make the profile again a moment after it went. Both go once
+  // the helpers have ended too.
+  const deep = inProfile && removeStrayLocks(new Set(), { dir: profile });
   await close();
-  // A browser that ends before it answers, as Chrome does under a temp
-  // folder whose path leaves no room for its lock's socket, leaves its lock
-  // folder there, empty and with no link to it in the profile, and one of
-  // its helpers can make the profile again a moment after it went. Both go
-  // once the helpers have ended too.
   await sleep(300);
   fs.rmSync(profile, { recursive: true, force: true });
-  if (removeStrayLocks(locksBefore)) throw new Error(`${path.basename(binary)} did not start: the temp folder's path, ${os.tmpdir()}, is too long for the socket it opens there. Point TMPDIR at a folder with a shorter path.`);
-  throw new Error(`${path.basename(binary)} did not start. Try again, or point CHROME_PATH at another browser.`);
+  return { own: inProfile, tooDeep: removeStrayLocks(locksBefore) || deep };
 }
 
 // The longest path a socket can have: 107 bytes on Linux, 103 on macOS.
 const SOCKET_PATH_MAX = process.platform === "darwin" ? 103 : 107;
+
+// Whether a browser's lock fits in a folder: the path of its socket there,
+// in a lock folder with the longest name one of the browsers easyscreenshotkit
+// finds gives it, Chromium's.
+function roomIn(folder) {
+  return Buffer.byteLength(path.join(folder, "org.chromium.Chromium.XXXXXX", "SingletonSocket")) <= SOCKET_PATH_MAX;
+}
 
 // After a browser that did not start: removes the lock folders that came
 // into the temp folder since it started (before: the names there then) and
@@ -467,4 +495,4 @@ function removeProfiles(browsers) {
   }
 }
 
-module.exports = { findChrome, onPath, launch, connect, openTab, closeTab, navigate, currentUrl, killBrowsers, removeProfiles, removeStrayLocks, lockFolderOf, userAgentFor };
+module.exports = { findChrome, onPath, launch, connect, openTab, closeTab, navigate, currentUrl, killBrowsers, removeProfiles, removeStrayLocks, roomIn, lockFolderOf, userAgentFor };

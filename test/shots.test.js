@@ -12,7 +12,7 @@ const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const test = require("node:test");
 const { takeShots, DEVICES } = require("../skills/easyscreenshotkit/scripts/lib/shots");
-const { findChrome, launch, openTab, closeTab, navigate, killBrowsers, removeProfiles, removeStrayLocks } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
+const { findChrome, launch, openTab, closeTab, navigate, killBrowsers, removeProfiles, removeStrayLocks, roomIn } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
 const { setTimeLimit, sleep } = require("../skills/easyscreenshotkit/scripts/lib/time");
 const { watchRequests, networkQuiet } = require("../skills/easyscreenshotkit/scripts/lib/page");
 const { LOCATE } = require("../skills/easyscreenshotkit/scripts/lib/record");
@@ -901,9 +901,9 @@ function browserOf(pid) {
 // with browser, its browser is killed instead, as a crash or an
 // out-of-memory kill ends it. profiles: those of the browsers it had going
 // then; locks: their lock folders.
-function stopCli(args, { stopAt, signal = "SIGTERM", group = false, browser = false }) {
+function stopCli(args, { stopAt, signal = "SIGTERM", group = false, browser = false, env = process.env }) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [CLI, ...args], { detached: group });
+    const child = spawn(process.execPath, [CLI, ...args], { detached: group, env });
     let stdout = "";
     let stderr = "";
     let sent = false;
@@ -1109,6 +1109,71 @@ test("a browser that cannot start says why and leaves nothing in the temp folder
     assert.deepEqual(fs.readdirSync(tmp), []);
     assert.equal(fs.existsSync(path.join(root, "shots")), false);
   } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// In its first seconds the browser makes a folder in its temp folder for
+// what it downloads for itself (com.google.Chrome.chrome_chrome_url_fetcher_
+// and the like), and leaves it there when it quits or is killed before the
+// download has ended: a run that fails at once, and one stopped a second
+// after it began, left one in the temp folder each time. With the profile
+// as the browser's temp folder, nothing is left.
+test("a run that ends in its first seconds leaves nothing in the temp folder", { skip: noBrowser || (process.platform !== "linux" && "the profile is the browser's temp folder on Linux only"), timeout: 120_000 }, async (t) => {
+  const { server, origin } = await fixture();
+  const root = tempDir();
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "t-"));
+  const env = { ...process.env, TMPDIR: tmp };
+  try {
+    if (!roomIn(path.join(tmp, "easyscreenshotkit-chrome-XXXXXX"))) return t.skip(`${tmp} leaves no room for the browser's lock in its profile`);
+    const failed = await runCli([`${origin}/missing`, "--pages", "1", "--sizes", "desktop", "--out", path.join(root, "missing")], { env });
+    assert.equal(failed.status, 1, failed.stderr);
+    assert.match(failed.stderr, /answered 404/);
+    assert.deepEqual(fs.readdirSync(tmp), []);
+    let opened = 0;
+    const stopped = await stopCli([origin, "--pages", "2", "--sizes", "desktop", "--out", path.join(root, "stopped")], {
+      env,
+      stopAt: (stderr) => {
+        if (!opened && /^Opening /m.test(stderr)) opened = Date.now();
+        return opened > 0 && Date.now() - opened >= 1_000;
+      },
+    });
+    assert.ok(stopped.sent, stopped.stderr);
+    assert.equal(stopped.signal, "SIGTERM", stopped.stderr);
+    assert.deepEqual(fs.readdirSync(tmp), []);
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// A browser whose lock folder has a longer name than room was left for in
+// its profile does not start there: it starts again with the temp folder as
+// its own. Here a stand-in that makes such a lock folder in its temp folder
+// and ends, as Chrome ends when its socket does not fit.
+test("a browser whose lock does not fit in its profile starts again with the temp folder as its own", { skip: process.platform !== "linux" && "the profile is the browser's temp folder on Linux only", timeout: 60_000 }, async (t) => {
+  const tmp = os.tmpdir();
+  if (!roomIn(path.join(tmp, "easyscreenshotkit-chrome-XXXXXX"))) return t.skip(`${tmp} leaves no room for the browser's lock in a profile`);
+  const root = tempDir();
+  // Too deep for a socket in a profile, not in the temp folder itself.
+  const lock = `com.example.${"x".repeat(75 - Buffer.byteLength(tmp) - 19)}.Ab12Cd`;
+  const log = path.join(root, "temp-folders.txt");
+  const fake = path.join(root, "browser");
+  fs.writeFileSync(fake, `#!/bin/sh\nT="\${TMPDIR:-/tmp}"\necho "$T" >> "${log}"\nmkdir "$T/${lock}"\nexit 1\n`, { mode: 0o755 });
+  const before = process.env.CHROME_PATH;
+  process.env.CHROME_PATH = fake;
+  try {
+    await assert.rejects(launch(), /^Error: browser did not start\. Try again, or point CHROME_PATH at another browser\.$/);
+    const tried = fs.readFileSync(log, "utf8").trim().split("\n");
+    assert.equal(tried.length, 2, tried.join("\n"));
+    assert.match(path.basename(tried[0]), /^easyscreenshotkit-chrome-/);
+    assert.equal(tried[1], tmp);
+    assert.equal(fs.existsSync(tried[0]), false, "the first profile went");
+  } finally {
+    if (before === undefined) delete process.env.CHROME_PATH;
+    else process.env.CHROME_PATH = before;
+    fs.rmSync(path.join(tmp, lock), { recursive: true, force: true });
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
