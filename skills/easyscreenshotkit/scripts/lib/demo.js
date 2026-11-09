@@ -192,6 +192,12 @@ function prepareDemoDir(dir, { steps = "", tour = false } = {}) {
   checkDir(dir, demoSpec({ steps, tour }));
 }
 
+// A browser or a tab lost in the middle of a demo leaves a video that shows
+// the page standing still from that moment on, or a tour that ended early:
+// the demo fails, and an earlier one stays as it was.
+const BROWSER_GONE = "The browser ended in the middle of the demo (it crashed, or was killed), so no demo was saved.";
+const TAB_CRASHED = "The browser's tab crashed in the middle of the demo, so no demo was saved.";
+
 const round = (value, places = 3) => Math.round(value * 10 ** places) / 10 ** places;
 
 // The frame of the video a moment falls on, counted from the seconds
@@ -339,13 +345,21 @@ async function makeDemo(rawUrl, options = {}) {
   let name = "";
   let gifInfo = null;
   let manifest;
+  let chrome = null;
+  let composer = null;
+  let recorder = null;
+  const lostWhy = () => ((chrome && chrome.gone()) || (composer && composer.gone()) ? BROWSER_GONE : recorder && recorder.crashed ? TAB_CRASHED : "");
+  const alive = () => {
+    if (lostWhy()) throw new Error(lostWhy());
+  };
   try {
     fs.mkdirSync(frames);
-    const chrome = await launch({ lang, args: [`--force-device-scale-factor=${density}`] });
-    const recorder = new Recorder(chrome, { dir: frames, out: target, base: asked, fps, viewport, hide: [...hide, ...(script ? script.hide : [])], clean: tidy, theme, lang, reducedMotion, log });
+    chrome = await launch({ lang, args: [`--force-device-scale-factor=${density}`] });
+    recorder = new Recorder(chrome, { dir: frames, out: target, base: asked, fps, viewport, hide: [...hide, ...(script ? script.hide : [])], clean: tidy, theme, lang, reducedMotion, log });
     try {
       if (!script) {
         tour = await pickPages(chrome, asked, { pages: wanted, extra, lang, theme, reducedMotion, log });
+        alive();
         name = tour.site;
         for (const skip of tour.skipped) notes.push(`Left out ${skip.url}: ${skip.reason}.`);
         if (tour.routes.length) notes.push(routesNote(tour.routes));
@@ -365,12 +379,15 @@ async function makeDemo(rawUrl, options = {}) {
         try {
           record = await recorder.run(step);
         } catch (err) {
+          alive();
           throw new Error(added && n === 1 ? `opening ${asked}: ${err.message}` : `step ${n - added} (${step.action}): ${err.message}`);
         }
+        alive();
         records.push({ n: n - added, step, ...record });
         if (step.expect && record.opened && placeOf(record.opened) !== placeOf(step.expect)) notes.push(`The link for ${step.expect} led to ${record.opened}.`);
       }
       take = await recorder.finish();
+      alive();
       if (!name && take.pages[0]) name = take.pages[0].siteName || new URL(asked).hostname.replace(/^www\./, "");
     } finally {
       await recorder.close();
@@ -383,7 +400,7 @@ async function makeDemo(rawUrl, options = {}) {
     // The video.
     const look = { ...LOOKS[take.lightness < 0.45 ? "dark" : "light"], ...(backdrop ? { backdrop } : {}) };
     const layout = layoutOf({ frame, viewport });
-    const composer = await launch();
+    composer = await launch();
     let drawn;
     let poster;
     const video = run.file("demo.mp4");
@@ -444,8 +461,10 @@ async function makeDemo(rawUrl, options = {}) {
       run.write(TOUR_FILE, toYaml({ url: asked, steps: records.map((record) => asWritten(record.step)) }, header));
     }
   } catch (err) {
+    // Whatever failed first, a browser or a tab that was lost is why.
+    const why = lostWhy();
     run.abort();
-    throw run.told(err);
+    throw run.told(why ? new Error(why) : err);
   }
   // The run has ended well: its files take the place of the earlier demo's,
   // and the frames go with the part folder.

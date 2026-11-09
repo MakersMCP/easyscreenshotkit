@@ -769,6 +769,76 @@ test("a demo that fails or is stopped leaves an earlier demo as it was and adds 
   }
 });
 
+// The processes under pid, each with its command line.
+function descendants(pid) {
+  let kids = [];
+  try {
+    kids = fs.readFileSync(`/proc/${pid}/task/${pid}/children`, "utf8").trim().split(/\s+/).filter(Boolean).map(Number);
+  } catch {
+    return [];
+  }
+  return kids.flatMap((kid) => {
+    let args = "";
+    try {
+      args = fs.readFileSync(`/proc/${kid}/cmdline`, "utf8");
+    } catch {
+      // Gone already.
+    }
+    return [{ pid: kid, args }, ...descendants(kid)];
+  });
+}
+
+// The recording browser killed, or the page's own process killed as the
+// system kills one for its memory, while a step waits: no frame comes after
+// that. A demo went on, wrote a video of the page standing still (a steps
+// file) or cut the tour short (a tour), and replaced the earlier demo.
+test("a demo whose browser ends or whose tab crashes in the middle of it fails, and leaves an earlier demo as it was", { skip: missing || (process.platform !== "linux" && "the browser's processes are read from /proc"), timeout: 300_000 }, async () => {
+  const { server, origin } = await fixture();
+  const root = tempDir();
+  const dir = path.join(root, "demo");
+  const steps = path.join(root, "wait.yaml");
+  fs.writeFileSync(steps, "steps:\n  - visit: /\n  - wait: 6\n");
+  const browser = /The browser ended in the middle of the demo \(it crashed, or was killed\), so no demo was saved\./;
+  const tab = /The browser's tab crashed in the middle of the demo, so no demo was saved\./;
+  const cases = [
+    // A steps file, the browser killed in its long wait.
+    { args: ["--steps", steps], line: /^02 Wait 6 s$/m, delay: 1_000, kill: (all) => all.filter(({ args }) => /--user-data-dir/.test(args) && !/--type=/.test(args)), told: browser },
+    // A steps file, the tab's renderer killed in its long wait.
+    { args: ["--steps", steps], line: /^02 Wait 6 s$/m, delay: 1_000, kill: (all) => all.filter(({ args }) => /--type=renderer/.test(args)), told: tab },
+    // A tour, the browser killed in the wait on its first page: the tour
+    // then read no sections and no link, and ended there.
+    { args: ["--pages", "1"], line: /^02 Wait 1\.6 s$/m, delay: 300, kill: (all) => all.filter(({ args }) => /--user-data-dir/.test(args) && !/--type=/.test(args)), told: browser },
+  ];
+  try {
+    await makeDemo(origin, { dir, steps, gif: false, timeLimit: 200_000 });
+    const before = snapshot(dir);
+    for (const [i, { args, line, delay, kill, told }] of cases.entries()) {
+      const child = spawn(process.execPath, [CLI, "demo", origin, ...args, "--no-gif", "--out", dir]);
+      let stderr = "";
+      let killed = [];
+      let sent = false;
+      child.stderr.on("data", (d) => {
+        stderr += d;
+        if (!sent && line.test(stderr)) {
+          sent = true;
+          setTimeout(() => {
+            killed = kill(descendants(child.pid));
+            for (const { pid } of killed) process.kill(pid, "SIGKILL");
+          }, delay);
+        }
+      });
+      const status = await new Promise((resolve) => child.on("close", resolve));
+      assert.ok(killed.length >= 1, `case ${i}: something to kill\n${stderr}`);
+      assert.equal(status, 1, `case ${i}\n${stderr}`);
+      assert.match(stderr, told, `case ${i}`);
+      assert.deepEqual(snapshot(dir), before, `case ${i}`);
+    }
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // A step that clicks a link to a file served as an attachment. Chrome on
 // Linux saves a download in the Downloads folder of the home it runs with;
 // the demo's browser saves nothing, there or anywhere else.

@@ -284,6 +284,7 @@ class Recorder {
     const { frameTree } = await tab.send("Page.getFrameTree");
     this.frameId = frameTree.frame.id;
     tab.on("Page.screencastFrame", (p) => this.onFrame(p));
+    tab.on("Inspector.targetCrashed", () => (this.crashed = true));
     // A navigation the page asks for (a link, a form, a script), which may
     // or may not load a new document: the page itself changing its address
     // (the history API, a #hash) starts "loading" too, on some sites at
@@ -336,10 +337,16 @@ class Recorder {
     return seconds * 1000 * (this.live ? this.live.factor : 1);
   }
 
+  // Whether nothing more can be recorded: the browser ended, or the tab
+  // crashed. No frame comes then, and the steps would go on without any.
+  lost() {
+    return Boolean(this.crashed) || this.chrome.gone();
+  }
+
   // Waits for seconds of video, or until a navigation starts.
   async hold(seconds) {
     const until = Date.now() + this.real(seconds);
-    while (Date.now() < until && !this.navAt) await sleep(Math.min(40, until - Date.now()));
+    while (Date.now() < until && !this.navAt && !this.lost()) await sleep(Math.min(40, until - Date.now()));
   }
 
   // ─── frames ──────────────────────────────────────────────────────────────

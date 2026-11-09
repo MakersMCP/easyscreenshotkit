@@ -66,6 +66,8 @@ function connect(wsUrl, { onClose = () => {} } = {}) {
     const pending = new Map();
     const listeners = new Map();
     let nextId = 0;
+    // Set by fail(): every call goes on failing with it.
+    let failure = "";
     ws.onmessage = (event) => {
       let msg;
       try {
@@ -98,6 +100,7 @@ function connect(wsUrl, { onClose = () => {} } = {}) {
         send(method, params = {}, timeoutMs = 30_000) {
           // A call on a connection that is closing or closed would get no
           // answer, and waited out its whole time limit: it fails at once.
+          if (failure) return Promise.reject(new Error(failure));
           if (ws.readyState !== WebSocket.OPEN) return Promise.reject(new Error("The browser connection closed."));
           const id = ++nextId;
           return new Promise((res, rej) => {
@@ -119,7 +122,16 @@ function connect(wsUrl, { onClose = () => {} } = {}) {
           ws.close();
         },
         closed() {
-          return ws.readyState !== WebSocket.OPEN;
+          return Boolean(failure) || ws.readyState !== WebSocket.OPEN;
+        },
+        // Fails every call under way and every call to come with message.
+        fail(message) {
+          failure = message;
+          for (const waiter of pending.values()) {
+            clearTimeout(waiter.timer);
+            waiter.reject(new Error(message));
+          }
+          pending.clear();
         },
       });
   });
@@ -340,7 +352,12 @@ async function openTab(chrome, device, { lang = "", theme = "light", reducedMoti
   const { targetId } = await chrome.browser.send("Target.createTarget", { url: "about:blank", newWindow: true });
   const cdp = await connect(`${chrome.base.replace(/^http/, "ws")}/devtools/page/${targetId}`);
   cdp.targetId = targetId;
+  // A tab whose page crashed, as one killed for its memory does, answers
+  // nothing more while the browser goes on: its calls fail at once, with why,
+  // where each waited out its whole time limit and was called too slow.
+  cdp.on("Inspector.targetCrashed", () => cdp.fail("the browser's tab crashed"));
   try {
+    await cdp.send("Inspector.enable").catch(() => {});
     await cdp.send("Page.enable");
     await cdp.send("Emulation.setDeviceMetricsOverride", {
       width: device.width,
