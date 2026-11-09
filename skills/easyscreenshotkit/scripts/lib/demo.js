@@ -16,7 +16,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { launch } = require("./chrome");
+const { launch, CRASHED } = require("./chrome");
 const { normalizeUrl, fragmentNotes } = require("./shots");
 const { homeOf, siteOf, routeOf, viewKey, viewOf, pathOf, readable, printable } = require("./pick");
 const { Recorder } = require("./record");
@@ -462,8 +462,9 @@ async function makeDemo(rawUrl, options = {}) {
       run.write(TOUR_FILE, toYaml({ url: asked, steps: records.map((record) => asWritten(record.step)) }, header));
     }
   } catch (err) {
-    // Whatever failed first, a browser or a tab that was lost is why.
-    const why = lostWhy();
+    // Whatever failed first, a browser or a tab that was lost is why: the
+    // recording's, or a tab that picked the tour's pages or drew the frames.
+    const why = lostWhy() || (err.message === CRASHED ? TAB_CRASHED : "");
     run.abort();
     throw run.told(why ? new Error(why) : err);
   }

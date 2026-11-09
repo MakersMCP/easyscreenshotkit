@@ -972,6 +972,9 @@ test("a demo whose browser ends or whose tab crashes in the middle of it fails, 
   fs.writeFileSync(steps, "steps:\n  - visit: /\n  - wait: 6\n");
   const browser = /The browser ended in the middle of the demo \(it crashed, or was killed\), so no demo was saved\./;
   const tab = /The browser's tab crashed in the middle of the demo, so no demo was saved\./;
+  const renderers = (all) => all.filter(({ args }) => /--type=renderer/.test(args));
+  // ready: what has to be running before the kill is timed, as a tab that
+  // is not there yet cannot crash. delay: from then.
   const cases = [
     // A steps file, the browser killed in its long wait.
     { args: ["--steps", steps], line: /^02 Wait 6 s$/m, delay: 1_000, kill: (all) => all.filter(({ args }) => /--user-data-dir/.test(args) && !/--type=/.test(args)), told: browser },
@@ -982,11 +985,17 @@ test("a demo whose browser ends or whose tab crashes in the middle of it fails, 
     { args: ["--pages", "1"], line: /^02 Wait 1\.6 s$/m, delay: 300, kill: (all) => all.filter(({ args }) => /--user-data-dir/.test(args) && !/--type=/.test(args)), told: browser },
     // The browser that draws the frames, killed as it starts.
     { args: ["--steps", steps], line: /^Drawing \d+ frames/m, delay: 50, kill: (all) => all.filter(({ args }) => /--user-data-dir/.test(args) && !/--type=/.test(args)), told: browser },
+    // The tab that reads the home page for the tour, its page killed: the
+    // browser's first page and this tab's.
+    { args: ["--pages", "2"], line: /^Opening http/m, ready: (all) => renderers(all).length >= 2, delay: 300, kill: renderers, told: tab },
+    // The tabs that draw the frames, their pages killed once a second one
+    // is there, so the first has its page.
+    { args: ["--steps", steps], line: /^Drawing \d+ frames/m, ready: (all) => renderers(all).length >= 3, delay: 100, kill: renderers, told: tab },
   ];
   try {
     await makeDemo(origin, { dir, steps, gif: false, timeLimit: 200_000 });
     const before = snapshot(dir);
-    for (const [i, { args, line, delay, kill, told }] of cases.entries()) {
+    for (const [i, { args, line, ready, delay, kill, told }] of cases.entries()) {
       const child = spawn(process.execPath, [CLI, "demo", origin, ...args, "--no-gif", "--out", dir]);
       let stderr = "";
       let killed = [];
@@ -996,12 +1005,18 @@ test("a demo whose browser ends or whose tab crashes in the middle of it fails, 
         stderr += d;
         if (!sent && line.test(stderr)) {
           sent = true;
-          setTimeout(() => {
+          const act = () => {
             const all = descendants(child.pid);
             profiles = [...new Set(all.flatMap(({ args }) => [...args.matchAll(/--user-data-dir=([^\s\0]+)/g)].map((m) => m[1])))];
             killed = kill(all);
             for (const { pid } of killed) process.kill(pid, "SIGKILL");
-          }, delay);
+          };
+          const whenReady = () => {
+            if (child.exitCode !== null) return;
+            if (!ready || ready(descendants(child.pid))) setTimeout(act, delay);
+            else setTimeout(whenReady, 30);
+          };
+          whenReady();
         }
       });
       const status = await new Promise((resolve) => child.on("close", resolve));
