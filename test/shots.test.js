@@ -714,6 +714,50 @@ test("each window of a #route view waits for its data, and one taken before it c
   }
 });
 
+// Two views of an app that each ask one address for their data before
+// they draw, as an app that loads the signed-in user on every view does.
+// Taken as the address and a --page, the first view's phone window was
+// taken while the second view's first window loaded: one of them waited
+// for the other's answer before its own went out, past the 10 s wait, and
+// showed "Loading…". Each window now loads alone.
+const SHARED = page(
+  "Shared | Acme",
+  `<nav><a href="#/a">A</a> <a href="#/b">B</a></nav><main id="view"><h1>Loading…</h1></main>
+  <script>
+    async function go() {
+      const name = (location.hash.slice(2) || "a").split("/")[0];
+      document.getElementById("view").innerHTML = "<h1>Loading…</h1>";
+      await (await fetch("/api/me")).json();
+      document.getElementById("view").innerHTML = "<h1>View " + name.toUpperCase() + "</h1><div style='height:1200px'></div>";
+    }
+    addEventListener("hashchange", go);
+    go();
+  </script>`,
+);
+
+test("the views of an app that ask one address for their data are each taken once it has come, in every window", { skip: noBrowser, timeout: 200_000 }, async () => {
+  const { server, origin } = await serve((req, res) => {
+    if (req.url === "/shared/") return res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(SHARED);
+    if (req.url === "/api/me") return setTimeout(() => res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" }).end("{}"), 7_000);
+    res.writeHead(404).end("not found");
+  });
+  const dir = path.join(tempDir(), "shots");
+  try {
+    const { manifest } = await takeShots(`${origin}/shared/#/a`, { dir, pages: 1, sizes: "desktop,mobile", extra: ["#/b"], timeLimit: 180_000 });
+    assert.deepEqual(
+      manifest.pages.map((p) => [p.slug, p.notes, p.shots.map((s) => [s.file, s.headings.map((h) => h.text)])]),
+      [
+        ["shared-a", [], [["01-shared-a-desktop.png", ["View A"]], ["01-shared-a-mobile.png", ["View A"]]]],
+        ["shared-b", [], [["02-shared-b-desktop.png", ["View B"]], ["02-shared-b-mobile.png", ["View B"]]]],
+      ],
+    );
+  } finally {
+    server.close();
+    server.closeAllConnections();
+    fs.rmSync(path.dirname(dir), { recursive: true, force: true });
+  }
+});
+
 test("an app at the site's root: the home page is home whatever route it opens on, and the #route links are listed", { skip: noBrowser, timeout: 120_000 }, async () => {
   const { server, origin } = await appFixture({ delay: 1_500 });
   const dir = path.join(tempDir(), "shots");

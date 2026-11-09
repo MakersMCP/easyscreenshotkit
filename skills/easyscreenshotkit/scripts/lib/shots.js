@@ -848,6 +848,8 @@ async function takeShots(rawUrl, options = {}) {
     chrome = await launch({ lang });
     const [first] = groups;
     const firstTheme = themes[0];
+    // The #route views whose other windows are still to be taken.
+    let views = 0;
     const others = (page) => {
       const windows = [];
       for (const themeName of themes) {
@@ -880,12 +882,27 @@ async function takeShots(rawUrl, options = {}) {
       // sends a second request for the same address only once the answer
       // to the first has begun to come: two windows of the view at once
       // would each wait for both answers. So its windows are taken one
-      // after another.
+      // after another, and no other page is opened meanwhile (see alone()).
       if (routeOf(page.asked) || routeOf(page.url)) {
+        views++;
         pool.add(async () => {
-          for (const take of windows) await take();
+          try {
+            for (const take of windows) await take();
+          } finally {
+            views--;
+          }
         });
       } else for (const take of windows) pool.add(take);
+    };
+    // Before a page is opened. Views of one app often ask one address for
+    // their data (the signed-in user, the app's settings), so a window of
+    // another view, or of another page, loading at the same time holds a
+    // view's data back as long as its own takes, past the view's wait. So a
+    // #route view's windows load alone: a page with a #route is opened once
+    // every window before it is taken, and no page is opened while a #route
+    // view's windows are being taken.
+    const alone = async (url) => {
+      if (views || routeOf(url)) await pool.drain();
     };
     const keep = (page, result) => {
       page.n = kept.length + 1;
@@ -957,6 +974,7 @@ async function takeShots(rawUrl, options = {}) {
         notes.push(`${url} was asked for but not taken: the same page as ${same.slug}.`);
         continue;
       }
+      await alone(url);
       if (timeLeft() < 45_000) {
         notes.push(`${url} was asked for but not taken: time ran out; give more with --timeout.`);
         continue;
@@ -994,6 +1012,7 @@ async function takeShots(rawUrl, options = {}) {
       // pages taken so far took on average, and a margin.
       const took = [lastVisit];
       while (queue.length && kept.length < wanted && visits < wanted * 3) {
+        await alone(queue[0].url);
         const expected = took.reduce((sum, ms) => sum + ms, 0) / took.length;
         if (timeLeft() < Math.max(60_000, expected * 1.3 + 20_000)) {
           notes.push(`Time ran out after ${kept.length === 1 ? "1 page" : `${kept.length} pages`}; give more with --timeout.`);

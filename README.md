@@ -238,7 +238,7 @@ It tells you which screenshots a desktop and a phone would show and what to fix.
 3. Opens the candidates in that order and keeps a page only when it is a page of its own: not a redirect to a sign-in page or to the home page, not a bot check, not an error, and not the same page under another address (the same final address, canonical link or text).
 4. On each page, hides what floats over it: everything fixed to the screen except the page's own top bar and sidebar, plus the consent and chat tools seen most (OneTrust, Cookiebot, Didomi, Usercentrics, Intercom, Crisp, Drift, HubSpot, Zendesk and more). When a consent dialog had stopped the page from scrolling, it lets the page scroll again.
 5. Takes the first screen once its pictures, videos and fade-ins are done, and the whole page a screen at a time, each screen as the browser shows it, joined into one image with sticky headers and fixed bars shown once.
-6. Opens every page again as a phone (or an iPhone, or in the dark theme) in windows of its own while it looks for the next pages. A view of a web app gets one such window at a time: the browser sends a second window's request for the same data only once the answer to the first has begun to come.
+6. Opens every page again as a phone (or an iPhone, or in the dark theme) in windows of its own while it looks for the next pages. A view of a web app gets one such window at a time, and no other page loads while it does: the browser sends a second request for the same data, from another window or from another view of the app, only once the answer to the first has begun to come.
 7. Writes `manifest.json`, `SCREENSHOTS.md` and `sheet.png`.
 
 ## Limits
