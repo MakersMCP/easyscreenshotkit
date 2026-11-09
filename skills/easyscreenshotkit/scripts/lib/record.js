@@ -24,7 +24,7 @@
 const fs = require("fs");
 const path = require("path");
 const { openTab, closeTab, navigate, currentUrl } = require("./chrome");
-const { metrics, walk, waitForContent, settle, watchRequests, networkQuiet, quietNetwork, waitForFonts, resetPictureWait, waitForPictures } = require("./page");
+const { metrics, walk, waitForContent, settle, watchRequests, networkQuiet, waitForDrawn, waitForFonts, resetPictureWait, waitForPictures } = require("./page");
 const { clean } = require("./clean");
 const { readInfo } = require("./shots");
 const { routeOf, viewOf } = require("./pick");
@@ -445,7 +445,7 @@ class Recorder {
   async ready(depth = 0) {
     const tab = this.tab;
     const began = Date.now();
-    if (routeOf(await currentUrl(tab))) await quietNetwork(tab);
+    if (routeOf(await currentUrl(tab))) await waitForDrawn(tab);
     const loaded = await waitForContent(tab, 20_000);
     await settle(tab, 6_000);
     const info = await readInfo(tab);

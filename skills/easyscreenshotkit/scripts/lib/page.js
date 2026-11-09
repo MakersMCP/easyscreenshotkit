@@ -216,6 +216,47 @@ async function quietNetwork(cdp, { quietMs = 500, limitMs = 10_000, reserveMs = 
   }
 }
 
+// What a view shows while it is not drawn yet, on the screen: something
+// marked as busy, a progress bar with no value, or a line of its own that
+// says it is loading, as a heading or an element with nothing else in it.
+const LOADING_WORDS = "loading|please wait|one moment|yükleniyor|lütfen bekleyin|wird geladen|lädt|bitte warten|chargement|veuillez patienter|cargando|carregando|aguarde";
+const LOADING_SIGN = `(() => {
+  const shown = (el) => {
+    const r = el.getBoundingClientRect();
+    if (!(r.width > 0 && r.height > 0 && r.bottom > 0 && r.top < innerHeight)) return false;
+    return el.checkVisibility ? el.checkVisibility({ opacityProperty: true, visibilityProperty: true }) : getComputedStyle(el).visibility !== "hidden";
+  };
+  if ([...document.querySelectorAll('[aria-busy="true"], [role="progressbar"]:not([aria-valuenow]), progress:not([value])')].some(shown)) return true;
+  const says = /^(?:${LOADING_WORDS})(?![\\p{L}\\p{N}])/iu;
+  for (const el of document.querySelectorAll("body *")) {
+    if (el.children.length && !/^H[1-6]$/.test(el.tagName) && el.getAttribute("role") !== "heading") continue;
+    const text = el.textContent.replace(/\\s+/g, " ").trim();
+    if (text.length <= 40 && says.test(text) && shown(el)) return true;
+  }
+  return false;
+})()`;
+
+async function showsLoadingSign(cdp) {
+  const { result } = await cdp.send("Runtime.evaluate", { expression: LOADING_SIGN, returnByValue: true }, 5_000).catch(() => ({ result: {} }));
+  return Boolean(result && result.value);
+}
+
+// Waits until a view has drawn, as far as can be told from outside: no
+// request out for half a second (see quietNetwork) and no loading sign, as
+// a view can draw late with no request at all, on a timer or from data over
+// a WebSocket. started: when the wait began, for one that goes on after
+// another. Returns as quietNetwork does.
+async function waitForDrawn(cdp, { limitMs = 10_000, reserveMs = 45_000, started = Date.now() } = {}) {
+  const left = () => Math.max(0, limitMs - (Date.now() - started));
+  for (;;) {
+    const state = await quietNetwork(cdp, { limitMs: left(), reserveMs });
+    if (state !== "quiet" || !(await showsLoadingSign(cdp))) return state;
+    if (!left()) return "busy";
+    if (timeLeft() <= reserveMs) return "short";
+    await sleep(200);
+  }
+}
+
 // Web fonts that are still on their way would be drawn in a fallback face.
 async function waitForFonts(cdp) {
   await cdp
@@ -510,6 +551,8 @@ module.exports = {
   watchRequests,
   networkQuiet,
   quietNetwork,
+  showsLoadingSign,
+  waitForDrawn,
   waitForFonts,
   clearHover,
   resetPictureWait,

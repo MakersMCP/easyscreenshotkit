@@ -14,7 +14,7 @@ const test = require("node:test");
 const { takeShots, DEVICES } = require("../skills/easyscreenshotkit/scripts/lib/shots");
 const { findChrome, launch, openTab, closeTab, navigate, killBrowsers, removeProfiles, removeStrayLocks, removeFetchFolders, fetchFolders, roomIn } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
 const { setTimeLimit, sleep } = require("../skills/easyscreenshotkit/scripts/lib/time");
-const { watchRequests, networkQuiet } = require("../skills/easyscreenshotkit/scripts/lib/page");
+const { watchRequests, networkQuiet, showsLoadingSign } = require("../skills/easyscreenshotkit/scripts/lib/page");
 const { LOCATE } = require("../skills/easyscreenshotkit/scripts/lib/record");
 const { pngText } = require("../skills/easyscreenshotkit/scripts/lib/png");
 const { readPng, serve, near, descendants } = require("./helpers");
@@ -645,6 +645,115 @@ test("a run starts at the address given when the home page cannot be taken, and 
     }
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A view that draws at once and keeps a request open for as long as the page
+// is there, as a long poll does. It was reported as still loading, and with
+// --pwa all its captures were left out and no pwa/ folder was written. A
+// capture is left out only when the view also still looks unready.
+test("a #route view drawn while a request stays open is kept, and its notes say the request was still open", { skip: noBrowser, timeout: 150_000 }, async () => {
+  const { server, origin } = await serve((req, res) => {
+    if (req.url === "/poll/") return res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Inbox | Acme", '<nav><a href="#/one">One</a></nav><h1>Drawn</h1><script>fetch("/longpoll");</script>'));
+    if (req.url === "/longpoll") return;
+    res.writeHead(404).end("not found");
+  });
+  const dir = path.join(tempDir(), "shots");
+  try {
+    const { manifest } = await takeShots(`${origin}/poll/#/one`, { dir, pages: 1, sizes: "desktop,mobile", pwa: true, timeLimit: 130_000 });
+    assert.deepEqual(manifest.pages[0].notes, ["a request was still open after 10 s", "mobile: a request was still open after 2 s"]);
+    assert.deepEqual(manifest.pwa.leftOut, []);
+    assert.deepEqual(manifest.pwa.screenshots.map((s) => [s.file, s.label]), [["pwa/screenshots/wide-01.png", "Drawn"], ["pwa/screenshots/narrow-01.png", "Drawn"]]);
+    for (const s of manifest.pwa.screenshots) assert.ok(fs.existsSync(path.join(dir, s.file)), s.file);
+  } finally {
+    server.close();
+    server.closeAllConnections();
+    fs.rmSync(path.dirname(dir), { recursive: true, force: true });
+  }
+});
+
+// A view that draws late with no request of its own (a timer here, or data
+// over a WebSocket) was saved as its loading screen, with no note: only
+// requests were waited for. It is waited for while it still shows a loading
+// sign, inside the same 10 s, and the note says so when they ran out.
+test("a #route view that draws late with no request is waited for while it shows a loading sign", { skip: noBrowser, timeout: 150_000 }, async () => {
+  const { server, origin } = await serve((req, res) => {
+    const url = new URL(req.url, "http://x");
+    if (url.pathname === "/timed/") return res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Loading", `<nav><a href="#/one">One</a></nav><main id="view"><h1>Loading…</h1></main><script>setTimeout(() => { document.getElementById("view").innerHTML = "<h1>Drawn</h1>"; document.title = "Drawn | Acme"; }, ${Number(url.searchParams.get("ms"))});</script>`));
+    res.writeHead(404).end("not found");
+  });
+  const root = tempDir();
+  const take = async (ms, name) => (await takeShots(`${origin}/timed/?ms=${ms}#/one`, { dir: path.join(root, name), pages: 1, sizes: "desktop", pwa: true, timeLimit: 130_000 })).manifest;
+  try {
+    const late = await take(3_500, "late");
+    assert.deepEqual([late.pages[0].heading, late.pages[0].title, late.pages[0].notes, late.pwa.leftOut], ["Drawn", "Drawn | Acme", [], []]);
+    const never = await take(60_000, "never");
+    assert.deepEqual([never.pages[0].heading, never.pages[0].notes], ["Loading…", ["still loading data after 10 s", "pwa-narrow: still loading data after 2 s"]]);
+    assert.deepEqual(never.pwa.leftOut, [{ page: 1, form_factor: "wide", reason: "still loading data after 10 s" }, { page: 1, form_factor: "narrow", reason: "still loading data after 2 s" }]);
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("what counts as a loading sign: a heading or a line that says so, something busy, a progress bar with no value, on the screen", { skip: noBrowser, timeout: 60_000 }, async () => {
+  setTimeLimit(50_000);
+  const chrome = await launch();
+  try {
+    const tab = await openTab(chrome, DEVICES.desktop);
+    const sign = async (html) => {
+      await tab.send("Runtime.evaluate", { expression: `document.body.innerHTML = ${JSON.stringify(html)}` });
+      return showsLoadingSign(tab);
+    };
+    const signs = ["<h1>Loading…</h1>", "<h2>Loading your plants...</h2>", "<p>Loading</p>", "<div><span>Yükleniyor...</span></div>", "<h1>Please wait</h1>", "<h1>Loading <em>…</em></h1>", '<div aria-busy="true">x</div>', '<div role="progressbar" style="width:40px;height:40px"></div>', "<progress></progress>"];
+    const none = ["<h1>Your plants</h1>", "<p>Loadings</p>", "<p>Loading docks and lorries in Hamburg, the whole of the year</p>", '<div role="progressbar" aria-valuenow="70" style="width:40px;height:40px"></div>', '<progress value="1" max="2"></progress>', '<h1 style="display:none">Loading…</h1>', '<h1 style="opacity:0">Loading…</h1>', '<div aria-busy="true" style="display:none">x</div>', '<p style="position:absolute;top:2000px">Loading</p>', '<div aria-busy="false">x</div>'];
+    for (const html of signs) assert.equal(await sign(html), true, html);
+    for (const html of none) assert.equal(await sign(html), false, html);
+    await closeTab(chrome, tab);
+  } finally {
+    await chrome.close();
+  }
+});
+
+// An app that goes to another route of its own a little after the wait for
+// its data, as one whose sign-in check answers late does: it was reported
+// and named by the route asked for. The address is read again just before
+// the first capture, and the view it went to is waited for.
+test("an app that goes to another route after the wait is named by that route, and that view is waited for", { skip: noBrowser, timeout: 120_000 }, async () => {
+  const { server, origin } = await serve((req, res) => {
+    if (req.url === "/moves/") {
+      return res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(
+        page(
+          "Moves | Acme",
+          `<nav><a href="#/one">One</a></nav><main id="view"><h1>Loading…</h1></main><script>
+            const view = document.getElementById("view");
+            async function go() {
+              const route = location.hash.slice(2);
+              view.innerHTML = "<h1>Loading…</h1>";
+              await (await fetch("/api/" + route)).json();
+              if (location.hash.slice(2) === route) view.innerHTML = "<h1>View " + route + "</h1>";
+            }
+            addEventListener("hashchange", go);
+            go();
+            setTimeout(() => { location.hash = "#/login"; }, 1200);
+          </script>`,
+        ),
+      );
+    }
+    if (req.url === "/api/one") return res.writeHead(200, { "Content-Type": "application/json" }).end("{}");
+    if (req.url === "/api/login") return setTimeout(() => res.writeHead(200, { "Content-Type": "application/json" }).end("{}"), 4_000);
+    res.writeHead(404).end("not found");
+  });
+  const dir = path.join(tempDir(), "shots");
+  try {
+    const { manifest } = await takeShots(`${origin}/moves/#/one`, { dir, pages: 1, sizes: "desktop", timeLimit: 100_000 });
+    assert.deepEqual(
+      manifest.pages.map((p) => [p.slug, p.url, p.heading, p.notes, p.shots.map((s) => s.file)]),
+      [["moves-login", `${origin}/moves/#/login`, "View login", [`opened ${origin}/moves/#/one and landed on ${origin}/moves/#/login`], ["01-moves-login-desktop.png"]]],
+    );
+  } finally {
+    server.close();
+    fs.rmSync(path.dirname(dir), { recursive: true, force: true });
   }
 });
 

@@ -812,6 +812,26 @@ test("a tour starts at the address given when the home page cannot be taken, and
   }
 });
 
+// A view that draws late with no request of its own would come in on its
+// loading screen: it is recorded once it no longer shows one.
+test("a recording of a #route view waits while it shows a loading sign", { skip: missing, timeout: 200_000 }, async () => {
+  const { server, origin } = await serve((req, res) => {
+    if (req.url !== "/timed/") return res.writeHead(404).end("not found");
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Timed", '<nav><a href="#/one">One</a></nav><h1 id="h">Loading…</h1><div id="band" style="height:800px"></div><script>setTimeout(() => { document.getElementById("h").textContent = "Drawn"; document.getElementById("band").style.background = "rgb(0,160,0)"; document.documentElement.style.background = "rgb(0,160,0)"; }, 8000);</script>', ""));
+  });
+  const root = tempDir();
+  const steps = path.join(root, "steps.yaml");
+  fs.writeFileSync(steps, "steps:\n  - visit: /timed/#/one\n  - wait: 0.3\n");
+  try {
+    await makeDemo(origin, { dir: path.join(root, "out"), steps, gif: false, timeLimit: 150_000 });
+    const poster = readPng(path.join(root, "out", "poster.png"));
+    assert.ok(near(unzoomed(poster, 800, 500), GREEN), `the first frame: ${unzoomed(poster, 800, 500)}`);
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a demo of a #route view on a site whose root is a 404, with --pages 1", { skip: missing, timeout: 240_000 }, async () => {
   const { server, origin } = await fixture({ home: HOME_LOST[0][1] });
   const root = tempDir();

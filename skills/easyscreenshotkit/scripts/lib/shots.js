@@ -23,7 +23,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { launch, openTab, closeTab, navigate, currentUrl, CRASHED } = require("./chrome");
-const { metrics, scrollTo, walk, showsContent, waitForContent, settle, watchRequests, networkQuiet, quietNetwork, waitForFonts, clearHover, resetPictureWait, capture, captureScreen, capturePage } = require("./page");
+const { metrics, scrollTo, walk, showsContent, waitForContent, settle, watchRequests, networkQuiet, waitForDrawn, showsLoadingSign, waitForFonts, clearHover, resetPictureWait, capture, captureScreen, capturePage } = require("./page");
 const { clean } = require("./clean");
 const { homeOf, pageKey, routeOf, viewKey, pathOf, pageUrl, anchorOf, siteOf, fold, kindOf, rankLinks, routeLinks, visitOrder, readSiteIndex, localeOf, alternateFor, oneLine, ROUTE_LINK } = require("./pick");
 const { pngFileIsWhole, pngSize, tagPng } = require("./png");
@@ -506,15 +506,16 @@ const BEFORE_CAPTURE_MS = 7_000;
 // to, draws once its data has come: up to VIEW_WAIT_MS for that, but never
 // into the time its screenshots need, then the address it shows by then.
 // busy: the page still had requests going when an earlier window of it was
-// taken, so this one waits BUSY_WAIT_MS at most. Returns "quiet", "busy"
-// when it was still loading at the limit, or "short" when it still was as
-// the run's time ran short.
+// taken, so this one waits BUSY_WAIT_MS at most. started: when the wait
+// began, for a wait that goes on after the app went to another route.
+// Returns "quiet", "busy" when it was still loading at the limit, or
+// "short" when it still was as the run's time ran short.
 const VIEW_WAIT_MS = 10_000;
 const BUSY_WAIT_MS = 2_000;
 
-async function waitForView(tab, nav, asked, busy) {
+async function waitForView(tab, nav, asked, busy, started = Date.now()) {
   if (!routeOf(asked) && !routeOf(nav.url)) return "quiet";
-  const state = await quietNetwork(tab, { limitMs: busy ? BUSY_WAIT_MS : VIEW_WAIT_MS, reserveMs: FIRST_CAPTURE_MS + BEFORE_CAPTURE_MS });
+  const state = await waitForDrawn(tab, { limitMs: busy ? BUSY_WAIT_MS : VIEW_WAIT_MS, reserveMs: FIRST_CAPTURE_MS + BEFORE_CAPTURE_MS, started });
   nav.url = await currentUrl(tab, nav.url);
   return state;
 }
@@ -526,11 +527,19 @@ function notOpened(err) {
 }
 
 // What the wait for a #route view's data saw by the time a window of it
-// was taken, as a note: "" when the data had come. A window taken before it
-// had come shows the view's loading screen.
+// was taken, as a note: "" when the data had come, or the view looks drawn.
+// A window taken before it had come shows the view's loading screen.
 function dataNote(result) {
   if (result.busy) return `still loading data after ${result.waited / 1000} s`;
   if (result.short) return "taken before its data had come: time ran short; give more with --timeout";
+  return "";
+}
+
+// The same for a view that looks drawn while a request of it stays open, as
+// a long poll keeps one for as long as the page is there.
+function openNote(result) {
+  if (result.open === "busy") return `a request was still open after ${result.waited / 1000} s`;
+  if (result.open === "short") return "a request was still open as time ran short; give more with --timeout";
   return "";
 }
 
@@ -539,7 +548,7 @@ function dataNote(result) {
 function waitNotes(result) {
   const notes = [];
   if (result.loaded === false) notes.push("still showed a loading screen after 20 s");
-  const data = dataNote(result);
+  const data = dataNote(result) || openNote(result);
   if (data) notes.push(data);
   if (!result.short && result.loaded === null) notes.push("taken while it still showed a loading screen: time ran short; give more with --timeout");
   return notes;
@@ -565,7 +574,8 @@ async function visit(chrome, page, group, theme, ctx, { check = null, links = fa
     } else if (glance.challenge || nav.status >= 400) {
       return { nav, info: glance, loaded: false, links: [], shots: [], cleaned: { hidden: 0, unlocked: false, badSelectors: [] } };
     }
-    const view = await waitForView(tab, nav, page.url, page.busy);
+    const opened = Date.now();
+    let view = await waitForView(tab, nav, page.url, page.busy, opened);
     let loaded = await waitForContent(tab, 20_000);
     await settle(tab, 6_000);
     const info = await readInfo(tab);
@@ -580,23 +590,42 @@ async function visit(chrome, page, group, theme, ctx, { check = null, links = fa
     else await scrollTo(tab, 0);
     const found = links || routes ? await readLinks(tab) : null;
     const m0 = await metrics(tab);
-    const cleaned = ctx.clean
-      ? await clean(tab, { hide: ctx.hide, viewport: { width: m0.width, height: m0.viewportHeight } })
-      : { hidden: 0, unlocked: false, badSelectors: [] };
+    const tidy = () => (ctx.clean ? clean(tab, { hide: ctx.hide, viewport: { width: m0.width, height: m0.viewportHeight } }) : { hidden: 0, unlocked: false, badSelectors: [] });
+    let cleaned = await tidy();
     await waitForFonts(tab);
     await scrollTo(tab, 0);
     await sleep(400);
+    // An app can go to another route of its own after the waits, as one
+    // whose sign-in check answers late does: the address is read again, and
+    // the view it went to is waited for within the same wait.
+    let moved = false;
+    if (routeOf(page.url) || routeOf(nav.url)) {
+      const before = viewKey(nav.url);
+      nav.url = await currentUrl(tab, nav.url);
+      moved = viewKey(nav.url) !== before;
+    }
+    if (moved) {
+      view = await waitForView(tab, nav, page.url, page.busy, opened);
+      await settle(tab, 6_000);
+      cleaned = await tidy();
+      await waitForFonts(tab);
+      await scrollTo(tab, 0);
+      await sleep(400);
+    }
     // A page whose waits ended before it was ready, at their limit or as the
     // run's time ran short, may have had its data and drawn its content
-    // since: it is taken before them only when it still has requests out,
-    // or still shows a bare loading screen, and its title and heading are
-    // read again, as it is taken.
+    // since: it is taken before them only when it still shows a loading
+    // sign, or a bare loading screen. One that looks drawn with a request
+    // still out is only said to have one. Its title and heading are read
+    // again, as it is taken.
     let short = false;
     let busy = false;
-    if (view !== "quiet" || loaded === null) {
-      const out = !networkQuiet(tab, 0);
-      short = view === "short" && out;
-      busy = view === "busy" && out;
+    let open = "";
+    if (view !== "quiet" || loaded === null || moved) {
+      if (view !== "quiet" && (await showsLoadingSign(tab))) {
+        short = view === "short";
+        busy = view === "busy";
+      } else if (view !== "quiet" && !networkQuiet(tab, 0)) open = view;
       if (loaded === null && (await showsContent(tab).catch(() => false))) loaded = true;
       const now = await readInfo(tab);
       Object.assign(info, { title: now.title, heading: now.heading });
@@ -638,7 +667,7 @@ async function visit(chrome, page, group, theme, ctx, { check = null, links = fa
         shots.push({ size: shot.size, full: true, png: whole.png, scale: shot.scale, cssWidth: m.width, cssHeight: whole.height, truncated: whole.truncated, sections });
       }
     }
-    return { nav, info, loaded, busy, waited: page.busy ? BUSY_WAIT_MS : VIEW_WAIT_MS, short, links: found, shots, cleaned };
+    return { nav, info, loaded, busy, open, waited: page.busy ? BUSY_WAIT_MS : VIEW_WAIT_MS, short, links: found, shots, cleaned };
   } finally {
     await closeTab(chrome, tab);
   }
@@ -954,7 +983,7 @@ async function takeShots(rawUrl, options = {}) {
         lang: result.info.lang,
         textHash: result.info.textHash,
         keys,
-        busy: result.busy,
+        busy: result.busy || result.open === "busy",
       });
       page.notes.push(...waitNotes(result));
       if (movedOn(page.asked, result.nav.url)) page.notes.push(`opened ${page.asked} and landed on ${result.nav.url}`);
