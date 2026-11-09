@@ -787,6 +787,11 @@ function writeMarkdown(manifest, run) {
   run.write("SCREENSHOTS.md", lines.join("\n"));
 }
 
+// A browser that ends in the middle of a run, as a crash or a kill from
+// outside ends it, takes with it every page and window the run had still to
+// take: the run fails, and its folder stays as it was.
+const BROWSER_GONE = "The browser ended in the middle of the run (it crashed, or was killed), so no screenshots were saved.";
+
 async function takeShots(rawUrl, options = {}) {
   const {
     dir,
@@ -836,6 +841,9 @@ async function takeShots(rawUrl, options = {}) {
   // The other devices and themes of a page kept are taken in windows of
   // their own while the next pages are being found.
   const pool = makePool(2);
+  const alive = () => {
+    if (chrome && chrome.gone()) throw new Error(BROWSER_GONE);
+  };
   try {
     chrome = await launch({ lang });
     const [first] = groups;
@@ -847,6 +855,8 @@ async function takeShots(rawUrl, options = {}) {
           if (group === first && themeName === firstTheme) continue;
           if (group.shots.every((shot) => shot.pwa && themeName !== ctx.pwaTheme)) continue;
           windows.push(async () => {
+            // The run fails over a browser that ended: no note on it.
+            if (chrome.gone()) return;
             const label = `${group.key}${themeName === "dark" ? " (dark)" : ""}`;
             if (timeLeft() < 30_000) {
               page.notes.push(`${label} not taken: time ran out`);
@@ -861,7 +871,7 @@ async function takeShots(rawUrl, options = {}) {
               else for (const note of waitNotes(got)) page.notes.push(`${label}: ${note}`);
               saveShots(page, got, themeName, run, written);
             } catch (err) {
-              page.notes.push(`${label} could not be taken: ${err.message}`);
+              if (!chrome.gone()) page.notes.push(`${label} could not be taken: ${err.message}`);
             }
           });
         }
@@ -1000,6 +1010,9 @@ async function takeShots(rawUrl, options = {}) {
           got = await visit(chrome, page, first, firstTheme, ctx, { check: { site, homeKey, kept } });
           if (!got.rejected) took.push(Date.now() - started);
         } catch (err) {
+          // A page that failed because the browser ended is no page left
+          // out: the run fails.
+          alive();
           // A call that failed because the run's time is up is no reason
           // to leave the page out.
           if (timeLeft() < 30_000) {
@@ -1021,6 +1034,7 @@ async function takeShots(rawUrl, options = {}) {
     }
 
     await pool.drain();
+    alive();
     // Each page's files in the order the sizes were asked for, light first.
     const order = describeSizes(groups).map((size) => size.size);
     for (const page of kept) page.shots.sort((a, b) => themes.indexOf(a.theme) - themes.indexOf(b.theme) || order.indexOf(a.size) - order.indexOf(b.size));
@@ -1064,19 +1078,27 @@ async function takeShots(rawUrl, options = {}) {
     const siteCheck = pwaSaved ? checkSite(siteManifest, kept[0].url, pwaSaved.screenshots.length) : null;
     log("Drawing the sheet");
     // The sheet takes a few seconds and is drawn even when the pages used up
-    // the run's time.
+    // the run's time. One that cannot be drawn is said so: the pages are
+    // there all the same. Over a browser that ended, the run fails.
     if (timeLeft() < 90_000) setTimeLimit(90_000);
-    manifest.sheet = await renderSheet(chrome, manifest, run.part).catch(() => null);
+    try {
+      manifest.sheet = await renderSheet(chrome, manifest, run.part);
+    } catch (err) {
+      alive();
+      notes.push(`sheet.png could not be drawn: ${run.told(err).message.replace(/\.$/, "")}.`);
+    }
     await chrome.close();
     chrome = null;
     if (siteCheck) Object.assign(manifest.pwa, await siteCheck);
     run.write("manifest.json", JSON.stringify(manifest, null, 2) + "\n");
     writeMarkdown(manifest, run);
   } catch (err) {
+    // Whatever failed first, a browser that ended is why.
+    const gone = Boolean(chrome && chrome.gone());
     await pool.drain();
     if (chrome) await chrome.close();
     run.abort();
-    throw run.told(err);
+    throw run.told(gone ? new Error(BROWSER_GONE) : err);
   }
   // The run has ended well: its files take the place of the earlier run's.
   run.commit([...written, ...(manifest.sheet ? ["sheet.png"] : []), ...(pwaSaved && pwaSaved.file ? [...pwaSaved.screenshots.map((shot) => shot.file), pwaSaved.file] : []), "SCREENSHOTS.md", "manifest.json"]);

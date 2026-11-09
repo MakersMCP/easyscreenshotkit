@@ -878,11 +878,30 @@ function runningWith(profile) {
   });
 }
 
+// The browser a process has started, from /proc: the child it gave a
+// debugging port. 0 when there is none.
+function browserOf(pid) {
+  try {
+    const kids = fs.readFileSync(`/proc/${pid}/task/${pid}/children`, "utf8").trim().split(/\s+/).filter(Boolean);
+    const found = kids.find((kid) => {
+      try {
+        return fs.readFileSync(`/proc/${kid}/cmdline`, "utf8").includes("--remote-debugging-port");
+      } catch {
+        return false;
+      }
+    });
+    return Number(found || 0);
+  } catch {
+    return 0;
+  }
+}
+
 // The CLI in a child process, stopped with signal (to it, or to its whole
-// process group as a supervisor sends it) once stopAt(stderr, pid) says so.
-// profiles: those of the browsers it had going then; locks: their lock
-// folders.
-function stopCli(args, { stopAt, signal = "SIGTERM", group = false }) {
+// process group as a supervisor sends it) once stopAt(stderr, pid) says so;
+// with browser, its browser is killed instead, as a crash or an
+// out-of-memory kill ends it. profiles: those of the browsers it had going
+// then; locks: their lock folders.
+function stopCli(args, { stopAt, signal = "SIGTERM", group = false, browser = false }) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [CLI, ...args], { detached: group });
     let stdout = "";
@@ -892,10 +911,12 @@ function stopCli(args, { stopAt, signal = "SIGTERM", group = false }) {
     let locks = [];
     const check = () => {
       if (sent || !stopAt(stderr, child.pid)) return;
+      const target = browser ? browserOf(child.pid) : group ? -child.pid : child.pid;
+      if (!target) return;
       sent = true;
       profiles = profilesOf(child.pid);
       locks = profiles.map(lockOf).filter(Boolean);
-      process.kill(group ? -child.pid : child.pid, signal);
+      process.kill(target, browser ? "SIGKILL" : signal);
     };
     const timer = setInterval(check, 100);
     child.stdout.on("data", (d) => (stdout += d));
@@ -960,6 +981,42 @@ test("a run that fails or is stopped leaves the earlier run's files as they were
       // the lock folder that a browser killed outright cannot remove.
       if (process.platform === "linux") assert.equal(stopped.locks.length, 1, "a lock folder to look for");
       for (const left of [...stopped.profiles, ...stopped.locks]) assert.equal(fs.existsSync(left), false, left);
+    }
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A browser that ends in the middle of a run, as a crash or an out-of-memory
+// kill ends it, takes the pages and windows the run had still to take. The
+// run fails and says why, and leaves the earlier run's files as they were,
+// with nothing of the browser in the temp folder, whether it ended as the
+// pages were taken or as the sheet was drawn. Before, the run went on, left
+// the pages it had still to open out as too slow to answer, or the sheet
+// out without a word, and put what it had in place of the earlier run.
+test("a run whose browser ends in the middle of it fails, and leaves the earlier run's files as they were", { skip: noBrowser || (process.platform !== "linux" && "the browser's process is read from /proc"), timeout: 240_000 }, async () => {
+  const { server, origin } = await fixture();
+  const root = tempDir();
+  const dir = path.join(root, "shots");
+  try {
+    await takeShots(origin, { dir, pages: 2, sizes: "desktop", timeLimit: 100_000 });
+    const before = snapshot(dir);
+    const points = [(stderr) => /^01 home {2}\/$/m.test(stderr), (stderr) => /^Drawing the sheet$/m.test(stderr)];
+    for (const [i, stopAt] of points.entries()) {
+      const killed = await stopCli([origin, "--out", dir, "--pages", "2", "--sizes", "desktop,mobile", "--timeout", "90"], { stopAt, browser: true });
+      assert.ok(killed.sent, killed.stderr);
+      assert.equal(killed.profiles.length, 1);
+      for (const left of [...killed.profiles, ...killed.locks]) assert.equal(fs.existsSync(left), false, left);
+      // Ended a moment after the sheet was drawn, the run had all it needed.
+      if (i === 1 && killed.status === 0) {
+        assert.ok(JSON.parse(fs.readFileSync(path.join(dir, "manifest.json"), "utf8")).sheet, killed.stdout);
+        assert.ok(fs.existsSync(path.join(dir, "sheet.png")));
+        continue;
+      }
+      assert.equal(killed.status, 1, `${killed.stdout}\n${killed.stderr}`);
+      assert.match(killed.stderr, /^easyscreenshotkit: The browser ended in the middle of the run \(it crashed, or was killed\), so no screenshots were saved\.$/m);
+      assert.deepEqual(snapshot(dir), before, `killed at point ${i}`);
     }
   } finally {
     server.close();

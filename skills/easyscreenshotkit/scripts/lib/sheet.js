@@ -66,7 +66,9 @@ function sheetHtml(manifest, dir) {
 // The sheet as a page of its own: an HTML file that shows the saved PNGs,
 // opened in a new window and captured whole. dir: the folder the PNGs are
 // in, where sheet.png goes; the HTML file is made in a folder of its own
-// there, and goes once the sheet is drawn.
+// there, and goes once the sheet is drawn. Returns the sheet's file and
+// size, or null when no page has a picture to show; throws when it cannot
+// be drawn.
 async function renderSheet(chrome, manifest, dir) {
   if (!manifest.pages.some((page) => picksFor(page).length)) return null;
   const temp = fs.mkdtempSync(path.join(dir, "sheet-"));
@@ -80,7 +82,7 @@ async function renderSheet(chrome, manifest, dir) {
     const shot = await capture(tab, 0, 0, m.width, m.height, SHEET.scale, true);
     const png = Buffer.from(shot.data || "", "base64");
     const size = pngSize(png);
-    if (!size) return null;
+    if (!size) throw new Error("the browser gave no picture of it");
     fs.writeFileSync(path.join(dir, "sheet.png"), png);
     return { file: "sheet.png", ...size };
   } finally {

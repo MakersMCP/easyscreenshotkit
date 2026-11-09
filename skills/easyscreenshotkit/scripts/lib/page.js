@@ -206,6 +206,8 @@ function networkQuiet(cdp, quietMs = 500) {
 async function quietNetwork(cdp, { quietMs = 500, limitMs = 10_000, reserveMs = 45_000 } = {}) {
   const started = Date.now();
   for (;;) {
+    // A browser that ended sends nothing more: no wait for it.
+    if (cdp.closed && cdp.closed()) throw new Error("The browser connection closed.");
     if (networkQuiet(cdp, quietMs)) return "quiet";
     if (Date.now() - started >= limitMs) return "busy";
     if (timeLeft() <= reserveMs) return "short";

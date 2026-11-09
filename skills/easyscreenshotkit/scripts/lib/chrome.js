@@ -59,7 +59,8 @@ function findChrome() {
   return "";
 }
 
-function connect(wsUrl) {
+// onClose: called once the connection has closed, whoever closed it.
+function connect(wsUrl, { onClose = () => {} } = {}) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(wsUrl);
     const pending = new Map();
@@ -90,10 +91,14 @@ function connect(wsUrl) {
         waiter.reject(new Error("The browser connection closed."));
       }
       pending.clear();
+      onClose();
     };
     ws.onopen = () =>
       resolve({
         send(method, params = {}, timeoutMs = 30_000) {
+          // A call on a connection that is closing or closed would get no
+          // answer, and waited out its whole time limit: it fails at once.
+          if (ws.readyState !== WebSocket.OPEN) return Promise.reject(new Error("The browser connection closed."));
           const id = ++nextId;
           return new Promise((res, rej) => {
             const timer = setTimeout(() => {
@@ -112,6 +117,9 @@ function connect(wsUrl) {
         },
         close() {
           ws.close();
+        },
+        closed() {
+          return ws.readyState !== WebSocket.OPEN;
         },
       });
   });
@@ -163,7 +171,15 @@ async function launch({ lang = "", args = [] } = {}) {
     { stdio: "ignore" },
   );
   let exited = false;
-  child.on("exit", () => (exited = true));
+  // Whether the browser ended, or its connection closed, before close()
+  // asked it to quit: it crashed, or something outside the run killed it,
+  // and every page and window the run had still to take went with it.
+  let lost = false;
+  let closing = false;
+  child.on("exit", () => {
+    exited = true;
+    if (!closing) lost = true;
+  });
   child.on("error", () => (exited = true));
   // lock: its lock folder, read once it answers (see lockFolderOf).
   const started = { child, profile, lock: "" };
@@ -175,6 +191,7 @@ async function launch({ lang = "", args = [] } = {}) {
   // A profile that still cannot be removed is left in the temp folder; the
   // screenshots are not lost over it.
   const close = async () => {
+    closing = true;
     if (browser && !exited) {
       await browser.send("Browser.close", {}, 3_000).catch(() => {});
       for (let i = 0; i < 50 && !exited; i++) await sleep(100);
@@ -199,7 +216,11 @@ async function launch({ lang = "", args = [] } = {}) {
       if (/^\d+$/.test(port)) {
         base = `http://127.0.0.1:${port}`;
         const version = await (await fetch(`${base}/json/version`, { signal: AbortSignal.timeout(5_000) })).json();
-        browser = await connect(version.webSocketDebuggerUrl);
+        browser = await connect(version.webSocketDebuggerUrl, {
+          onClose: () => {
+            if (!closing) lost = true;
+          },
+        });
         // A page cannot make the browser save a file: a download it starts
         // (a link to an attachment, a redirect to one) is refused before
         // anything is written, in the Downloads folder or anywhere else.
@@ -210,7 +231,8 @@ async function launch({ lang = "", args = [] } = {}) {
         // before the folder, and a stop can land in between.
         started.lock = lockFolderOf(profile);
         const { userAgent = "" } = await browser.send("Browser.getVersion").catch(() => ({}));
-        return { base, browser, userAgent, close };
+        // gone(): whether the browser ended in the middle of the run.
+        return { base, browser, userAgent, close, gone: () => lost };
       }
     } catch {
       // Not written yet, or not answering yet.
