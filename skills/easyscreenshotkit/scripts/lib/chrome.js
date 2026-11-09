@@ -170,7 +170,23 @@ async function launch({ lang = "", args = [] } = {}) {
   if (tried.tooDeep && tried.own) tried = await start(binary, { lang, args, own: false });
   if (tried.chrome) return tried.chrome;
   if (tried.tooDeep) throw new Error(`${path.basename(binary)} did not start: the temp folder's path, ${os.tmpdir()}, is too long for the socket it opens there. Point TMPDIR at a folder with a shorter path.`);
+  const free = freeInTemp();
+  if (free !== null && free < TEMP_NEEDED) throw new Error(`${path.basename(binary)} did not start: the temp folder, ${os.tmpdir()}, has only ${Math.round(free / 1024)} KB free. Free some space there, or point TMPDIR at another disk.`);
   throw new Error(`${path.basename(binary)} did not start. Try again, or point CHROME_PATH at another browser.`);
+}
+
+// With less than this free in the temp folder, which holds its profile, a
+// browser that did not start is told so: with more, disk space is not why.
+const TEMP_NEEDED = 5 * 1024 * 1024;
+
+// The bytes free in the temp folder, or null where that cannot be told.
+function freeInTemp() {
+  try {
+    const { bavail, bsize } = fs.statfsSync(os.tmpdir());
+    return bavail * bsize;
+  } catch {
+    return null;
+  }
 }
 
 // Starts the browser once. On Linux, with own, its profile is its temp

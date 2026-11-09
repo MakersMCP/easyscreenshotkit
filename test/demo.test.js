@@ -205,6 +205,27 @@ test("a GIF or a video that ffmpeg cut short while exiting with 0 is no output",
   }
 });
 
+// ffmpeg 4 on a full disk says why on one line and ends on another with
+// nothing after its "--": the kit printed only that one.
+test("what ffmpeg said of why it stopped is told, when its last line ends with no reason", { skip: process.platform === "win32" && "the stand-in for ffmpeg is a shell script", timeout: 30_000 }, async () => {
+  const root = tempDir();
+  const fake = path.join(root, "ffmpeg");
+  const WHY = "Could not write header for output file #0 (incorrect codec parameters ?): No space left on device";
+  fs.writeFileSync(fake, `#!/bin/sh\necho '${WHY}' >&2\necho 'Error initializing output stream 0:0 -- ' >&2\nexit 1\n`, { mode: 0o755 });
+  const told = (text) => new RegExp(`^Error: ${text}${WHY.replace(/[.*+?^\${}()|[\]\\]/g, "\\$&")}$`);
+  try {
+    await assert.rejects(makeGif(fake, path.join(root, "in.mp4"), path.join(root, "out.gif"), { dir: root }), told("ffmpeg could not make the GIF's palette: "));
+    const ended = startVideo(fake, path.join(root, "out.mp4"), { fps: 30, encoder: { name: "x", args: [] } });
+    await assert.rejects(ended.end(), told("ffmpeg could not write out\\.mp4: "));
+    const stopped = startVideo(fake, path.join(root, "out.mp4"), { fps: 30, encoder: { name: "x", args: [] } });
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    await assert.rejects(stopped.write(Buffer.from("a frame")), told("ffmpeg stopped: "));
+    await stopped.end().catch(() => {});
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // Whether a --background file can be drawn is the browser's to say: it
 // draws nothing for one that is no picture, and the backdrop came out plain
 // grey with no word of why. A check of its first bytes passed what the

@@ -1421,6 +1421,28 @@ test("a run stops opening pages once a window could not be saved", { skip: noBro
   }
 });
 
+// A browser that cannot start on a disk with no room for its profile was
+// told to try again.
+test("a browser that did not start with a nearly full temp folder says so", { skip: process.platform === "win32" && "the stand-in browser is a shell script", timeout: 60_000 }, async () => {
+  const root = tempDir();
+  const fake = path.join(root, "browser");
+  fs.writeFileSync(fake, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+  const before = process.env.CHROME_PATH;
+  const statfs = fs.statfsSync;
+  process.env.CHROME_PATH = fake;
+  try {
+    fs.statfsSync = () => ({ bsize: 4096, bavail: 75 });
+    await assert.rejects(launch(), new RegExp(`^Error: browser did not start: the temp folder, ${asPattern(os.tmpdir())}, has only 300 KB free\\. Free some space there, or point TMPDIR at another disk\\.$`));
+    fs.statfsSync = () => ({ bsize: 4096, bavail: 1_000_000 });
+    await assert.rejects(launch(), /^Error: browser did not start\. Try again, or point CHROME_PATH at another browser\.$/);
+  } finally {
+    fs.statfsSync = statfs;
+    if (before === undefined) delete process.env.CHROME_PATH;
+    else process.env.CHROME_PATH = before;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // A sheet that cannot be drawn is no reason to lose the pages: only one that
 // was drawn and could not be saved fails the run.
 test("a sheet that cannot be drawn, for a reason that is not the disk, is named in the notes", { skip: noBrowser, timeout: 120_000 }, async () => {

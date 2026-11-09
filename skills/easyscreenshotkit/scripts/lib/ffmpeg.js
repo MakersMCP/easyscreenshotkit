@@ -65,7 +65,14 @@ function run(binary, args, { timeout = 600_000 } = {}) {
   });
 }
 
-const lastLine = (text) => String(text).trim().split("\n").filter(Boolean).slice(-1)[0] || "no message";
+// What ffmpeg said last. ffmpeg 4 can end on a line with no reason in it
+// ("Error initializing output stream 0:0 --"), the reason being on the line
+// before.
+function lastLine(text) {
+  const lines = String(text).trim().split("\n").filter(Boolean);
+  const last = lines[lines.length - 1];
+  return (/--$/.test(last || "") && lines[lines.length - 2]) || last || "no message";
+}
 
 // ffmpeg 4 only logs a file it could not finish, on a full disk as it
 // writes the end of the file, and exits with 0: -xerror makes it fail, and
