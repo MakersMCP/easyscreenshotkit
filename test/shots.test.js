@@ -1800,12 +1800,18 @@ else net.createServer(() => {}).listen(0, "127.0.0.1", function () {
     const tries = modes.map((mode) => {
       process.env.CHROME_PATH = wrapper(mode);
       const started = Date.now();
+      // A stand-in taken for a browser is closed before the test fails: left
+      // open, it held the test's process after the test had failed.
       return launch().then(
-        () => assert.fail(`${mode}: the stand-in was taken for a browser`),
+        (chrome) => chrome.close().then(() => assert.fail(`${mode}: the stand-in was taken for a browser`)),
         (err) => ({ err, seconds: (Date.now() - started) / 1000 }),
       );
     });
-    const ended = await Promise.all(tries);
+    // A start that never ends fails the test in a time of its own, and the
+    // stand-ins are ended below, so nothing holds the process.
+    let timer;
+    const limit = new Promise((resolve, reject) => (timer = setTimeout(() => reject(new Error("a start of a stand-in did not end in 70 s")), 70_000)));
+    const ended = await Promise.race([Promise.all(tries), limit]).finally(() => clearTimeout(timer));
     for (const [i, mode] of modes.entries()) {
       const { err, seconds } = ended[i];
       if (mode === "refuser") {
@@ -1820,6 +1826,17 @@ else net.createServer(() => {}).listen(0, "127.0.0.1", function () {
       assert.equal(fs.existsSync(profile), false, profile);
     }
   } finally {
+    // Whatever failed, no stand-in goes on running: each one still there,
+    // told by its command line where there is /proc, is killed.
+    for (const mode of modes) {
+      try {
+        const { pid } = JSON.parse(fs.readFileSync(path.join(root, `${mode}.json`), "utf8"));
+        const ours = process.platform !== "linux" || fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").includes(script);
+        if (ours) process.kill(pid, "SIGKILL");
+      } catch {
+        // Not started, or ended already.
+      }
+    }
     setTimeLimit(120_000);
     if (before === undefined) delete process.env.CHROME_PATH;
     else process.env.CHROME_PATH = before;
