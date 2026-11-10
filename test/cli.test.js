@@ -184,6 +184,20 @@ test("addresses, page names and the site's name", () => {
   assert.equal(siteName({ siteName: "Acme Inc", title: "Home" }, home), "Acme Inc");
   assert.equal(siteName({ siteName: "", title: "Acme | Payments for teams" }, home), "Acme");
   assert.equal(siteName({ siteName: "", title: "" }, "https://www.acme.com/"), "Acme");
+  // A colon with a space after it parts a title too, and a time does not.
+  // The study's site, served from an address by number, was named 127.
+  assert.equal(siteName({ siteName: "", title: "Brightmoss: plant care that remembers for you" }, "http://127.0.0.1:18961/"), "Brightmoss");
+  assert.equal(siteName({ siteName: "", title: "Acme: Payments for teams" }, home), "Acme");
+  assert.equal(siteName({ siteName: "", title: "Meet at 10:30 | Acme" }, home), "Meet at 10:30");
+  // A title too long to be a name: og:title when it is short, then the
+  // host, the whole of an address by number, with its port.
+  const long = "Brightmoss plant care that remembers for you and your home";
+  assert.equal(siteName({ siteName: "", title: long, ogTitle: "Brightmoss" }, "http://127.0.0.1:18961/"), "Brightmoss");
+  assert.equal(siteName({ siteName: "", title: long, ogTitle: "Brightmoss | Plant care" }, home), "Brightmoss");
+  assert.equal(siteName({ siteName: "", title: long, ogTitle: long }, home), "Acme");
+  assert.equal(siteName({ siteName: "", title: long }, "http://127.0.0.1:18961/"), "127.0.0.1:18961");
+  assert.equal(siteName({ siteName: "", title: "" }, "http://192.168.1.20/app/#/plants"), "192.168.1.20");
+  assert.equal(siteName({ siteName: "", title: "" }, "http://[::1]:8080/"), "[::1]:8080");
   // The title of a #route view names the view too, mostly first: the site
   // is its last part that does not name the view, or the whole of a title
   // that names no view.

@@ -739,6 +739,9 @@ test("a view's own heading is its first h1 outside its menus and bars", { skip: 
     assert.deepEqual(await headings("<nav><h1>Menu</h1></nav><aside><h1>Side</h1></aside><footer><h1>Foot</h1></footer>"), ["Menu", ""]);
     assert.deepEqual(await headings("<main><header><h1>In the view</h1></header></main>"), ["In the view", "In the view"]);
     assert.deepEqual(await headings("<h1>Plants</h1>"), ["Plants", "Plants"]);
+    // And og:title, on one line, for a site whose title is too long to name it.
+    await tab.send("Runtime.evaluate", { expression: `document.head.insertAdjacentHTML("beforeend", '<meta property="og:title" content="Bright\\nmoss">')` });
+    assert.equal((await readInfo(tab)).ogTitle, "Bright moss");
     await closeTab(chrome, tab);
   } finally {
     await chrome.close();

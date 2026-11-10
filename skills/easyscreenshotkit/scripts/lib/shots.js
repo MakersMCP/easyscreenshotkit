@@ -320,9 +320,16 @@ function movedOn(asked, landed) {
   return routeOf(asked) ? viewKey(landed) !== viewKey(asked) : pageKey(landed) !== pageKey(asked);
 }
 
+// The parts of a title, at a separator with spaces on both sides or a colon
+// with one after it: "Acme | Payments for teams" and "Acme: Payments for
+// teams" are Acme and Payments for teams.
+const titleParts = (title) => String(title || "").split(/\s+[|·•:–—-]\s+|:\s+/);
+
 // The site's name: og:site_name, else the title up to its first separator
-// ("Acme | Payments for teams" is Acme), else the host name. The title of a
-// #route view names the view too, mostly first, so of a view it is the
+// ("Acme | Payments for teams" is Acme), else the first part of og:title,
+// else the host name: its first label, or the whole of an address by
+// number, with its port. A part over 40 characters is no name. The title
+// of a #route view names the view too, mostly first, so of a view it is the
 // title's last part that does not name the view: "Plants · Brightmoss" and
 // "Brightmoss · Plants" on #/plants are both Brightmoss. A part names the
 // view when it says the route's last word, or its view's own heading, the
@@ -335,7 +342,7 @@ function movedOn(asked, landed) {
 // an app can be called what its route is: "Your plants | Plants".
 function siteName(info, url) {
   if (info.siteName) return info.siteName;
-  const parts = String(info.title || "").split(/\s+[|·•:–—-]\s+/);
+  const parts = titleParts(info.title);
   let part = parts[0];
   const route = routeOf(url);
   if (route) {
@@ -350,7 +357,12 @@ function siteName(info, url) {
   }
   part = part.trim();
   if (part && part.length <= 40) return part;
-  const label = new URL(url).hostname.replace(/^www\./, "").split(".")[0];
+  const og = titleParts(info.ogTitle)[0].trim();
+  if (og && og.length <= 40) return og;
+  // 127.0.0.1 is not named 127.
+  const { hostname, host } = new URL(url);
+  if (/^\d+(\.\d+){3}$/.test(hostname) || hostname.startsWith("[")) return host;
+  const label = hostname.replace(/^www\./, "").split(".")[0];
   return label.charAt(0).toUpperCase() + label.slice(1);
 }
 
@@ -386,6 +398,7 @@ const READ_INFO = `(() => {
     title: document.title.trim(),
     description: meta('meta[name="description"]') || meta('meta[property="og:description"]'),
     siteName: meta('meta[property="og:site_name"]'),
+    ogTitle: meta('meta[property="og:title"]'),
     heading: words(h1),
     viewHeading: words(own),
     canonical: (document.querySelector('link[rel="canonical"]') || {}).href || "",
@@ -401,7 +414,7 @@ const READ_INFO = `(() => {
 
 async function readInfo(cdp) {
   const { result } = await cdp.send("Runtime.evaluate", { expression: READ_INFO, returnByValue: true }, 10_000).catch(() => ({ result: {} }));
-  const info = (result && result.value) || { title: "", description: "", siteName: "", heading: "", viewHeading: "", canonical: "", manifest: "", lang: "", text: "", scripts: "", height: 0, links: 0, alternates: [] };
+  const info = (result && result.value) || { title: "", description: "", siteName: "", ogTitle: "", heading: "", viewHeading: "", canonical: "", manifest: "", lang: "", text: "", scripts: "", height: 0, links: 0, alternates: [] };
   const challenge =
     (CHALLENGE_TITLE.test(info.title) && (info.height < 1500 || info.links < 15)) || (CHALLENGE_SRC.test(info.scripts) && info.height < 1200 && info.links < 10);
   return { ...info, challenge, textHash: info.text ? crypto.createHash("sha1").update(info.text).digest("hex") : "" };
