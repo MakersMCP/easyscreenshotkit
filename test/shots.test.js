@@ -11,7 +11,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const test = require("node:test");
-const { takeShots, DEVICES } = require("../skills/easyscreenshotkit/scripts/lib/shots");
+const { takeShots, readInfo, DEVICES } = require("../skills/easyscreenshotkit/scripts/lib/shots");
 const { findChrome, launch, openTab, closeTab, navigate, killBrowsers, removeProfiles, removeStrayLocks, removeFetchFolders, fetchFolders, roomIn } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
 const { setTimeLimit, sleep } = require("../skills/easyscreenshotkit/scripts/lib/time");
 const { watchRequests, networkQuiet, showsLoadingSign, looksEmpty } = require("../skills/easyscreenshotkit/scripts/lib/page");
@@ -714,6 +714,31 @@ test("what counts as a loading sign: a heading or a line that says so, something
     const none = ["<h1>Your plants</h1>", "<p>Loadings</p>", "<p>Loading docks and lorries in Hamburg, the whole of the year</p>", '<div role="progressbar" aria-valuenow="70" style="width:40px;height:40px"></div>', '<progress value="1" max="2"></progress>', '<h1 style="display:none">Loading…</h1>', '<h1 style="opacity:0">Loading…</h1>', '<div aria-busy="true" style="display:none">x</div>', '<p style="position:absolute;top:2000px">Loading</p>', '<div aria-busy="false">x</div>', '<nav><a href="#/loading">Loading states</a></nav>', "<p>Loading docks</p>", '<nav><ul><li><a href="#/loading">Loading</a></li></ul></nav>', "<table><tr><th>Truck</th><th>Status</th></tr><tr><td>Unit 12</td><td>Loading</td></tr></table>", '<div role="row"><div role="cell">Loading</div></div>', '<span style="position:absolute;left:-9999px">Loading…</span>', '<p style="position:absolute;left:4000px">Loading</p>', '<div aria-busy="true" style="position:absolute;left:-9999px">x</div>'];
     for (const html of signs) assert.equal(await sign(html), true, html);
     for (const html of none) assert.equal(await sign(html), false, html);
+    await closeTab(chrome, tab);
+  } finally {
+    await chrome.close();
+  }
+});
+
+// An app can put its own name in an h1 in its header bar, and the site's
+// name was then taken for the view's and dropped from its title: a view's
+// own heading is its first h1 outside the bars around it.
+test("a view's own heading is its first h1 outside its menus and bars", { skip: noBrowser, timeout: 60_000 }, async () => {
+  setTimeLimit(50_000);
+  const chrome = await launch();
+  try {
+    const tab = await openTab(chrome, DEVICES.desktop);
+    const headings = async (html) => {
+      await tab.send("Runtime.evaluate", { expression: `document.body.innerHTML = ${JSON.stringify(html)}` });
+      const info = await readInfo(tab);
+      return [info.heading, info.viewHeading];
+    };
+    assert.deepEqual(await headings("<header><h1>Brightmoss</h1></header><main><h1>Your plants</h1></main>"), ["Brightmoss", "Your plants"]);
+    assert.deepEqual(await headings("<header><h1>Brightmoss</h1></header><main><h2>Plants</h2></main>"), ["Brightmoss", ""]);
+    assert.deepEqual(await headings('<div role="banner"><h1>Brightmoss</h1></div><h1>Garden</h1>'), ["Brightmoss", "Garden"]);
+    assert.deepEqual(await headings("<nav><h1>Menu</h1></nav><aside><h1>Side</h1></aside><footer><h1>Foot</h1></footer>"), ["Menu", ""]);
+    assert.deepEqual(await headings("<main><header><h1>In the view</h1></header></main>"), ["In the view", "In the view"]);
+    assert.deepEqual(await headings("<h1>Plants</h1>"), ["Plants", "Plants"]);
     await closeTab(chrome, tab);
   } finally {
     await chrome.close();

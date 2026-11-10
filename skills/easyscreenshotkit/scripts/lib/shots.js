@@ -23,7 +23,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { launch, openTab, closeTab, navigate, currentUrl, CRASHED } = require("./chrome");
-const { metrics, scrollTo, walk, showsContent, waitForContent, settle, watchRequests, networkQuiet, waitForDrawn, showsLoadingSign, looksEmpty, waitForFonts, clearHover, resetPictureWait, capture, captureScreen, capturePage } = require("./page");
+const { AROUND, metrics, scrollTo, walk, showsContent, waitForContent, settle, watchRequests, networkQuiet, waitForDrawn, showsLoadingSign, looksEmpty, waitForFonts, clearHover, resetPictureWait, capture, captureScreen, capturePage } = require("./page");
 const { clean } = require("./clean");
 const { homeOf, pageKey, routeOf, viewKey, pathOf, pageUrl, anchorOf, siteOf, fold, wordsOf, kindOf, rankLinks, routeLinks, visitOrder, readSiteIndex, localeOf, alternateFor, oneLine, ROUTE_LINK } = require("./pick");
 const { pngFileIsWhole, pngSize, tagPng } = require("./png");
@@ -323,9 +323,15 @@ function movedOn(asked, landed) {
 // The site's name: og:site_name, else the title up to its first separator
 // ("Acme | Payments for teams" is Acme), else the host name. The title of a
 // #route view names the view too, mostly first, so of a view it is the
-// title's last part that does not name the view by its route's words or
-// its main heading: "Plants · Brightmoss" and "Brightmoss · Plants" on
-// #/plants are both Brightmoss. When every part does it is the last one, as
+// title's last part that does not name the view: "Plants · Brightmoss" and
+// "Brightmoss · Plants" on #/plants are both Brightmoss. A part names the
+// view when it says the route's last word, or its view's own heading, the
+// first h1 outside the bars around it, where an app can put its own name.
+// The route's other words count only once its last word is named: on
+// #/acme/board, "Projects · Acme" is Acme, and on #/plant/Fern, "Brightmoss
+// · Plant · Fern" is Brightmoss. When they leave no part, they do not
+// count ("Acme · Projects" on #/acme/projects is Acme), and when the last
+// word and the heading leave none either, it is the title's last part, as
 // an app can be called what its route is: "Your plants | Plants".
 function siteName(info, url) {
   if (info.siteName) return info.siteName;
@@ -334,9 +340,13 @@ function siteName(info, url) {
   const route = routeOf(url);
   if (route) {
     const named = (text) => wordsOf(text).join(" ");
-    const view = new Set([...route.replace(/^#(?:\/|!\/?)/, "").split("?")[0].split("/").filter(Boolean).map(decoded), info.heading].map(named));
-    const left = parts.filter((text) => !view.has(named(text)));
-    part = (left.length ? left : parts).at(-1);
+    const words = route.replace(/^#(?:\/|!\/?)/, "").split("?")[0].split("/").filter(Boolean).map(decoded).map(named);
+    const heading = named(info.viewHeading || "");
+    const last = words.length > 0 && parts.some((text) => named(text) === words.at(-1));
+    const without = (view) => parts.filter((text) => !view.has(named(text)));
+    const fewer = without(new Set([...(last ? [words.at(-1)] : []), heading].filter(Boolean)));
+    const fewest = last ? without(new Set([...words, heading].filter(Boolean))) : fewer;
+    part = (fewest.length ? fewest : fewer.length ? fewer : parts).at(-1);
   }
   part = part.trim();
   if (part && part.length <= 40) return part;
@@ -365,13 +375,19 @@ const READ_INFO = `(() => {
   // line break in a meta tag's content would make a line of its own where
   // the site's name and the description are written.
   const meta = (selector) => ((document.querySelector(selector) || {}).content || "").replace(/\\s+/g, " ").trim();
+  const words = (el) => (el ? once(el.innerText.replace(/\\s+/g, " ").trim()).slice(0, 200) : "");
   const h1 = document.querySelector("h1");
+  // The view's own heading: the first h1 that is not in a bar around it
+  // (a menu, a side pane, the page's header or footer), where an app can
+  // put its own name.
+  const own = [...document.querySelectorAll("h1")].find((el) => !el.closest(${JSON.stringify(AROUND)}));
   const text = (document.body ? document.body.innerText : "").replace(/\\s+/g, " ").trim();
   return {
     title: document.title.trim(),
     description: meta('meta[name="description"]') || meta('meta[property="og:description"]'),
     siteName: meta('meta[property="og:site_name"]'),
-    heading: h1 ? once(h1.innerText.replace(/\\s+/g, " ").trim()).slice(0, 200) : "",
+    heading: words(h1),
+    viewHeading: words(own),
     canonical: (document.querySelector('link[rel="canonical"]') || {}).href || "",
     manifest: (document.querySelector('link[rel~="manifest" i][href]') || {}).href || "",
     lang: (document.documentElement.lang || "").replace(/\\s+/g, " ").trim(),
@@ -385,7 +401,7 @@ const READ_INFO = `(() => {
 
 async function readInfo(cdp) {
   const { result } = await cdp.send("Runtime.evaluate", { expression: READ_INFO, returnByValue: true }, 10_000).catch(() => ({ result: {} }));
-  const info = (result && result.value) || { title: "", description: "", siteName: "", heading: "", canonical: "", manifest: "", lang: "", text: "", scripts: "", height: 0, links: 0, alternates: [] };
+  const info = (result && result.value) || { title: "", description: "", siteName: "", heading: "", viewHeading: "", canonical: "", manifest: "", lang: "", text: "", scripts: "", height: 0, links: 0, alternates: [] };
   const challenge =
     (CHALLENGE_TITLE.test(info.title) && (info.height < 1500 || info.links < 15)) || (CHALLENGE_SRC.test(info.scripts) && info.height < 1200 && info.links < 10);
   return { ...info, challenge, textHash: info.text ? crypto.createHash("sha1").update(info.text).digest("hex") : "" };
@@ -660,7 +676,7 @@ async function visit(chrome, page, group, theme, ctx, { check = null, links = fa
         } else if (out) open = view;
       }
       const now = await readInfo(tab);
-      Object.assign(info, { title: now.title, heading: now.heading });
+      Object.assign(info, { title: now.title, heading: now.heading, viewHeading: now.viewHeading });
     }
     const shots = [];
     // One capture of the screen serves every size taken at the device's own

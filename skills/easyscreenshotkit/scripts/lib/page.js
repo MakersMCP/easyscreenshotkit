@@ -589,6 +589,7 @@ async function capturePage(cdp, { scale = 1, maxHeight = 15_000 } = {}) {
 }
 
 module.exports = {
+  AROUND,
   metrics,
   scrollTo,
   walk,
