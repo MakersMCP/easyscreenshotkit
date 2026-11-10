@@ -221,7 +221,10 @@ const open = new Set();
 
 // --use-mock-keychain and --password-store=basic keep Chrome on macOS from
 // asking for the login keychain, which it does for a fresh profile. The
-// profile is a temp folder; the user's own home and browser are untouched.
+// profile is a temp folder, removed when the browser has ended. On Linux the
+// browser's crash reports go in it too (see configIn), and it still uses the
+// certificate database in the home (NSS), so a local certificate authority,
+// such as mkcert's, still counts.
 // Windows in the background keep drawing (the three --disable-*background*
 // flags), so a page waiting its turn is not left half loaded, and colors are
 // written in sRGB whatever the machine's display. args: more switches for
@@ -331,7 +334,7 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
       ...(process.getuid && process.getuid() === 0 ? ["--no-sandbox"] : []),
       "about:blank",
     ],
-    { stdio: "ignore", env: inProfile ? { ...process.env, TMPDIR: profile } : process.env },
+    { stdio: "ignore", env: { ...process.env, ...configIn(profile), ...(inProfile ? { TMPDIR: profile } : {}) } },
   );
   let exited = false;
   // Whether the browser ended, or its connection closed, before close()
@@ -483,6 +486,16 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
   await sleep(300);
   fs.rmSync(profile, { recursive: true, force: true });
   return { own: inProfile, tooDeep: removeStrayLocks(locksBefore) || deep, silent, refused };
+}
+
+// On Linux a browser keeps its crash reports in the folder of the user's own
+// browser of its kind (~/.config/google-chrome/Crash Reports), whatever
+// profile it is given: it rewrote a file there each time it started, and one
+// that crashed left a report there with its command line, which nothing
+// removed. CHROME_CONFIG_HOME puts that folder in its profile, so it goes
+// with the profile. Elsewhere it is left as it is.
+function configIn(profile) {
+  return process.platform === "linux" ? { CHROME_CONFIG_HOME: profile } : {};
 }
 
 // The longest path a socket can have: 107 bytes on Linux, 103 on macOS.

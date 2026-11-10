@@ -2423,6 +2423,48 @@ test("a browser that cannot start says why and leaves nothing in the temp folder
   }
 });
 
+// On Linux a browser kept its crash reports in the folder of the user's own
+// browser of its kind, ~/.config/google-chrome/Crash Reports, whatever its
+// profile: each start wrote there, and one that crashed, as one in a temp
+// folder with too long a path does, left a report with its command line,
+// which nothing removed. They go with its profile now.
+test("a browser keeps its crash reports in its profile, not in the home", { skip: noBrowser || (process.platform !== "linux" && "the crash reports' folder is moved on Linux only"), timeout: 120_000 }, async () => {
+  const { server, origin } = await fixture();
+  const root = tempDir();
+  const home = path.join(root, "home");
+  fs.mkdirSync(home);
+  const tmp = path.join(root, "a-temp-folder-whose-path-is-too-long-for-a-socket".padEnd(Math.max(10, 90 - root.length), "x"));
+  fs.mkdirSync(tmp);
+  const env = { ...process.env, HOME: home };
+  delete env.XDG_CONFIG_HOME;
+  delete env.CHROME_CONFIG_HOME;
+  // Every folder under the home a browser keeps crash reports in.
+  const reports = () => {
+    const found = [];
+    const walk = (at) => {
+      for (const entry of fs.readdirSync(at, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        if (/^(Crash Reports|Crashpad)$/.test(entry.name)) found.push(path.relative(home, path.join(at, entry.name)));
+        else walk(path.join(at, entry.name));
+      }
+    };
+    walk(home);
+    return found;
+  };
+  try {
+    const crashed = spawnSync(process.execPath, [CLI, origin, "--out", path.join(root, "crashed")], { env: { ...env, TMPDIR: tmp, TMP: tmp }, encoding: "utf8", timeout: 50_000 });
+    assert.equal(crashed.status, 1, crashed.stderr);
+    assert.match(crashed.stderr, /is too long for the socket it opens there/);
+    assert.deepEqual(reports(), []);
+    const ran = await runCli([origin, "--pages", "1", "--sizes", "desktop", "--out", path.join(root, "shots")], { env });
+    assert.equal(ran.status, 0, ran.stderr);
+    assert.deepEqual(reports(), []);
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // In its first seconds the browser makes a folder in its temp folder for
 // what it downloads for itself (com.google.Chrome.chrome_chrome_url_fetcher_
 // and the like), and leaves it there when it quits or is killed before the
