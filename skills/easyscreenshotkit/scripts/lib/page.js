@@ -270,7 +270,11 @@ const AROUND = 'nav, aside, header:not(main *, article *, section *), footer:not
 
 // Whether a view has drawn nothing of its own yet, as one that shows a
 // spinner beside its menu has not: outside what stands around it there is
-// no heading, no picture of any size and next to no words.
+// no heading, no picture of PICTURE_PX or more each way, as a thumbnail in
+// a gallery or a banner is and a spinner or an icon is not, and fewer than
+// 20 characters other than spaces. A Chinese, Japanese or Korean character,
+// a syllable or a word and not a letter, counts as two.
+const PICTURE_PX = 100;
 const LOOKS_EMPTY = `(() => {
   const drawn = ${DRAWN};
   const around = ${JSON.stringify(AROUND)};
@@ -278,10 +282,14 @@ const LOOKS_EMPTY = `(() => {
   if ([...document.querySelectorAll('h1, h2, h3, h4, h5, h6, [role="heading"]')].some((el) => el.textContent.trim() && own(el))) return false;
   const picture = (el) => {
     const r = el.getBoundingClientRect();
-    return r.width >= 200 && r.height >= 200 && own(el);
+    return r.width >= ${PICTURE_PX} && r.height >= ${PICTURE_PX} && own(el);
   };
   if ([...document.querySelectorAll("img, svg, canvas, video, iframe")].some(picture)) return false;
-  const letters = (el) => el.innerText.replace(/\\s+/g, "").length;
+  const wide = /[\\p{Script=Han}\\p{Script=Hiragana}\\p{Script=Katakana}\\p{Script=Hangul}]/gu;
+  const letters = (el) => {
+    const text = el.innerText.replace(/\\s+/g, "");
+    return text.length + (text.match(wide) || []).length;
+  };
   const menus = [...document.querySelectorAll(around)].filter((el) => el.getClientRects().length && !el.parentElement.closest(around));
   return letters(document.body) - menus.reduce((sum, el) => sum + letters(el), 0) < 20;
 })()`;

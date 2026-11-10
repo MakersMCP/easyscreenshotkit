@@ -745,7 +745,7 @@ test("a view's own heading is its first h1 outside its menus and bars", { skip: 
   }
 });
 
-test("what counts as a view with nothing drawn: outside its menus and bars, no heading, no picture of any size and next to no words", { skip: noBrowser, timeout: 60_000 }, async () => {
+test("what counts as a view with nothing drawn: outside its menus and bars, no heading, no picture 100 px each way or more and fewer than 20 characters", { skip: noBrowser, timeout: 60_000 }, async () => {
   setTimeLimit(50_000);
   const chrome = await launch();
   const words = "Three short sentences of a view's own words.";
@@ -766,6 +766,10 @@ test("what counts as a view with nothing drawn: outside its menus and bars, no h
       `<h1 style="display:none">Hidden</h1><main></main>`,
       `<h1 style="position:absolute;left:-9999px">Parked</h1><main></main>`,
       `<main><img width="400" height="300" alt="" style="visibility:hidden"></main>`,
+      `${menu}<main><svg width="96" height="96"><circle cx="48" cy="48" r="40" fill="none" stroke="#ccc" stroke-width="8"/></svg></main>`,
+      `${menu}<main><img width="600" height="60" alt=""></main>`,
+      // Nine characters of Japanese, "a moment, please": eighteen letters.
+      "<main><p>少々お待ちください</p></main>",
     ];
     const drawn = [
       "<h1>Plants</h1>",
@@ -779,6 +783,12 @@ test("what counts as a view with nothing drawn: outside its menus and bars, no h
       '<main><iframe width="400" height="300"></iframe></main>',
       // A menu that is not drawn takes nothing off the view's words.
       `<nav style="display:none">${"A link in a closed menu ".repeat(8)}</nav><main><p>${words}</p></main>`,
+      // A gallery of thumbnails, a banner, and a sentence in Japanese: these
+      // were taken for a view with nothing drawn, and a long poll cost them
+      // their captures for --pwa.
+      `${menu}<main>${'<img width="150" height="150" alt="">'.repeat(24)}</main>`,
+      `${menu}<main><img width="1000" height="180" alt=""></main>`,
+      "<main><p>これは短い説明文です。よろしく</p></main>",
     ];
     for (const html of bare) assert.equal(await empty(html), true, html);
     for (const html of drawn) assert.equal(await empty(html), false, html);
