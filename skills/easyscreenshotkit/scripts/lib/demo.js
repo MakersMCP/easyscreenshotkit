@@ -78,11 +78,17 @@ stops the demo, and the browser saves nothing.
 
 From the address given a demo opens web addresses on the public internet
 only, and that host and port when the address given is on this machine or
-its network, as a site you run there is. A visit step to localhost,
-127.0.0.1, a private network or another address of that kind, or to a page
-that redirects to one, stops the demo; a click on a link to one leaves the
-page where it was, with a note in steps.json; a tour leaves such a page
-out and says so.
+its network, as a site you run there is; a steps file's url is the address
+given. A visit step to localhost, 127.0.0.1, a private network or another
+address of that kind, or to a page that redirects to one or moves on to one
+before it has loaded, stops the demo, and so does a click on a link to a
+page that moves on so; a click on a link to one, or to a page that
+redirects to one, leaves the page where it was, with a note in steps.json,
+and a frame or a window a page opens there is not loaded; a tour leaves
+such a page out and says so. The rule is for the pages the demo opens: a
+page's own pictures, styles, scripts and the data it fetches are left to
+the browser's own rules, and on a site you run on your machine they can
+come from other ports of it.
 
 When the address given is another page than the home page, or a #route of
 it, a tour whose home page answers an error or a bot check, or cannot be

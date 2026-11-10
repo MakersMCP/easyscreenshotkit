@@ -62,9 +62,15 @@ From the address given the run opens web addresses on the public internet
 only, and that host and port when the address given is on this machine or
 its network, as a site you run there is: a page, a redirect or a sitemap
 at localhost, 127.0.0.1, a private network or another address of that kind
-is not opened, and the report names it with the reason. --pwa-check reads
-a manifest's screenshots by the same rule, and from a manifest file none
-at such an address.
+is not opened, and the report names it with the reason, and neither is a
+frame or a window a page opens there. A page that moves on to one, or to a
+file, before it has loaded is refused as a redirect there is. --pwa and
+--pwa-check read a manifest and its screenshots by the same rule, and from
+a manifest file no screenshot at such an address. The rule is for the
+pages the run opens and the files it reads itself: a page's own pictures,
+styles, scripts and the data it fetches are left to the browser's own
+rules, and on a site you run on your machine they can come from other
+ports of it.
 
 When the address given is another page than the home page, or a #route of
 it, a home page that answers an error or a bot check, or cannot be opened,

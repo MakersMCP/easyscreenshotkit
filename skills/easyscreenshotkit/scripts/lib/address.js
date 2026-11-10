@@ -1,21 +1,29 @@
 "use strict";
 
 // Which addresses a run opens and reads. A run opens the address it is given,
-// whatever it is, and what it finds from there (a page of the tour, a step's
-// visit, a redirect, a link a page follows by itself, a sitemap, a manifest
-// and its screenshots) only while that is a web address on the public
-// internet. So a site, a steps file or a manifest cannot send the browser or
-// the kit to this machine, its network or another address that is not on the
-// public internet, to find what answers there and save it in a screenshot, a
-// demo or a report. A run given such an address itself, as a developer gives
-// the address of a site on their own machine, opens that host and port and
-// no other address of the kind.
+// whatever it is, a steps file's url included, and what it finds from there
+// (a page of the tour, a step's visit, a redirect, a move of a page or of a
+// frame in it, a window a page opens, a sitemap, a manifest and its
+// screenshots) only while that is a web address on the public internet. So
+// no page, link, redirect, step or manifest of a site can send the browser
+// or the kit to this machine, its network or another address that is not on
+// the public internet, to find what answers there and save it in a
+// screenshot, a demo or a report. A run given such an address itself, as a
+// developer gives the address of a site on their own machine, opens that
+// host and port and no other address of the kind.
+//
+// The rule is held for the documents the browser loads for the run's pages
+// (see guardBrowser() in chrome.js) and for the files the kit reads itself.
+// What a page asks for itself, its pictures, styles, scripts and data, and
+// the manifest the browser reads for itself, are left to the browser's own
+// rules.
 //
 // A host name is judged by every address it resolves to here, and a request
 // the kit makes itself (a sitemap, a manifest, a screenshot's file) goes to
 // one of those addresses, not to a second answer of the DNS. The browser
 // resolves a name again when it opens it, which a DNS server of the site's
-// can answer otherwise in between.
+// can answer otherwise in between. A name that does not resolve here, or
+// gives no answer in LOOKUP_MS, is left to the browser's own lookup.
 
 const dns = require("dns");
 const net = require("net");
