@@ -216,22 +216,41 @@ async function quietNetwork(cdp, { quietMs = 500, limitMs = 10_000, reserveMs = 
   }
 }
 
+// Whether an element is drawn at all, as a function for the page: it has a
+// size, nothing hides it, and it is not parked off the page's left or right
+// edge.
+const DRAWN = `(el) => {
+  const r = el.getBoundingClientRect();
+  if (!(r.width > 0 && r.height > 0 && r.right > 0 && r.left < innerWidth)) return false;
+  return el.checkVisibility ? el.checkVisibility({ opacityProperty: true, visibilityProperty: true }) : getComputedStyle(el).visibility !== "hidden";
+}`;
+
 // What a view shows while it is not drawn yet, on the screen: something
 // marked as busy, a progress bar with no value, or a line of its own that
 // says it is loading, as a heading or an element with nothing else in it.
-const LOADING_WORDS = "loading|please wait|one moment|yükleniyor|lütfen bekleyin|wird geladen|lädt|bitte warten|chargement|veuillez patienter|cargando|carregando|aguarde";
+// A line says so in nothing but such words ("Loading", "Loading, please
+// wait") or by trailing off ("Loading your plants..."). One that goes on in
+// words of its own is a name ("Loading states", "Loading docks"), and so is
+// the word alone in a link or in a table's cell, a truck's status say,
+// where dots still make it a sign. A cell across the whole table is a
+// placeholder.
+const LOADING_WORDS = "loading|please wait|one moment(?: please)?|yükleniyor|lütfen bekleyin|wird geladen|lädt|bitte warten|chargement|veuillez patienter|cargando|carregando|aguarde";
+const A_NAME = 'a[href], td:not([colspan]), th:not([colspan]), [role="cell"], [role="gridcell"]';
 const LOADING_SIGN = `(() => {
+  const drawn = ${DRAWN};
   const shown = (el) => {
     const r = el.getBoundingClientRect();
-    if (!(r.width > 0 && r.height > 0 && r.bottom > 0 && r.top < innerHeight)) return false;
-    return el.checkVisibility ? el.checkVisibility({ opacityProperty: true, visibilityProperty: true }) : getComputedStyle(el).visibility !== "hidden";
+    return r.bottom > 0 && r.top < innerHeight && drawn(el);
   };
   if ([...document.querySelectorAll('[aria-busy="true"], [role="progressbar"]:not([aria-valuenow]), progress:not([value])')].some(shown)) return true;
-  const says = /^(?:${LOADING_WORDS})(?![\\p{L}\\p{N}])/iu;
+  const starts = /^(?:${LOADING_WORDS})(?![\\p{L}\\p{N}])/iu;
+  const nothingElse = /^(?:${LOADING_WORDS})(?:[\\s,.:;…!–—-]+(?:${LOADING_WORDS}))*[\\s.…]*$/iu;
+  const trailsOff = /(?:…|\\.{2,3})$/;
   for (const el of document.querySelectorAll("body *")) {
     if (el.children.length && !/^H[1-6]$/.test(el.tagName) && el.getAttribute("role") !== "heading") continue;
     const text = el.textContent.replace(/\\s+/g, " ").trim();
-    if (text.length <= 40 && says.test(text) && shown(el)) return true;
+    if (text.length > 40 || !starts.test(text) || !shown(el)) continue;
+    if (trailsOff.test(text) || (nothingElse.test(text) && !el.closest(${JSON.stringify(A_NAME)}))) return true;
   }
   return false;
 })()`;
