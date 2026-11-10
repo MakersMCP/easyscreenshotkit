@@ -184,8 +184,9 @@ test("addresses, page names and the site's name", () => {
   assert.equal(siteName({ siteName: "Acme Inc", title: "Home" }, home), "Acme Inc");
   assert.equal(siteName({ siteName: "", title: "Acme | Payments for teams" }, home), "Acme");
   assert.equal(siteName({ siteName: "", title: "" }, "https://www.acme.com/"), "Acme");
-  // The title of a #route view starts with the view: the site is its last
-  // part, or the whole of a title that names no view.
+  // The title of a #route view names the view too, mostly first: the site
+  // is its last part that does not name the view, or the whole of a title
+  // that names no view.
   const view = "https://acme.com/app/#/plants";
   assert.equal(siteName({ siteName: "", title: "Plants · Brightmoss" }, view), "Brightmoss");
   assert.equal(siteName({ siteName: "", title: "Plant - Fern | Brightmoss" }, view), "Brightmoss");
@@ -193,6 +194,22 @@ test("addresses, page names and the site's name", () => {
   assert.equal(siteName({ siteName: "Brightmoss Inc", title: "Plants · Brightmoss" }, view), "Brightmoss Inc");
   assert.equal(siteName({ siteName: "", title: "" }, "https://www.acme.com/#/plants"), "Acme");
   assert.equal(siteName({ siteName: "", title: "Plants · Brightmoss" }, "https://acme.com/app/#pricing"), "Plants");
+  // A title that names the site first: the part that is the route's word,
+  // in any case and with its query, or the page's main heading, is the view.
+  assert.equal(siteName({ siteName: "", title: "Brightmoss · Plants", heading: "Your plants" }, view), "Brightmoss");
+  assert.equal(siteName({ siteName: "", title: "Brightmoss · Your plants", heading: "Your plants" }, "https://acme.com/app/#/garden"), "Brightmoss");
+  assert.equal(siteName({ siteName: "", title: "Brightmoss - PLANTS" }, "https://acme.com/#!/plants?sort=name"), "Brightmoss");
+  assert.equal(siteName({ siteName: "", title: "Brightmoss · My plants" }, "https://acme.com/#/my-plants"), "Brightmoss");
+  assert.equal(siteName({ siteName: "", title: "Brightmoss · Plant · Fern" }, "https://acme.com/#/plant/Fern"), "Brightmoss");
+  assert.equal(siteName({ siteName: "", title: "Растения · Brightmoss" }, "https://acme.com/#/%D1%80%D0%B0%D1%81%D1%82%D0%B5%D0%BD%D0%B8%D1%8F"), "Brightmoss");
+  // When every part names the view, the last one: an app can be called what
+  // its route is.
+  assert.equal(siteName({ siteName: "", title: "Plants · Plants" }, view), "Plants");
+  assert.equal(siteName({ siteName: "", title: "Your plants | Plants", heading: "Your plants" }, view), "Plants");
+  // Words a file name would lose are told apart all the same.
+  assert.equal(siteName({ siteName: "", title: "Ελληνικά · Русский" }, "https://acme.com/#/%D0%A0%D1%83%D1%81%D1%81%D0%BA%D0%B8%D0%B9"), "Ελληνικά");
+  // A title with no view in it stays as it was: the last part.
+  assert.equal(siteName({ siteName: "", title: "Brightmoss · Overview", heading: "Welcome back" }, view), "Overview");
 });
 
 test("the summary and the sheet show a view's #route with its path", () => {

@@ -644,6 +644,7 @@ async function readSiteIndex(origin, { max = 500, sitemapFiles = 4 } = {}) {
 
 module.exports = {
   fold,
+  wordsOf,
   KINDS,
   alternateFor,
   homeOf,

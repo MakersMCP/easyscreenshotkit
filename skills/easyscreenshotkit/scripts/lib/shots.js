@@ -25,7 +25,7 @@ const crypto = require("crypto");
 const { launch, openTab, closeTab, navigate, currentUrl, CRASHED } = require("./chrome");
 const { metrics, scrollTo, walk, showsContent, waitForContent, settle, watchRequests, networkQuiet, waitForDrawn, showsLoadingSign, looksEmpty, waitForFonts, clearHover, resetPictureWait, capture, captureScreen, capturePage } = require("./page");
 const { clean } = require("./clean");
-const { homeOf, pageKey, routeOf, viewKey, pathOf, pageUrl, anchorOf, siteOf, fold, kindOf, rankLinks, routeLinks, visitOrder, readSiteIndex, localeOf, alternateFor, oneLine, ROUTE_LINK } = require("./pick");
+const { homeOf, pageKey, routeOf, viewKey, pathOf, pageUrl, anchorOf, siteOf, fold, wordsOf, kindOf, rankLinks, routeLinks, visitOrder, readSiteIndex, localeOf, alternateFor, oneLine, ROUTE_LINK } = require("./pick");
 const { pngFileIsWhole, pngSize, tagPng } = require("./png");
 const { PWA_SHOTS, LOOKED_AT, planPwa, checkManifest } = require("./pwa");
 const { renderSheet } = require("./sheet");
@@ -322,12 +322,23 @@ function movedOn(asked, landed) {
 
 // The site's name: og:site_name, else the title up to its first separator
 // ("Acme | Payments for teams" is Acme), else the host name. The title of a
-// #route view starts with the view, as a rule ("Plants · Brightmoss"), so
-// of a view it is the title's last part.
+// #route view names the view too, mostly first, so of a view it is the
+// title's last part that does not name the view by its route's words or
+// its main heading: "Plants · Brightmoss" and "Brightmoss · Plants" on
+// #/plants are both Brightmoss. When every part does it is the last one, as
+// an app can be called what its route is: "Your plants | Plants".
 function siteName(info, url) {
   if (info.siteName) return info.siteName;
   const parts = String(info.title || "").split(/\s+[|·•:–—-]\s+/);
-  const part = (routeOf(url) ? parts[parts.length - 1] : parts[0]).trim();
+  let part = parts[0];
+  const route = routeOf(url);
+  if (route) {
+    const named = (text) => wordsOf(text).join(" ");
+    const view = new Set([...route.replace(/^#(?:\/|!\/?)/, "").split("?")[0].split("/").filter(Boolean).map(decoded), info.heading].map(named));
+    const left = parts.filter((text) => !view.has(named(text)));
+    part = (left.length ? left : parts).at(-1);
+  }
+  part = part.trim();
   if (part && part.length <= 40) return part;
   const label = new URL(url).hostname.replace(/^www\./, "").split(".")[0];
   return label.charAt(0).toUpperCase() + label.slice(1);
