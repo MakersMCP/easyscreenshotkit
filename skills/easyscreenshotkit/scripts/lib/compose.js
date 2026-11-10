@@ -51,6 +51,7 @@ const COLOR = /^(#[0-9a-f]{3,8}|(rgb|rgba|hsl|hsla)\([\d\s.,%/+-]+\)|[a-z]{3,30}
 
 const PICTURE_FILE = /\.(png|jpe?g|webp|gif|avif|svg)$/i;
 const noPicture = (file) => new Error(`--background: ${file} is no picture the browser can draw: PNG, JPEG, WebP, GIF, AVIF or SVG.`);
+const cutShort = (file) => new Error(`--background: ${file} is cut short, so the browser would draw only part of it.`);
 
 // --background: a colour, two colours for a gradient, or a picture file.
 // Only a regular file can be one: the browser opening a named pipe would
@@ -71,7 +72,9 @@ function backdropOf(value) {
 // A --background file is the browser's to judge, before anything is
 // recorded: it draws nothing for a file that is no picture, and the backdrop
 // came out plain grey with no word of why. It is loaded as the video's
-// page would load it, from a page in dir.
+// page would load it, from a page in dir. The browser also draws the part
+// that is there of a picture cut short, a strip over grey, and says it
+// loaded: a picture is read to its end first (see pictureIsWhole).
 async function checkBackdrop(chrome, value, dir) {
   const file = String(value || "").trim();
   if (!PICTURE_FILE.test(file)) return;
@@ -86,6 +89,106 @@ async function checkBackdrop(chrome, value, dir) {
   } finally {
     await closeTab(chrome, tab);
   }
+  if (!pictureIsWhole(await fs.promises.readFile(file))) throw cutShort(file);
+}
+
+// Whether a picture holds all of itself, by its own format, told from its
+// first bytes, whatever its name: a PNG to its end chunk, a JPEG to its end
+// marker past every segment and scan, a GIF to its trailer past every
+// block, a WebP, an AVIF or a BMP as long as its sizes say. A format it does
+// not know is taken as whole: the browser has said it is a picture, and an
+// SVG cut short is none.
+function pictureIsWhole(buf) {
+  const starts = (bytes, at = 0) => buf.length >= at + bytes.length && bytes.every((byte, i) => buf[at + i] === byte);
+  if (starts([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) return pngIsWhole(buf);
+  if (starts([0xff, 0xd8, 0xff])) return jpegIsWhole(buf);
+  if (starts([0x47, 0x49, 0x46, 0x38])) return gifIsWhole(buf);
+  if (starts([0x52, 0x49, 0x46, 0x46]) && starts([0x57, 0x45, 0x42, 0x50], 8)) return buf.length >= 8 + buf.readUInt32LE(4);
+  if (starts([0x66, 0x74, 0x79, 0x70], 4)) return boxesAreWhole(buf);
+  if (starts([0x42, 0x4d]) && buf.length >= 6) return buf.length >= buf.readUInt32LE(2);
+  return true;
+}
+
+function pngIsWhole(buf) {
+  for (let at = 8; at + 12 <= buf.length; ) {
+    const length = buf.readUInt32BE(at);
+    const type = buf.toString("latin1", at + 4, at + 8);
+    at += 12 + length;
+    if (type === "IEND") return at <= buf.length;
+  }
+  return false;
+}
+
+// Segments by their length, each scan to the marker after it, to the end
+// marker. A thumbnail in the file's metadata, with an end marker of its
+// own, is inside a segment and skipped with it.
+function jpegIsWhole(buf) {
+  let at = 2;
+  while (at + 1 < buf.length) {
+    if (buf[at] !== 0xff) return false;
+    const marker = buf[at + 1];
+    if (marker === 0xff) {
+      at++;
+      continue;
+    }
+    if (marker === 0xd9) return true;
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd8)) {
+      at += 2;
+      continue;
+    }
+    if (at + 4 > buf.length) return false;
+    at += 2 + buf.readUInt16BE(at + 2);
+    if (marker !== 0xda) continue;
+    // The scan's data: up to an 0xFF that is not 0x00 nor a restart marker.
+    while (at + 1 < buf.length && !(buf[at] === 0xff && buf[at + 1] !== 0x00 && !(buf[at + 1] >= 0xd0 && buf[at + 1] <= 0xd7))) at++;
+  }
+  return false;
+}
+
+// Blocks after the screen's description and its colours: extensions and
+// pictures, each with its data in sub-blocks, to the trailer.
+function gifIsWhole(buf) {
+  if (buf.length < 13) return false;
+  let at = 13 + (buf[10] & 0x80 ? 3 * (2 << (buf[10] & 7)) : 0);
+  const subBlocks = () => {
+    while (at < buf.length) {
+      const size = buf[at++];
+      if (size === 0) return true;
+      at += size;
+    }
+    return false;
+  };
+  while (at < buf.length) {
+    const kind = buf[at++];
+    if (kind === 0x3b) return true;
+    if (kind === 0x21) {
+      at++;
+      if (!subBlocks()) return false;
+    } else if (kind === 0x2c) {
+      if (at + 9 > buf.length) return false;
+      const flags = buf[at + 8];
+      at += 9 + (flags & 0x80 ? 3 * (2 << (flags & 7)) : 0) + 1;
+      if (!subBlocks()) return false;
+    } else return false;
+  }
+  return false;
+}
+
+// An AVIF's boxes, each as long as it says, to the end of the file.
+function boxesAreWhole(buf) {
+  let at = 0;
+  while (at < buf.length) {
+    if (at + 8 > buf.length) return false;
+    let size = buf.readUInt32BE(at);
+    if (size === 0) return true;
+    if (size === 1) {
+      if (at + 16 > buf.length) return false;
+      size = Number(buf.readBigUInt64BE(at + 8));
+    }
+    if (size < 8) return false;
+    at += size;
+  }
+  return at === buf.length;
 }
 
 // How light the site is, from a small capture of its first screen: 0 is
@@ -339,4 +442,4 @@ async function renderStill(chrome, take, { layout, look, zoom, dir, t }) {
   }
 }
 
-module.exports = { layoutOf, LOOKS, backdropOf, checkBackdrop, lightnessOf, composeHtml, addressOf, frameAt, stateAt, renderVideo, renderStill, WIDTH, HEIGHT };
+module.exports = { pictureIsWhole, layoutOf, LOOKS, backdropOf, checkBackdrop, lightnessOf, composeHtml, addressOf, frameAt, stateAt, renderVideo, renderStill, WIDTH, HEIGHT };

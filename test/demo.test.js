@@ -229,8 +229,11 @@ test("what ffmpeg said of why it stopped is told, when its last line ends with n
 // Whether a --background file can be drawn is the browser's to say: it
 // draws nothing for one that is no picture, and the backdrop came out plain
 // grey with no word of why. A check of its first bytes passed what the
-// browser cannot draw and refused the BMP and the ICO it can.
-test("a --background file is judged by the browser: what it draws is taken, what it does not is refused", { skip: !findChrome() && "no Chrome, Chromium, Edge or Brave installed", timeout: 60_000 }, async () => {
+// browser cannot draw and refused the BMP and the ICO it can. A picture cut
+// short is one the browser draws a strip of, over grey, and says it loaded:
+// it is read to its end. The JPEG, the GIF and the WebP come from ffmpeg,
+// when there is one that makes them.
+test("a --background file is judged by the browser: what it draws is taken, what it does not is refused, and a picture cut short too", { skip: !findChrome() && "no Chrome, Chromium, Edge or Brave installed", timeout: 60_000 }, async () => {
   const root = tempDir();
   const png = pngOf(32, 32, () => [0, 170, 119]);
   const bmp = Buffer.alloc(70);
@@ -274,6 +277,16 @@ test("a --background file is judged by the browser: what it draws is taken, what
     "html-with-svg.svg": `<!doctype html><html><body>${svg()}</body></html>`,
     "comment-only.svg": `<?xml version="1.0"?>\n<!-- ${svg()} -->\n`,
   };
+  const noisy = pngOf(200, 150, (x, y) => [(x * 37 + y * 11) % 256, (x * y) % 256, (x * 13 + y * 7) % 256]);
+  pictures["noisy.png"] = noisy;
+  const cut = { "cut-half.png": noisy.subarray(0, Math.floor(noisy.length / 2)) };
+  for (const [name, args] of ffmpeg ? [["cut.jpg", []], ["cut.gif", []], ["cut.webp", ["-c:v", "libwebp"]]] : []) {
+    const whole = path.join(root, `whole-${name}`);
+    if (spawnSync(ffmpeg, ["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=320x240", "-frames:v", "1", ...args, whole]).status !== 0) continue;
+    const data = fs.readFileSync(whole);
+    pictures[`whole-${name}`] = data;
+    cut[name] = data.subarray(0, Math.floor(data.length / 2));
+  }
   setTimeLimit(50_000);
   const chrome = await launch();
   const file = (name, data) => {
@@ -287,13 +300,17 @@ test("a --background file is judged by the browser: what it draws is taken, what
     await checkBackdrop(chrome, "", root);
     for (const [name, data] of Object.entries(pictures)) await checkBackdrop(chrome, file(name, data), root);
     for (const [name, data] of Object.entries(notPictures)) await assert.rejects(checkBackdrop(chrome, file(name, data), root), new RegExp(`^Error: --background: .*${name} is no picture the browser can draw: PNG, JPEG, WebP, GIF, AVIF or SVG\\.$`), name);
+    // ffmpeg makes a JPEG and a GIF with encoders of its own; a WebP only
+    // when it was built with libwebp.
+    if (ffmpeg) for (const name of ["cut.jpg", "cut.gif"]) assert.ok(name in cut, name);
+    for (const [name, data] of Object.entries(cut)) await assert.rejects(checkBackdrop(chrome, file(name, data), root), new RegExp(`^Error: --background: .*${name} is cut short, so the browser would draw only part of it\\.$`), name);
   } finally {
     await chrome.close();
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
-test("a demo is refused a --background the browser cannot draw before it records, and draws one it can", { skip: missing, timeout: 200_000 }, async () => {
+test("a demo is refused a --background the browser cannot draw, or one cut short, before it records, and draws one it can", { skip: missing, timeout: 200_000 }, async () => {
   const { server, origin, seen } = await fixture();
   const root = tempDir();
   const steps = path.join(root, "steps.yaml");
@@ -314,14 +331,20 @@ test("a demo is refused a --background the browser cannot draw before it records
   fs.writeFileSync(bad, '<svg width="10" height="10"><rect width="10" height="10"/></svg>');
   const good = path.join(root, "bmp-named.png");
   fs.writeFileSync(good, bmp);
+  // A picture of a backdrop, cut short: the browser draws its first rows.
+  const noisy = pngOf(400, 300, (x, y) => [(x * 37 + y * 11) % 256, (x * y) % 256, (x * 13 + y * 7) % 256]);
+  const cut = path.join(root, "kırık.png");
+  fs.writeFileSync(cut, noisy.subarray(0, Math.floor(noisy.length / 3)));
   try {
-    const refused = spawnSync(process.execPath, [CLI, "demo", origin, "--steps", steps, "--background", bad, "--no-gif", "--out", out], { encoding: "utf8", timeout: 60_000 });
-    // In a child process that cannot reach this one's server while this one
-    // is held: the refusal comes before anything is opened.
-    assert.equal(refused.status, 1, refused.stderr);
-    assert.ok(refused.stderr.includes(`easyscreenshotkit demo: --background: ${bad} is no picture the browser can draw`), refused.stderr);
-    assert.equal(fs.existsSync(out), false);
-    assert.deepEqual(seen, []);
+    for (const [file, why] of [[bad, "is no picture the browser can draw"], [cut, "is cut short, so the browser would draw only part of it."]]) {
+      const refused = spawnSync(process.execPath, [CLI, "demo", origin, "--steps", steps, "--background", file, "--no-gif", "--out", out], { encoding: "utf8", timeout: 60_000 });
+      // In a child process that cannot reach this one's server while this
+      // one is held: the refusal comes before anything is opened.
+      assert.equal(refused.status, 1, refused.stderr);
+      assert.ok(refused.stderr.includes(`easyscreenshotkit demo: --background: ${file} ${why}`), refused.stderr);
+      assert.equal(fs.existsSync(out), false);
+      assert.deepEqual(seen, []);
+    }
     await makeDemo(origin, { dir: out, steps, background: good, gif: false, timeLimit: 150_000 });
     const poster = readPng(path.join(out, "poster.png"));
     assert.ok(near(poster.pixel(20, 20), [0, 170, 119], 30), `backdrop: ${poster.pixel(20, 20)}`);
