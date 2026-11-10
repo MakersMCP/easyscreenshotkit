@@ -430,6 +430,48 @@ test("the browser a demo's frames are drawn in starts in the time the drawing ha
   }
 });
 
+// A browser that still answers but takes longer than a frame may take to
+// draw one, as on a machine too busy to run it, fails the demo in a sentence
+// that says so and what to do, where it failed in the bare words of the call
+// that ran out of time, "Page.captureScreenshot timed out". A preload makes
+// each capture of a drawn frame wait for what never comes, for 3 s.
+test("a demo whose frames the browser draws too slowly says so", { skip: missing, timeout: 200_000 }, async () => {
+  const { server, origin } = await fixture();
+  const root = tempDir();
+  const steps = path.join(root, "steps.yaml");
+  fs.writeFileSync(steps, "steps:\n  - visit: /\n  - wait: 0.3\n");
+  const preload = path.join(root, "slow.js");
+  const lib = path.resolve(__dirname, "../skills/easyscreenshotkit/scripts/lib");
+  fs.writeFileSync(
+    preload,
+    `const chrome = require(${JSON.stringify(path.join(lib, "chrome"))});
+const openTab = chrome.openTab;
+chrome.openTab = async (browser, device, options = {}) => {
+  const tab = await openTab(browser, device, options);
+  if (!options.own) return tab;
+  const send = tab.send;
+  tab.send = (method, params, timeoutMs, more) => (method === "Page.captureScreenshot" ? send("Runtime.evaluate", { expression: "new Promise(() => {})", awaitPromise: true }, 3_000, more) : send(method, params, timeoutMs, more));
+  return tab;
+};
+`,
+  );
+  try {
+    const out = path.join(root, "out");
+    const run = await new Promise((resolve) => {
+      const child = spawn(process.execPath, ["--require", preload, CLI, "demo", origin, "--steps", steps, "--no-gif", "--out", out]);
+      let stderr = "";
+      child.stderr.on("data", (d) => (stderr += d));
+      child.on("close", (status) => resolve({ status, stderr }));
+    });
+    assert.equal(run.status, 1, run.stderr);
+    assert.match(run.stderr, /^easyscreenshotkit demo: The browser took too long to draw the demo's frames, so no demo was saved\. The machine may be too busy: try again\.$/m);
+    assert.equal(fs.existsSync(out), false);
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // A named pipe nothing writes to holds a read of it for as long as it takes,
 // and a synchronous one held the process so that only SIGKILL ended it. A
 // read that is not synchronous lets a stop through, and a pipe that is

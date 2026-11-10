@@ -89,7 +89,9 @@ const MESSAGE_MAX = 256 * 1024 * 1024;
 // onClose: called once the pipe has closed, as it does when the browser
 // ends. over: settled once no answer can come any more, as the pipe closed
 // or fail() was called. A call that gets no answer in its time fails with
-// timedOut set, and one the browser answers with an error with answered set.
+// timedOut set, and cut when the run's time made that time shorter than the
+// call asked for, and one the browser answers with an error with answered
+// set.
 // A call's time is what it asks for within what the run has left, a second
 // at least, or with fixed what it asks for whatever the run has left. watch:
 // asks whether the browser still answers (see start()), once a call has had
@@ -245,7 +247,7 @@ function pipeTo(child, { onClose = () => {}, watch = null } = {}) {
         pending.delete(id);
         clearTimeout(slow);
         const lost = ask ? await ask() : null;
-        rej(lost || Object.assign(new Error(`${method} timed out`), { timedOut: true }));
+        rej(lost || Object.assign(new Error(`${method} timed out`), { timedOut: true, cut: !fixed && limit < timeoutMs }));
       }, limit);
       pending.set(id, { resolve: res, reject: rej, timer, slow, method, session: state });
       input.write(`${JSON.stringify({ id, method, params, ...(state ? { sessionId: state.id } : {}) })}\0`);
@@ -1042,4 +1044,4 @@ function removeProfiles(browsers) {
   }
 }
 
-module.exports = { findChrome, onPath, launch, startWait, openTab, closeTab, guardBrowser, navigate, currentUrl, killBrowsers, removeProfiles, removeStrayLocks, removeFetchFolders, fetchFolders, roomIn, lockFolderOf, userAgentFor, CRASHED, BARRED, NOT_A_PAGE };
+module.exports = { findChrome, onPath, launch, startWait, openTab, closeTab, guardBrowser, navigate, currentUrl, killBrowsers, removeProfiles, removeStrayLocks, removeFetchFolders, fetchFolders, roomIn, lockFolderOf, userAgentFor, busy, CRASHED, BARRED, NOT_A_PAGE };

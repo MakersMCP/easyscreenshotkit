@@ -16,7 +16,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { launch, CRASHED } = require("./chrome");
+const { launch, busy, CRASHED } = require("./chrome");
 const { normalizeUrl, fragmentNotes, siteName } = require("./shots");
 const { homeOf, siteOf, routeOf, viewKey, viewOf, pathOf, readable, printable } = require("./pick");
 const { Recorder } = require("./record");
@@ -221,6 +221,10 @@ function prepareDemoDir(dir, { steps = "", tour = false } = {}) {
 const BROWSER_GONE = "The browser ended in the middle of the demo (it crashed, or was killed), so no demo was saved.";
 const BROWSER_STALLED = "The browser stopped answering in the middle of the demo, so no demo was saved. The machine may be too busy: try again.";
 const TAB_CRASHED = "The browser's tab crashed in the middle of the demo, so no demo was saved.";
+// A browser that still answers, but took longer than a frame may take to
+// draw one, as on a machine too busy to run it: cut, when the run's time
+// made the wait shorter.
+const drawnTooSlowly = (cut) => `The browser took too long to draw the demo's frames, so no demo was saved. ${busy(cut)}`;
 
 // steps.json's note on a document the page did not open, as the run does
 // not open its address: the page itself, a frame of it, or a window.
@@ -394,6 +398,9 @@ async function makeDemo(rawUrl, options = {}) {
   let chrome = null;
   let composer = null;
   let recorder = null;
+  // Whether the frames are being drawn: a call that ran out of time then is
+  // a browser too slow to draw them.
+  let drawing = false;
   const lostWhy = () => {
     const lost = [chrome, composer].find((browser) => browser && browser.gone());
     if (lost) return lost.stalled() ? BROWSER_STALLED : BROWSER_GONE;
@@ -473,6 +480,7 @@ async function makeDemo(rawUrl, options = {}) {
     // Drawing the frames has time of its own, however much of the run the
     // recording took, and so has the start of the browser it draws them in.
     if (timeLeft() < 120_000) setTimeLimit(Math.max(120_000, take.duration * 6_000));
+    drawing = true;
     composer = await launch();
     let drawn;
     let poster;
@@ -491,6 +499,7 @@ async function makeDemo(rawUrl, options = {}) {
       const still = Math.min(take.duration, ...take.scrolls.map((s) => s.t0), ...take.cuts.map((c) => c.t), take.shownAt === null ? Infinity : take.shownAt);
       const posterAt = Math.max(0, Math.min(1, still - 0.05, take.duration - 1 / fps));
       poster = { at: round(posterAt), png: await renderStill(composer, take, { layout, look, zoom, dir: frames, t: posterAt }) };
+      drawing = false;
     } finally {
       await composer.close();
     }
@@ -536,7 +545,8 @@ async function makeDemo(rawUrl, options = {}) {
   } catch (err) {
     // Whatever failed first, a browser or a tab that was lost is why: the
     // recording's, or a tab that picked the tour's pages or drew the frames.
-    const why = lostWhy() || (err.message === CRASHED ? TAB_CRASHED : "");
+    // A call that ran out of time as the frames were drawn is said so.
+    const why = lostWhy() || (err.message === CRASHED ? TAB_CRASHED : "") || (drawing && err.timedOut ? drawnTooSlowly(err.cut) : "");
     run.abort();
     throw run.told(why ? new Error(why) : err);
   }
