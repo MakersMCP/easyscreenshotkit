@@ -253,11 +253,14 @@ function quote(text) {
 }
 
 // The tour as steps, made one page at a time: what a page shows is only
-// known once it is open.
+// known once it is open. Its first step opens the site by its host's name
+// when it starts at the home page, and the page it starts at by its path
+// and route otherwise, as a tour whose home page was left out does.
 async function* tourSteps(recorder, pages) {
   const host = new URL(pages[0].url).hostname.replace(/^www\./, "");
+  const placeOf = (url) => readable(`${new URL(url).pathname}${routeOf(url)}`);
   for (let i = 0; i < pages.length; i++) {
-    if (i === 0) yield { action: "visit", url: pages[0].url, label: `Open ${host}` };
+    if (i === 0) yield { action: "visit", url: pages[0].url, label: `Open ${pages[0].kind === "home" ? host : placeOf(pages[0].url)}` };
     yield { action: "wait", seconds: i === 0 ? 1.6 : 1.1 };
     const cover = (await recorder.eval(TOP_COVER)) || 0;
     const stops = chooseStops((await recorder.eval(SECTIONS)) || { max: 0, tops: [] }, recorder.viewport.height, cover);
@@ -278,7 +281,7 @@ async function* tourSteps(recorder, pages) {
       yield { action: "scroll", to: "top", label: "Back to the top" };
       link = await linkOnScreen(recorder, next.url);
     }
-    const where = readable(`${new URL(next.url).pathname}${routeOf(next.url)}`);
+    const where = placeOf(next.url);
     if (link) yield { action: "click", target: { href: next.url }, label: link.text ? `Click ${quote(link.text)}` : `Open ${where}`, text: link.text, attribute: link.attribute, expect: next.url };
     else yield { action: "visit", url: next.url, label: `Open ${where}` };
   }

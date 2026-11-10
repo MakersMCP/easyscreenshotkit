@@ -974,6 +974,14 @@ test("a tour clicks to a view by its link only when the view has the query of th
   assert.deepEqual(await moves([at("/spa/?mode=a#/one"), at("/spa/?mode=b#/two")]), ["visit", "visit"]);
   // A page with no #route is the link's whatever query the page before has.
   assert.deepEqual(await moves([at("/spa/?mode=a#/one"), at("/pricing")]), ["visit", "click"]);
+  // The first step opens the site by its name at the home page, and the
+  // page the tour starts at by its path and route otherwise: a tour whose
+  // home page was left out said it opened the host while it showed a view.
+  const first = async (page) => (await tourSteps(recorder, [page]).next()).value.label;
+  assert.equal(await first({ ...at("/"), kind: "home" }), "Open acme.com");
+  assert.equal(await first({ url: "https://www.acme.com/en/", kind: "home" }), "Open acme.com");
+  assert.equal(await first({ ...at("/app/#/plants"), kind: "other" }), "Open /app/#/plants");
+  assert.equal(await first({ ...at("/docs/start"), kind: "docs" }), "Open /docs/start");
 });
 
 // A home page the tour chose to open by itself is left out when it cannot
