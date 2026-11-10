@@ -354,6 +354,24 @@ test("a demo is refused a --background the browser cannot draw, or one cut short
   }
 });
 
+// The least --timeout a demo takes, a minute, could record no step: each
+// step needed a minute of the run left, and the browser's start had taken
+// some of it before the first one.
+test("a demo given a minute records its steps", { skip: missing, timeout: 200_000 }, async () => {
+  const { server, origin } = await fixture();
+  const root = tempDir();
+  const steps = path.join(root, "steps.yaml");
+  fs.writeFileSync(steps, "steps:\n  - visit: /\n  - wait: 0.5\n  - scroll: 300\n");
+  try {
+    const { manifest } = await makeDemo(origin, { dir: path.join(root, "out"), steps, gif: false, timeLimit: 60_000 });
+    assert.deepEqual(manifest.steps.map((step) => step.action), ["visit", "wait", "scroll"]);
+    assert.ok(fs.existsSync(path.join(root, "out", "demo.mp4")));
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // Drawing the frames has time of its own, however much of the run the
 // recording took, and the browser they are drawn in starts in that time: it
 // started in what the recording had left, as little as a second for each of

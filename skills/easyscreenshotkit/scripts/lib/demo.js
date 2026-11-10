@@ -385,10 +385,14 @@ async function makeDemo(rawUrl, options = {}) {
       // given; its own steps keep their numbers in what goes wrong.
       const added = script && script.steps[0].action !== "visit" ? 1 : 0;
       const steps = script ? [...(added ? [{ action: "visit", url: asked }] : []), ...script.steps] : tourSteps(recorder, tour.pages);
+      // A step starts while a minute of the run is left, or a quarter of
+      // the run for one given less than four minutes: with a minute in all,
+      // the least --timeout takes, no step could start.
+      const reserve = Math.min(60_000, timeLimit / 4);
       let n = 0;
       for await (const step of steps) {
         n++;
-        if (timeLeft() < 60_000) throw new Error("time ran out while recording; give more with --timeout");
+        if (timeLeft() < reserve) throw new Error("time ran out while recording; give more with --timeout");
         log(`${added && n === 1 ? "  " : String(n - added).padStart(2, "0")} ${what(step)}`);
         let record;
         try {
