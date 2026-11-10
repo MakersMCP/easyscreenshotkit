@@ -779,6 +779,16 @@ const UNREADY = {
   "/drew/": `<nav><a href="#/one">One</a></nav><h1 id="h">Loading…</h1>${CLEANED_UP('document.getElementById("h").textContent = "Drawn";')}`,
   // It goes to another route as the clean-up starts, one that never gets its data.
   "/moved/": `<nav><a href="#/one">One</a></nav><main id="view"><h1>One</h1></main>${CLEANED_UP('if (location.hash !== "#/two") { location.hash = "#/two"; document.getElementById("view").innerHTML = "<h1>Loading…</h1>"; fetch("/longpoll"); }')}`,
+  // It goes to another route as the first clean-up hides its chat box, and
+  // that route says Loading… until the second clean-up begins, then draws,
+  // with no request out: the box hidden before the move is no sign hidden.
+  "/moved-sign/": `<div id="chat" style="position:fixed;right:20px;bottom:20px;width:300px;height:200px;background:rgb(255,0,0)">Chat with us</div><nav><a href="#/one">One</a></nav><main id="view"><h1>One</h1></main><script>
+    const view = document.getElementById("view");
+    if (location.hash === "#/two") view.innerHTML = "<h1>Two is drawn</h1>";
+    new MutationObserver(() => { if (location.hash !== "#/two") { location.hash = "#/two"; view.innerHTML = "<h1>Loading…</h1>"; } }).observe(document.getElementById("chat"), { attributes: true });
+    let cleanups = 0;
+    new MutationObserver(() => { if (document.getElementById("easyscreenshotkit-hide") && ++cleanups === 2) view.innerHTML = "<h1>Two is drawn</h1>"; }).observe(document.head, { childList: true });
+  </script>`,
   // Words and a heading, but no link, no picture and nothing below the first screen.
   "/words/": `<main><h1>Plants</h1><p>The plants of the house, by the room they stand in.</p></main>${LATE}`,
   // The same, with a link that comes as the clean-up starts.
@@ -828,11 +838,12 @@ test("a #route view still waiting for its data is left out for --pwa when it is 
 });
 
 // A sign that went by itself after the wait means the view has drawn. A view
-// that went to another route is judged by what that route shows. In a run
-// short of time, a view the wait for a page's content has not seen drawn
-// counts as not ready while a request is out, whatever words it has, and as
-// drawn once a link has come.
-test("a #route view whose sign has gone is kept, one that moved on is judged by the route it went to, and one short of time by what it has drawn", { skip: noBrowser, timeout: 240_000 }, async () => {
+// that went to another route is judged by what that route shows, and a box
+// the clean-up hid before it went there is no sign hidden. In a run short
+// of time, a view the wait for a page's content has not seen drawn counts
+// as not ready while a request is out, whatever words it has, and as drawn
+// once a link has come.
+test("a #route view whose sign has gone is kept, one that moved on is judged by the route it went to, and one short of time by what it has drawn", { skip: noBrowser, timeout: 280_000 }, async () => {
   const { origin, take, done } = await unreadyFixture();
   try {
     const drew = await take("drew");
@@ -840,6 +851,11 @@ test("a #route view whose sign has gone is kept, one that moved on is judged by 
     const moved = await take("moved");
     assert.deepEqual(moved.pages[0].notes, ["still loading data after 10 s", `opened ${origin}/moved/#/one and landed on ${origin}/moved/#/two`]);
     assert.deepEqual(moved.pwa.leftOut, [UNREADY_LEFT_OUT[0]]);
+    const signGone = await take("moved-sign");
+    assert.deepEqual(
+      [signGone.pages[0].hidden, signGone.pages[0].heading, signGone.pages[0].notes, signGone.pwa.leftOut],
+      [1, "Two is drawn", [`opened ${origin}/moved-sign/#/one and landed on ${origin}/moved-sign/#/two`], []],
+    );
     const words = await take("words", { timeLimit: 40_000 });
     assert.deepEqual(words.pages[0].notes.slice(0, 2), ["still loading data after 10 s", "taken while it still showed a loading screen: time ran short; give more with --timeout"]);
     assert.deepEqual(words.pwa.leftOut, [UNREADY_LEFT_OUT[0]]);

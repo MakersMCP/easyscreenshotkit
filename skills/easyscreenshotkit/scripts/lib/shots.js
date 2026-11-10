@@ -611,6 +611,9 @@ async function visit(chrome, page, group, theme, ctx, { check = null, links = fa
     const signAfterWait = async () => view !== "quiet" && (await showsLoadingSign(tab));
     let sign = await signAfterWait();
     let cleaned = await tidy();
+    // What the clean-up hid after the sign was last read: a sign gone since
+    // may only be hidden. What it hid before is no such sign.
+    let hiddenSince = cleaned.hidden;
     await waitForFonts(tab);
     await scrollTo(tab, 0);
     await sleep(400);
@@ -628,8 +631,9 @@ async function visit(chrome, page, group, theme, ctx, { check = null, links = fa
       await settle(tab, 6_000);
       sign = await signAfterWait();
       // The first clean-up's boxes stay hidden, and this one counts only
-      // what came since.
+      // what came since. The report adds the two up.
       const again = await tidy();
+      hiddenSince = again.hidden;
       cleaned = { ...again, hidden: cleaned.hidden + again.hidden, unlocked: cleaned.unlocked || again.unlocked };
       await waitForFonts(tab);
       await scrollTo(tab, 0);
@@ -650,7 +654,7 @@ async function visit(chrome, page, group, theme, ctx, { check = null, links = fa
       if (loaded === null && (await showsContent(tab).catch(() => false))) loaded = true;
       if (view !== "quiet") {
         const out = !networkQuiet(tab, 0);
-        if ((sign && (cleaned.hidden > 0 || (await showsLoadingSign(tab)))) || (out && (loaded !== true || (await looksEmpty(tab))))) {
+        if ((sign && (hiddenSince > 0 || (await showsLoadingSign(tab)))) || (out && (loaded !== true || (await looksEmpty(tab))))) {
           short = view === "short";
           busy = view === "busy";
         } else if (out) open = view;
