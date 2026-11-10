@@ -1280,6 +1280,71 @@ test("a demo whose browser ends or whose tab crashes in the middle of it fails, 
   }
 });
 
+// The browser that draws the frames stopped as it starts drawing, as one
+// that hangs stops answering, whatever call or window's connection the stop
+// lands in: the demo fails within half a minute or so, says why, ends the
+// browser and leaves an earlier demo as it was.
+test("a demo whose browser stops answering as it draws the frames fails, and leaves an earlier demo as it was", { skip: missing || (process.platform !== "linux" && "the browser's processes are read from /proc"), timeout: 300_000 }, async () => {
+  const { server, origin } = await fixture();
+  const root = tempDir();
+  const dir = path.join(root, "demo");
+  const steps = path.join(root, "short.yaml");
+  fs.writeFileSync(steps, "steps:\n  - visit: /\n  - wait: 2\n");
+  let stopped = [];
+  const gone = async (pid) => {
+    for (let i = 0; i < 30; i++) {
+      try {
+        process.kill(pid, 0);
+      } catch {
+        return true;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    return false;
+  };
+  try {
+    await makeDemo(origin, { dir, steps, gif: false, timeLimit: 200_000 });
+    const before = snapshot(dir);
+    for (const delay of [50, 600]) {
+      const child = spawn(process.execPath, [CLI, "demo", origin, "--steps", steps, "--no-gif", "--out", dir]);
+      let stderr = "";
+      let sent = 0;
+      child.stderr.on("data", (d) => {
+        stderr += d;
+        if (sent || !/^Drawing \d+ frames/m.test(stderr)) return;
+        sent = -1;
+        setTimeout(() => {
+          stopped = descendants(child.pid).filter(({ args }) => /--user-data-dir/.test(args) && !/--type=/.test(args));
+          for (const { pid } of stopped) process.kill(pid, "SIGSTOP");
+          sent = Date.now();
+        }, delay);
+      });
+      const status = await new Promise((resolve) => child.on("close", resolve));
+      const seconds = (Date.now() - sent) / 1000;
+      assert.equal(stopped.length, 1, `${delay} ms: the drawing browser to stop\n${stderr}`);
+      assert.equal(status, 1, `${delay} ms\n${stderr}`);
+      assert.match(stderr, /^easyscreenshotkit demo: The browser stopped answering in the middle of the demo, so no demo was saved\. The machine may be too busy: try again\.$/m);
+      assert.ok(seconds < 45, `${delay} ms: ${seconds} s after the stop`);
+      assert.deepEqual(snapshot(dir), before, `${delay} ms`);
+      for (const { pid } of stopped) assert.ok(await gone(pid), `${delay} ms: the browser is still there`);
+      stopped = [];
+    }
+  } finally {
+    // A browser the demo left stopped is ended here.
+    for (const { pid } of stopped) {
+      for (const signal of ["SIGCONT", "SIGKILL"]) {
+        try {
+          process.kill(pid, signal);
+        } catch {
+          // Gone.
+        }
+      }
+    }
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // A step that clicks a link to a file served as an attachment. Chrome on
 // Linux saves a download in the Downloads folder of the home it runs with;
 // the demo's browser saves nothing, there or anywhere else.

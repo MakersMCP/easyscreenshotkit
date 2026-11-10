@@ -1618,8 +1618,9 @@ test("a run whose browser ends in the middle of it fails, and leaves the earlier
 // does, stopped here after the first page: every window and page after it
 // waited out its minute, the sheet a minute more past --timeout, and the run
 // ended with 0 and put its one picture in place of the earlier run's. It
-// fails within half a minute or so of the stop, its browser killed and gone
-// from the temp folder, and the earlier files stay as they were.
+// fails within half a minute or so of the stop, whatever call or window's
+// connection the stop lands in, its browser killed and gone from the temp
+// folder, and the earlier files stay as they were.
 test("a run whose browser stops answering in the middle of it fails, and leaves the earlier run's files as they were", { skip: noBrowser || (process.platform !== "linux" && "the browser's process is read from /proc"), timeout: 240_000 }, async () => {
   const { server, origin } = await fixture();
   const root = tempDir();
@@ -1632,7 +1633,7 @@ test("a run whose browser stops answering in the middle of it fails, and leaves 
     assert.ok(frozen.sent, frozen.stderr);
     assert.equal(frozen.status, 1, `${frozen.stdout}\n${frozen.stderr}`);
     assert.match(frozen.stderr, /^easyscreenshotkit: The browser stopped answering in the middle of the run, so no screenshots were saved\. The machine may be too busy: try again\.$/m);
-    assert.ok(frozen.seconds < 90, `${frozen.seconds} s after the stop`);
+    assert.ok(frozen.seconds < 45, `${frozen.seconds} s after the stop`);
     assert.deepEqual(snapshot(dir), before);
     assert.throws(() => process.kill(frozen.target, 0), { code: "ESRCH" }, "the browser is still there");
     assert.equal(frozen.profiles.length, 1);
@@ -1831,8 +1832,10 @@ test("a browser that starts gets up to a minute to answer, as the run's time all
 // every call with an error, as a browser that cannot be told to refuse
 // downloads would (refuser), one whose first connection is reset as it is
 // made (flaky), one that answers each call 1.5 s after it came, as a browser
-// on a busy machine can (slow), and one that answers every call but never
-// opens a window (windowless). Each writes <mode>.json in root, with its pid
+// on a busy machine can (slow), one that answers every call but never
+// opens a window (windowless), and one that stops answering once it has
+// opened a window, its window's connection never taken, as a browser stopped
+// right then does (hushed). Each writes <mode>.json in root, with its pid
 // and its profile. Returns the wrapper that starts a mode, for CHROME_PATH.
 function standIns(root) {
   const script = path.join(root, "browser.js");
@@ -1848,8 +1851,10 @@ const frame = (answer) => {
   return Buffer.concat([Buffer.from(data.length < 126 ? [0x81, data.length] : [0x81, 126, data.length >> 8, data.length & 255]), data]);
 };
 let upgrades = 0;
+let hushed = false;
 const take = (req, socket) => {
   if (mode === "flaky" && ++upgrades === 1) return socket.destroy();
+  if (hushed) return void socket.on("error", () => {});
   const accept = crypto.createHash("sha1").update(req.headers["sec-websocket-key"] + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64");
   socket.write("HTTP/1.1 101 Switching Protocols\\r\\nUpgrade: websocket\\r\\nConnection: Upgrade\\r\\nSec-WebSocket-Accept: " + accept + "\\r\\n\\r\\n");
   socket.on("error", () => {});
@@ -1868,6 +1873,12 @@ const take = (req, socket) => {
       if (opcode !== 1) continue;
       const { id, method } = JSON.parse(text);
       if (mode === "windowless" && method === "Target.createTarget") continue;
+      if (hushed) continue;
+      if (mode === "hushed" && method === "Target.createTarget") {
+        hushed = true;
+        socket.write(frame({ id, result: { targetId: "t1" } }));
+        continue;
+      }
       const answer = mode === "refuser" ? { id, error: { code: -32000, message: "Not allowed here" } } : { id, result: {} };
       const send = () => {
         if (!socket.destroyed) socket.write(frame(answer));
@@ -1986,14 +1997,39 @@ test("a browser's start: one that does not answer says so and leaves nothing run
 // stopped answering: its window fails with that, it is killed, and the run
 // takes it for lost. A window it did not open was said to be too slow, and
 // the run went on waiting out every window and page after it.
-test("a browser too busy to open a window, a page with no answer, and a browser that stops answering, are said so in the time the run has left", { skip: noBrowser || (process.platform !== "linux" && "the browser's process is read from /proc"), timeout: 120_000 }, async () => {
+test("a browser too busy to open a window, a page with no answer, and a browser that stops answering, are said so in the time the run has left", { skip: noBrowser || (process.platform !== "linux" && "the browser's process is read from /proc"), timeout: 200_000 }, async () => {
   const { server, origin } = await serve((req, res) => {
     if (req.url === "/hang") return;
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Acme", "<h1>Acme</h1>"));
   });
   setTimeLimit(60_000);
-  const chrome = await launch();
+  let chrome = await launch();
   let stopped = 0;
+  // A browser's main process, told by the port its profile says it took.
+  const mainOf = (browser) => {
+    const port = new URL(browser.base).port;
+    return descendants(process.pid).find((p) => {
+      const profile = (/--user-data-dir=([^\s\0]+)/.exec(p.args) || [])[1];
+      if (!profile || /--type=/.test(p.args)) return false;
+      try {
+        return fs.readFileSync(path.join(profile, "DevToolsActivePort"), "utf8").split("\n")[0].trim() === port;
+      } catch {
+        return false;
+      }
+    });
+  };
+  // Killed, and gone once this process has heard it ended.
+  const ended = async (pid) => {
+    for (let i = 0; i < 50; i++) {
+      try {
+        process.kill(pid, 0);
+      } catch {
+        return true;
+      }
+      await sleep(100);
+    }
+    return false;
+  };
   try {
     // A page that does not answer, in a browser that does.
     const tab = await openTab(chrome, DEVICES.desktop);
@@ -2004,20 +2040,32 @@ test("a browser too busy to open a window, a page with no answer, and a browser 
     assert.deepEqual([chrome.gone(), chrome.stalled()], [false, false]);
     setTimeLimit(60_000);
     await closeTab(chrome, tab);
-    // A browser that answers nothing, stopped as a hung one is: its main
-    // process, told by the port its profile says it took.
-    const port = new URL(chrome.base).port;
-    const main = descendants(process.pid).find((p) => {
-      const profile = (/--user-data-dir=([^\s\0]+)/.exec(p.args) || [])[1];
-      if (!profile || /--type=/.test(p.args)) return false;
-      try {
-        return fs.readFileSync(path.join(profile, "DevToolsActivePort"), "utf8").split("\n")[0].trim() === port;
-      } catch {
-        return false;
-      }
-    });
-    assert.ok(main, "the browser's process");
-    stopped = main.pid;
+    // A browser that answers nothing, stopped as a hung one is, while a call
+    // with a long time ahead of it waits: the call fails with that after
+    // the 15 s it is let wait and the 10 s the browser has to say its
+    // version, where it waited out its minute first.
+    const waiting = await openTab(chrome, DEVICES.desktop);
+    setTimeLimit(120_000);
+    const asked = Date.now();
+    const pending = navigate(waiting, `${origin}/hang`).then(() => assert.fail("the page answered"), (err) => err);
+    await sleep(1_000);
+    const first = mainOf(chrome);
+    assert.ok(first, "the browser's process");
+    stopped = first.pid;
+    process.kill(stopped, "SIGSTOP");
+    const long = await pending;
+    assert.equal(long.message, "The browser stopped answering.");
+    assert.ok(Date.now() - asked < 30_000, `${Date.now() - asked} ms`);
+    assert.deepEqual([chrome.gone(), chrome.stalled()], [true, true]);
+    assert.ok(await ended(stopped), "the browser is still there");
+    stopped = 0;
+    await chrome.close();
+    // And when a call's own time is shorter, once it has run out.
+    setTimeLimit(60_000);
+    chrome = await launch();
+    const second = mainOf(chrome);
+    assert.ok(second, "the browser's process");
+    stopped = second.pid;
     process.kill(stopped, "SIGSTOP");
     setTimeLimit(8_000);
     const started = Date.now();
@@ -2025,19 +2073,7 @@ test("a browser too busy to open a window, a page with no answer, and a browser 
     assert.equal(lost.message, "The browser stopped answering.");
     assert.deepEqual([chrome.gone(), chrome.stalled()], [true, true]);
     assert.ok(Date.now() - started < 30_000, `${Date.now() - started} ms`);
-    // Killed, and gone once this process has heard it ended.
-    const ended = async () => {
-      for (let i = 0; i < 50; i++) {
-        try {
-          process.kill(stopped, 0);
-        } catch {
-          return true;
-        }
-        await sleep(100);
-      }
-      return false;
-    };
-    assert.ok(await ended(), "the browser is still there");
+    assert.ok(await ended(stopped), "the browser is still there");
     stopped = 0;
   } finally {
     if (stopped) process.kill(stopped, "SIGCONT");
@@ -2045,6 +2081,33 @@ test("a browser too busy to open a window, a page with no answer, and a browser 
     await chrome.close();
     server.close();
     server.closeAllConnections();
+  }
+  // A browser that stops answering as a window's connection is made, which
+  // it never takes: found as a call's is, where the run waited out the
+  // window's whole minute, 5 s more to close it, and then asked.
+  const hushedRoot = tempDir();
+  const hushedBefore = process.env.CHROME_PATH;
+  try {
+    process.env.CHROME_PATH = standIns(hushedRoot)("hushed");
+    setTimeLimit(120_000);
+    const standIn = await launch();
+    try {
+      const started = Date.now();
+      const lost = await openTab(standIn, DEVICES.desktop).then(() => assert.fail("a window opened"), (err) => err);
+      assert.equal(lost.message, "The browser stopped answering.");
+      assert.ok(Date.now() - started < 35_000, `${Date.now() - started} ms`);
+      assert.deepEqual([standIn.gone(), standIn.stalled()], [true, true]);
+      const { pid } = JSON.parse(fs.readFileSync(path.join(hushedRoot, "hushed.json"), "utf8"));
+      assert.ok(await ended(pid), "the stand-in is still there");
+    } finally {
+      setTimeLimit(60_000);
+      await standIn.close();
+    }
+  } finally {
+    endStandIns(hushedRoot, ["hushed"]);
+    if (hushedBefore === undefined) delete process.env.CHROME_PATH;
+    else process.env.CHROME_PATH = hushedBefore;
+    fs.rmSync(hushedRoot, { recursive: true, force: true });
   }
   // A browser that answers, and does not open a window.
   const stands = tempDir();

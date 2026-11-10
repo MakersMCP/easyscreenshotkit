@@ -79,10 +79,11 @@ const STALLED = "The browser stopped answering.";
 // answers with an error with answered set. A call's time is what it asks
 // for within what the run has left, a second at least, or with fixed what
 // it asks for whatever the run has left. watch: asks whether the browser
-// still answers (see start()), once a call has had no answer for SLOW_MS
-// and again when its time runs out, and resolves to the error a call fails
-// with when it does not, or to null; a call sent with watched false is
-// not watched.
+// still answers (see start()), once a call, or the connection itself, has
+// had no answer for SLOW_MS, and again when a call's time runs out, and
+// resolves to the error a call fails with when it does not, or to null;
+// the call or the connection that asked fails with that error at once. A
+// call sent with watched false is not watched.
 function connect(wsUrl, { onClose = () => {}, timeoutMs = 30_000, watch = null } = {}) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(wsUrl);
@@ -93,10 +94,25 @@ function connect(wsUrl, { onClose = () => {}, timeoutMs = 30_000, watch = null }
     let failure = "";
     let ended;
     const over = new Promise((settle) => (ended = settle));
+    let opened = false;
     const unanswered = setTimeout(() => {
+      clearTimeout(slowOpen);
       reject(Object.assign(new Error("The browser did not take the connection."), { timedOut: true }));
       ws.close();
     }, Math.max(1, timeoutMs));
+    // A browser that stopped answering as a window's connection was made,
+    // as one stopped then does, is found while it waits, as for a call: it
+    // waited out the window's whole time before.
+    const slowOpen =
+      watch && timeoutMs > SLOW_MS
+        ? setTimeout(async () => {
+            const lost = await watch();
+            if (!lost || opened) return;
+            clearTimeout(unanswered);
+            reject(lost);
+            ws.close();
+          }, SLOW_MS)
+        : null;
     ws.onmessage = (event) => {
       let msg;
       try {
@@ -118,10 +134,12 @@ function connect(wsUrl, { onClose = () => {}, timeoutMs = 30_000, watch = null }
     };
     ws.onerror = () => {
       clearTimeout(unanswered);
+      clearTimeout(slowOpen);
       reject(new Error("The browser connection failed."));
     };
     ws.onclose = () => {
       clearTimeout(unanswered);
+      clearTimeout(slowOpen);
       for (const waiter of pending.values()) {
         clearTimeout(waiter.timer);
         clearTimeout(waiter.slow);
@@ -132,7 +150,9 @@ function connect(wsUrl, { onClose = () => {}, timeoutMs = 30_000, watch = null }
       onClose();
     };
     ws.onopen = () => {
+      opened = true;
       clearTimeout(unanswered);
+      clearTimeout(slowOpen);
       resolve({
         over,
         send(method, params = {}, timeoutMs = 30_000, { fixed = false, watched = true } = {}) {
@@ -145,9 +165,18 @@ function connect(wsUrl, { onClose = () => {}, timeoutMs = 30_000, watch = null }
           return new Promise((res, rej) => {
             const limit = fixed ? Math.max(1, timeoutMs) : Math.max(1_000, Math.min(timeoutMs, timeLeft()));
             // A browser that stopped answering is found while a long call
-            // waits, not at the end of its wait: one that is lost fails this
-            // call as it closes the connection.
-            const slow = ask && limit > SLOW_MS ? setTimeout(() => ask(), SLOW_MS) : null;
+            // waits, not at the end of its wait, and the call fails with
+            // that at once.
+            const slow =
+              ask && limit > SLOW_MS
+                ? setTimeout(async () => {
+                    const lost = await ask();
+                    if (!lost || !pending.has(id)) return;
+                    pending.delete(id);
+                    clearTimeout(timer);
+                    rej(lost);
+                  }, SLOW_MS)
+                : null;
             const timer = setTimeout(async () => {
               pending.delete(id);
               clearTimeout(slow);
@@ -381,6 +410,9 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
             stalled = true;
             lost = true;
             child.kill("SIGKILL");
+            // Every call to it fails at once from now on, closing a window
+            // too, where each waited out its time.
+            browser.fail(STALLED);
             return Object.assign(new Error(STALLED), { stalled: true });
           },
         )
@@ -597,6 +629,9 @@ async function openTab(chrome, device, { lang = "", theme = "light", reducedMoti
     await cdp.send("Emulation.setDefaultBackgroundColorOverride", { color: ground }, left()).catch(() => {});
     await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: true }, left()).catch(() => {});
   } catch (err) {
+    // A browser that stopped answering has been ended: there is no window
+    // of it to close, and asking it to cost the run 5 s more.
+    if (chrome.stalled && chrome.stalled()) throw err;
     if (cdp) await closeTab(chrome, cdp);
     else if (targetId) await chrome.browser.send("Target.closeTarget", { targetId }, 5_000).catch(() => {});
     if (!err.timedOut) throw err;
