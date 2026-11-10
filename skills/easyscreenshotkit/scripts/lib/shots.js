@@ -339,13 +339,19 @@ const titleParts = (title) => String(title || "").split(/\s+[|·•:–—-]\s+|
 // · Plant · Fern" is Brightmoss. When they leave no part, they do not
 // count ("Acme · Projects" on #/acme/projects is Acme), and when the last
 // word and the heading leave none either, it is the title's last part, as
-// an app can be called what its route is: "Your plants | Plants".
+// an app can be called what its route is: "Your plants | Plants". Before
+// all that, a part that says the site's own name is the site (see
+// ownPart): "Brightmoss · Settings" on #/settings/profile has the shape of
+// "Projects · Acme" on #/acme/board, with the site on the other side, and
+// only such a name tells the two apart.
 function siteName(info, url) {
   if (info.siteName) return info.siteName;
   const parts = titleParts(info.title);
   let part = parts[0];
   const route = routeOf(url);
-  if (route) {
+  const own = route ? ownPart(parts, url, info.appName) : "";
+  if (own) part = own;
+  else if (route) {
     const named = (text) => wordsOf(text).join(" ");
     const words = route.replace(/^#(?:\/|!\/?)/, "").split("?")[0].split("/").filter(Boolean).map(decoded).map(named);
     const heading = named(info.viewHeading || "");
@@ -364,6 +370,22 @@ function siteName(info, url) {
   if (/^\d+(\.\d+){3}$/.test(hostname) || hostname.startsWith("[")) return host;
   const label = hostname.replace(/^www\./, "").split(".")[0];
   return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
+// The part of a title that says a site's own name, or "": the page's
+// application-name, or a label of the host's name, the one nearest its
+// top-level label first (acme before app in app.acme.com), told by their
+// letters and digits.
+function ownPart(parts, url, appName = "") {
+  const bare = (text) => wordsOf(text).join("");
+  const { hostname } = new URL(url);
+  const byNumber = /^\d+(\.\d+){3}$/.test(hostname) || hostname.startsWith("[");
+  const labels = byNumber ? [] : hostname.split(".").slice(0, -1).filter((label) => label !== "www").reverse();
+  for (const name of [appName, ...labels].map(bare).filter(Boolean)) {
+    const found = parts.find((text) => bare(text) === name);
+    if (found) return found;
+  }
+  return "";
 }
 
 // A bot check served instead of the page (a CAPTCHA, "Just a moment…"). A
@@ -399,6 +421,7 @@ const READ_INFO = `(() => {
     description: meta('meta[name="description"]') || meta('meta[property="og:description"]'),
     siteName: meta('meta[property="og:site_name"]'),
     ogTitle: meta('meta[property="og:title"]'),
+    appName: meta('meta[name="application-name"]'),
     heading: words(h1),
     viewHeading: words(own),
     canonical: (document.querySelector('link[rel="canonical"]') || {}).href || "",
@@ -414,7 +437,7 @@ const READ_INFO = `(() => {
 
 async function readInfo(cdp) {
   const { result } = await cdp.send("Runtime.evaluate", { expression: READ_INFO, returnByValue: true }, 10_000).catch(() => ({ result: {} }));
-  const info = (result && result.value) || { title: "", description: "", siteName: "", ogTitle: "", heading: "", viewHeading: "", canonical: "", manifest: "", lang: "", text: "", scripts: "", height: 0, links: 0, alternates: [] };
+  const info = (result && result.value) || { title: "", description: "", siteName: "", ogTitle: "", appName: "", heading: "", viewHeading: "", canonical: "", manifest: "", lang: "", text: "", scripts: "", height: 0, links: 0, alternates: [] };
   const challenge =
     (CHALLENGE_TITLE.test(info.title) && (info.height < 1500 || info.links < 15)) || (CHALLENGE_SRC.test(info.scripts) && info.height < 1200 && info.links < 10);
   return { ...info, challenge, textHash: info.text ? crypto.createHash("sha1").update(info.text).digest("hex") : "" };

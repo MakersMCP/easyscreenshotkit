@@ -723,7 +723,7 @@ test("what counts as a loading sign: a heading or a line that says so, something
 // An app can put its own name in an h1 in its header bar, and the site's
 // name was then taken for the view's and dropped from its title: a view's
 // own heading is its first h1 outside the bars around it.
-test("a view's own heading is its first h1 outside its menus and bars", { skip: noBrowser, timeout: 60_000 }, async () => {
+test("a view's own heading is its first h1 outside its menus and bars, and og:title and application-name are read on one line", { skip: noBrowser, timeout: 60_000 }, async () => {
   setTimeLimit(50_000);
   const chrome = await launch();
   try {
@@ -739,9 +739,11 @@ test("a view's own heading is its first h1 outside its menus and bars", { skip: 
     assert.deepEqual(await headings("<nav><h1>Menu</h1></nav><aside><h1>Side</h1></aside><footer><h1>Foot</h1></footer>"), ["Menu", ""]);
     assert.deepEqual(await headings("<main><header><h1>In the view</h1></header></main>"), ["In the view", "In the view"]);
     assert.deepEqual(await headings("<h1>Plants</h1>"), ["Plants", "Plants"]);
-    // And og:title, on one line, for a site whose title is too long to name it.
-    await tab.send("Runtime.evaluate", { expression: `document.head.insertAdjacentHTML("beforeend", '<meta property="og:title" content="Bright\\nmoss">')` });
-    assert.equal((await readInfo(tab)).ogTitle, "Bright moss");
+    // And og:title and application-name, on one line, for a site whose
+    // title is too long to name it or names a view on either side.
+    await tab.send("Runtime.evaluate", { expression: `document.head.insertAdjacentHTML("beforeend", '<meta property="og:title" content="Bright\\nmoss"><meta name="application-name" content=" Brightmoss ">')` });
+    const named = await readInfo(tab);
+    assert.deepEqual([named.ogTitle, named.appName], ["Bright moss", "Brightmoss"]);
     await closeTab(chrome, tab);
   } finally {
     await chrome.close();

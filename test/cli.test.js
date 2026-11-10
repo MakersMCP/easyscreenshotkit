@@ -225,6 +225,15 @@ test("addresses, page names and the site's name", () => {
   assert.equal(siteName({ siteName: "", title: "Projects · Acme", heading: "All boards", viewHeading: "All boards" }, "https://acme.com/tenant/#/acme/board"), "Acme");
   assert.equal(siteName({ siteName: "", title: "Acme · Projects" }, "https://acme.com/tenant/#/acme/projects"), "Acme");
   assert.equal(siteName({ siteName: "", title: "Projects · Acme" }, "https://acme.com/tenant/#/acme/projects"), "Acme");
+  // A part that says the site's own name, a label of its host's name or its
+  // application-name, is the site, before the route's words are counted:
+  // a section of a nested route after the site's name was taken for it.
+  assert.equal(siteName({ siteName: "", title: "Brightmoss · Settings", viewHeading: "Profile" }, "https://brightmoss.app/#/settings/profile"), "Brightmoss");
+  assert.equal(siteName({ siteName: "", title: "Brightmoss · Plant" }, "https://app.brightmoss.com/#/plant/Fern"), "Brightmoss");
+  assert.equal(siteName({ siteName: "", title: "Acme · Users", viewHeading: "Edit user" }, "https://acme.com/admin/#/users/12/edit"), "Acme");
+  assert.equal(siteName({ siteName: "", title: "Bright Moss · Settings", appName: "Bright Moss", viewHeading: "Profile" }, "http://127.0.0.1:18971/app/#/settings/profile"), "Bright Moss");
+  assert.equal(siteName({ siteName: "", title: "App | Acme" }, "https://app.acme.com/#/today"), "Acme");
+  assert.equal(siteName({ siteName: "", title: "Projects · Acme" }, "https://projects.example/#/acme/board"), "Projects");
   // When every part names the view, the last one: an app can be called what
   // its route is.
   assert.equal(siteName({ siteName: "", title: "Plants · Plants" }, view), "Plants");
