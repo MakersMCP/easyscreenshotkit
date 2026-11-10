@@ -94,10 +94,12 @@ async function checkBackdrop(chrome, value, dir) {
 
 // Whether a picture holds all of itself, by its own format, told from its
 // first bytes, whatever its name: a PNG to its end chunk, a JPEG to its end
-// marker past every segment and scan, a GIF to its trailer past every
-// block, a WebP, an AVIF or a BMP as long as its sizes say. A format it does
-// not know is taken as whole: the browser has said it is a picture, and an
-// SVG cut short is none.
+// marker past every segment and scan, a GIF to its trailer, or to the end
+// of its last picture's data, past every block, a WebP or a BMP as long as
+// its sizes say, an AVIF to the end of the box that holds its pictures'
+// data. What a file holds after that is no part of the picture, as the
+// browser does not read it. A format it does not know is taken as whole:
+// the browser has said it is a picture, and an SVG cut short is none.
 function pictureIsWhole(buf) {
   const starts = (bytes, at = 0) => buf.length >= at + bytes.length && bytes.every((byte, i) => buf[at + i] === byte);
   if (starts([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) return pngIsWhole(buf);
@@ -121,11 +123,16 @@ function pngIsWhole(buf) {
 
 // Segments by their length, each scan to the marker after it, to the end
 // marker. A thumbnail in the file's metadata, with an end marker of its
-// own, is inside a segment and skipped with it.
+// own, is inside a segment and skipped with it. Bytes between a segment and
+// the next marker, as some writers pad with, are passed over, as a decoder
+// passes over them.
 function jpegIsWhole(buf) {
   let at = 2;
   while (at + 1 < buf.length) {
-    if (buf[at] !== 0xff) return false;
+    if (buf[at] !== 0xff) {
+      at++;
+      continue;
+    }
     const marker = buf[at + 1];
     if (marker === 0xff) {
       at++;
@@ -146,7 +153,10 @@ function jpegIsWhole(buf) {
 }
 
 // Blocks after the screen's description and its colours: extensions and
-// pictures, each with its data in sub-blocks, to the trailer.
+// pictures, each with its data in sub-blocks, to the trailer. A file that
+// ends right after a picture's data, its trailer left out, holds all of
+// that picture, and the browser draws it: only data cut inside a block is
+// cut short.
 function gifIsWhole(buf) {
   if (buf.length < 13) return false;
   let at = 13 + (buf[10] & 0x80 ? 3 * (2 << (buf[10] & 7)) : 0);
@@ -158,9 +168,11 @@ function gifIsWhole(buf) {
     }
     return false;
   };
+  let drawn = false;
   while (at < buf.length) {
     const kind = buf[at++];
     if (kind === 0x3b) return true;
+    drawn = false;
     if (kind === 0x21) {
       at++;
       if (!subBlocks()) return false;
@@ -169,26 +181,30 @@ function gifIsWhole(buf) {
       const flags = buf[at + 8];
       at += 9 + (flags & 0x80 ? 3 * (2 << (flags & 7)) : 0) + 1;
       if (!subBlocks()) return false;
+      drawn = true;
     } else return false;
   }
-  return false;
+  return drawn;
 }
 
-// An AVIF's boxes, each as long as it says, to the end of the file.
+// An AVIF's boxes, each as long as it says, to the end of the box that
+// holds its pictures' data (mdat), or of the file. What follows, a few
+// bytes too short to be a box among them, is no part of the picture.
 function boxesAreWhole(buf) {
   let at = 0;
-  while (at < buf.length) {
-    if (at + 8 > buf.length) return false;
+  while (buf.length - at >= 8) {
     let size = buf.readUInt32BE(at);
+    const type = buf.toString("latin1", at + 4, at + 8);
     if (size === 0) return true;
     if (size === 1) {
-      if (at + 16 > buf.length) return false;
+      if (buf.length - at < 16) return false;
       size = Number(buf.readBigUInt64BE(at + 8));
     }
-    if (size < 8) return false;
+    if (size < 8 || at + size > buf.length) return false;
     at += size;
+    if (type === "mdat") return true;
   }
-  return at === buf.length;
+  return at > 0;
 }
 
 // How light the site is, from a small capture of its first screen: 0 is

@@ -279,14 +279,29 @@ test("a --background file is judged by the browser: what it draws is taken, what
   };
   const noisy = pngOf(200, 150, (x, y) => [(x * 37 + y * 11) % 256, (x * y) % 256, (x * 13 + y * 7) % 256]);
   pictures["noisy.png"] = noisy;
+  // Bytes after a picture's end are no part of it: the browser draws it.
+  pictures["trailing.png"] = Buffer.concat([noisy, Buffer.alloc(4)]);
   const cut = { "cut-half.png": noisy.subarray(0, Math.floor(noisy.length / 2)) };
-  for (const [name, args] of ffmpeg ? [["cut.jpg", []], ["cut.gif", []], ["cut.webp", ["-c:v", "libwebp"]]] : []) {
+  for (const [name, args] of ffmpeg ? [["cut.jpg", []], ["cut.gif", []], ["cut.webp", ["-c:v", "libwebp"]], ["cut.avif", ["-c:v", "libaom-av1", "-still-picture", "1"]]] : []) {
     const whole = path.join(root, `whole-${name}`);
     if (spawnSync(ffmpeg, ["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=320x240", "-frames:v", "1", ...args, whole]).status !== 0) continue;
     const data = fs.readFileSync(whole);
     pictures[`whole-${name}`] = data;
     cut[name] = data.subarray(0, Math.floor(data.length / 2));
   }
+  // Whole pictures that were refused as cut short, though the browser draws
+  // them whole: a JPEG with bytes of padding between two of its segments,
+  // as some writers leave, a GIF whose last picture's data is all there and
+  // whose one-byte trailer is not, and an AVIF with a few bytes after its
+  // last box.
+  if (pictures["whole-cut.jpg"]) {
+    const jpeg = pictures["whole-cut.jpg"];
+    const after = 4 + jpeg.readUInt16BE(4);
+    pictures["padded.jpg"] = Buffer.concat([jpeg.subarray(0, after), Buffer.alloc(2), jpeg.subarray(after)]);
+    pictures["trailing.jpg"] = Buffer.concat([jpeg, Buffer.alloc(4)]);
+  }
+  if (pictures["whole-cut.gif"]) pictures["no-trailer.gif"] = pictures["whole-cut.gif"].subarray(0, pictures["whole-cut.gif"].length - 1);
+  if (pictures["whole-cut.avif"]) pictures["trailing.avif"] = Buffer.concat([pictures["whole-cut.avif"], Buffer.alloc(4)]);
   setTimeLimit(50_000);
   const chrome = await launch();
   const file = (name, data) => {
