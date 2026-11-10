@@ -103,6 +103,17 @@ test("a step's frame is the one its seconds in steps.json say, also half a frame
     assert.equal(entry.startFrame, Math.round(entry.start * 30));
     assert.equal(entry.endFrame, Math.round(entry.end * 30));
   }
+  // A page no frame shows is no page of the video: one that came as the
+  // video ended, and one that another took the place of before the next
+  // frame. They were listed, with a start on the video's last frame or
+  // past it, and a caption timed from them landed on another page.
+  const late = { urls: [{ t: 0, url: "https://acme.com/app/#/today" }, { t: 1.004, url: "https://acme.com/app/#/light" }], pages: [], duration: 1.004 };
+  assert.deepEqual(pageEntries(late, { fps: 30, frames: 30 }).map((p) => [p.url, p.start, p.end, p.startFrame, p.endFrame]), [["https://acme.com/app/#/today", 0, 1.004, 0, 30]]);
+  const passing = { urls: [{ t: 0, url: "https://acme.com/a" }, { t: 1.002, url: "https://acme.com/b" }, { t: 1.01, url: "https://acme.com/c" }], pages: [], duration: 3 };
+  assert.deepEqual(pageEntries(passing, { fps: 30, frames: 90 }).map((p) => [p.url, p.start, p.end]), [["https://acme.com/a", 0, 1.01], ["https://acme.com/c", 1.01, 3]]);
+  // A page that comes back after one no frame showed is still one page.
+  const back = { urls: [{ t: 0, url: "https://acme.com/a" }, { t: 1.002, url: "https://acme.com/b" }, { t: 1.01, url: "https://acme.com/a" }], pages: [], duration: 3 };
+  assert.deepEqual(pageEntries(back, { fps: 30, frames: 90 }).map((p) => [p.url, p.start, p.end]), [["https://acme.com/a", 0, 3]]);
 });
 
 test("frames that cannot be saved are told by the folder the demo saves in, not the part of it that is gone by then", async () => {
@@ -877,6 +888,35 @@ test("a tour given a minute shows the #route view given or fails, and names ever
     assert.ok(shown.includes(asked[0]), shown.join(", "));
     for (const url of asked) assert.ok(shown.includes(url) || manifest.notes.includes(`Left out ${url}: time ran out; give more with --timeout.`), `${url}\n${manifest.notes.join("\n")}`);
     assert.ok(manifest.notes.includes("Time ran out after 3 pages: a tour looks for more only while 4 minutes of the run are left; give more with --timeout."), manifest.notes.join("\n"));
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A steps file that ends on a visit, or on a wait for what the page shows
+// already: the video ended as the view came in, and steps.json listed the
+// view with no frame of it. It stays up a moment, as a tour's pages do.
+test("a demo that ends on a visit shows the view it opened, and steps.json lists only views the video shows", { skip: missing, timeout: 300_000 }, async () => {
+  const { server, origin } = await fixture();
+  const root = tempDir();
+  const ends = {
+    visit: "steps:\n  - visit: /app/#/today\n  - wait: 1\n  - visit: /app/#/light\n",
+    met: "steps:\n  - visit: /app/#/today\n  - wait: 1\n  - visit: /app/#/light\n  - wait: h1\n",
+  };
+  try {
+    for (const [name, text] of Object.entries(ends)) {
+      const steps = path.join(root, `${name}.yaml`);
+      fs.writeFileSync(steps, text);
+      const dir = path.join(root, name);
+      const { manifest } = await makeDemo(origin, { dir, steps, gif: false, timeLimit: 200_000 });
+      assert.deepEqual(manifest.pages.map((p) => p.url.slice(origin.length)), ["/app/#/today", "/app/#/light"], name);
+      const last = manifest.pages[1];
+      assert.ok(last.end - last.start >= 1, `${name}: ${last.start} to ${last.end}`);
+      assert.ok(last.startFrame < manifest.video.frames, `${name}: frame ${last.startFrame} of ${manifest.video.frames}`);
+      const frame = await frameOf(path.join(dir, "demo.mp4"), manifest.video.duration - 0.2);
+      assert.ok(near(unzoomed(frame, 800, 700), ORANGE), `${name}: ${unzoomed(frame, 800, 700)}`);
+    }
   } finally {
     server.close();
     fs.rmSync(root, { recursive: true, force: true });

@@ -214,6 +214,10 @@ const TAB_CRASHED = "The browser's tab crashed in the middle of the demo, so no 
 
 const round = (value, places = 3) => Math.round(value * 10 ** places) / 10 ** places;
 
+// How long the page shown last stays on camera at least, in seconds of the
+// video, as a tour waits after each page it opens.
+const LAST_PAGE = 1.1;
+
 // The frame of the video a moment falls on, counted from the seconds
 // steps.json writes for it, so the two always agree: counted from the
 // moment itself, one half a frame from the next could name the frame before
@@ -249,11 +253,18 @@ function stepEntries(records, { fps, toVideo }) {
 // steps.json's pages: the pages in the order the video shows them, each
 // #route a page of its own, with where each starts and ends in seconds and
 // in frames; an address that comes again right after itself, or with
-// another anchor, is the same page. tour: the tour's pages, for why each
-// was taken.
-function pageEntries(take, { fps, tour = null }) {
+// another anchor, is the same page. A page no frame of the video shows is
+// not one of them: frames, how many the video has. tour: the tour's pages,
+// for why each was taken.
+function pageEntries(take, { fps, tour = null, frames = Infinity }) {
   const frameOf = (t) => frameAt(t, fps);
-  const changes = take.urls.filter((change, i) => i === 0 || viewOf(change.url) !== viewOf(take.urls[i - 1].url));
+  const same = (a, b) => viewOf(a.url) === viewOf(b.url);
+  const views = take.urls.filter((change, i) => i === 0 || !same(change, take.urls[i - 1]));
+  // The first frame drawn at or after a moment: frame k shows what came by
+  // k / fps (see compose.js).
+  const firstAt = (t) => Math.max(0, Math.ceil((t - 1e-6) * fps));
+  const shown = views.filter((change, i) => firstAt(change.t) < Math.min(frames, i + 1 < views.length ? firstAt(views[i + 1].t) : Infinity));
+  const changes = shown.filter((change, i) => i === 0 || !same(change, shown[i - 1]));
   return changes.map((change, i) => {
     const end = i + 1 < changes.length ? changes[i + 1].t : take.duration;
     const known = take.pages.find((page) => page.url === change.url);
@@ -416,6 +427,9 @@ async function makeDemo(rawUrl, options = {}) {
         if (step.expect && record.opened && placeOf(record.opened) !== placeOf(step.expect)) notes.push(`The link for ${step.expect} led to ${record.opened}.`);
       }
       for (const skip of outOfTime) notes.push(`Left out ${skip.url}: ${skip.reason}.`);
+      // The page shown last stays up a moment, as a tour's pages do.
+      await recorder.linger(LAST_PAGE);
+      alive();
       take = await recorder.finish();
       alive();
       // A steps file's demo names the site by its first page, as a tour
@@ -471,9 +485,9 @@ async function makeDemo(rawUrl, options = {}) {
       const k = layout.scale * cam.z;
       return [Math.round(layout.content.x + (point.x - cam.x) * k), Math.round(layout.content.y + (point.y - cam.y) * k)];
     };
-    const steps = stepEntries(records, { fps, toVideo });
-    const pagesShown = pageEntries(take, { fps, tour });
     const total = drawn.frames;
+    const steps = stepEntries(records, { fps, toVideo });
+    const pagesShown = pageEntries(take, { fps, tour, frames: total });
     manifest = {
       version: 1,
       kind: "demo",

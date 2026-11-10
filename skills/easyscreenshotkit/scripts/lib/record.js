@@ -934,6 +934,17 @@ class Recorder {
     return record;
   }
 
+  // Keeps the page or view shown last on camera for seconds of the video
+  // from when it came, as a tour keeps each page it opens: a demo whose
+  // last step opened one, or waited for what was there already, ended as it
+  // came in, and no frame showed it.
+  async linger(seconds) {
+    const last = this.take.urls[this.take.urls.length - 1];
+    if (!last || !this.live) return;
+    const shown = this.now() - last.t;
+    if (shown < seconds) await this.hold(seconds - shown);
+  }
+
   // The recording, for compose.js.
   async finish() {
     this.stopLive();
