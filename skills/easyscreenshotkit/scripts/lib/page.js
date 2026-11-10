@@ -231,9 +231,10 @@ const DRAWN = `(el) => {
 // A line says so in nothing but such words ("Loading", "Loading, please
 // wait") or by trailing off ("Loading your plants..."). One that goes on in
 // words of its own is a name ("Loading states", "Loading docks"), and so is
-// the word alone in a link or in a table's cell, a truck's status say,
-// where dots still make it a sign. A cell across the whole table is a
-// placeholder.
+// the word alone in a link, a heading whose words are all a link's in it
+// too (the anchor a docs site puts in each heading), or in a table's cell,
+// a truck's status say, where dots still make it a sign. A cell across the
+// whole table is a placeholder.
 const LOADING_WORDS = "loading|please wait|one moment(?: please)?|yükleniyor|lütfen bekleyin|wird geladen|lädt|bitte warten|chargement|veuillez patienter|cargando|carregando|aguarde";
 const A_NAME = 'a[href], td:not([colspan]), th:not([colspan]), [role="cell"], [role="gridcell"]';
 const LOADING_SIGN = `(() => {
@@ -246,11 +247,13 @@ const LOADING_SIGN = `(() => {
   const starts = /^(?:${LOADING_WORDS})(?![\\p{L}\\p{N}])/iu;
   const nothingElse = /^(?:${LOADING_WORDS})(?:[\\s,.:;…!–—-]+(?:${LOADING_WORDS}))*[\\s.…]*$/iu;
   const trailsOff = /(?:…|\\.{2,3})$/;
+  const words = (el) => el.textContent.replace(/\\s+/g, " ").trim();
+  const name = (el, text) => el.closest(${JSON.stringify(A_NAME)}) || [...el.querySelectorAll("a[href]")].some((a) => words(a) === text);
   for (const el of document.querySelectorAll("body *")) {
     if (el.children.length && !/^H[1-6]$/.test(el.tagName) && el.getAttribute("role") !== "heading") continue;
-    const text = el.textContent.replace(/\\s+/g, " ").trim();
+    const text = words(el);
     if (text.length > 40 || !starts.test(text) || !shown(el)) continue;
-    if (trailsOff.test(text) || (nothingElse.test(text) && !el.closest(${JSON.stringify(A_NAME)}))) return true;
+    if (trailsOff.test(text) || (nothingElse.test(text) && !name(el, text))) return true;
   }
   return false;
 })()`;
