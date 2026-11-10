@@ -260,6 +260,34 @@ async function showsLoadingSign(cdp) {
   return Boolean(result && result.value);
 }
 
+// What stands around a view on every view of an app: its menus and side
+// panes, and the bars along the top and the bottom of the page. A header or
+// a footer inside the view's own content is part of it.
+const AROUND = 'nav, aside, header:not(main *, article *, section *), footer:not(main *, article *, section *), [role="navigation"], [role="banner"], [role="contentinfo"], [role="complementary"]';
+
+// Whether a view has drawn nothing of its own yet, as one that shows a
+// spinner beside its menu has not: outside what stands around it there is
+// no heading, no picture of any size and next to no words.
+const LOOKS_EMPTY = `(() => {
+  const drawn = ${DRAWN};
+  const around = ${JSON.stringify(AROUND)};
+  const own = (el) => !el.closest(around) && drawn(el);
+  if ([...document.querySelectorAll('h1, h2, h3, h4, h5, h6, [role="heading"]')].some((el) => el.textContent.trim() && own(el))) return false;
+  const picture = (el) => {
+    const r = el.getBoundingClientRect();
+    return r.width >= 200 && r.height >= 200 && own(el);
+  };
+  if ([...document.querySelectorAll("img, svg, canvas, video, iframe")].some(picture)) return false;
+  const letters = (el) => el.innerText.replace(/\\s+/g, "").length;
+  const menus = [...document.querySelectorAll(around)].filter((el) => el.getClientRects().length && !el.parentElement.closest(around));
+  return letters(document.body) - menus.reduce((sum, el) => sum + letters(el), 0) < 20;
+})()`;
+
+async function looksEmpty(cdp) {
+  const { result } = await cdp.send("Runtime.evaluate", { expression: LOOKS_EMPTY, returnByValue: true }, 5_000).catch(() => ({ result: {} }));
+  return Boolean(result && result.value);
+}
+
 // Waits until a view has drawn, as far as can be told from outside: no
 // request out for half a second (see quietNetwork) and no loading sign, as
 // a view can draw late with no request at all, on a timer or from data over
@@ -571,6 +599,7 @@ module.exports = {
   networkQuiet,
   quietNetwork,
   showsLoadingSign,
+  looksEmpty,
   waitForDrawn,
   waitForFonts,
   clearHover,

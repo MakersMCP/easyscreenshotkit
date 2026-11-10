@@ -14,7 +14,7 @@ const test = require("node:test");
 const { takeShots, DEVICES } = require("../skills/easyscreenshotkit/scripts/lib/shots");
 const { findChrome, launch, openTab, closeTab, navigate, killBrowsers, removeProfiles, removeStrayLocks, removeFetchFolders, fetchFolders, roomIn } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
 const { setTimeLimit, sleep } = require("../skills/easyscreenshotkit/scripts/lib/time");
-const { watchRequests, networkQuiet, showsLoadingSign } = require("../skills/easyscreenshotkit/scripts/lib/page");
+const { watchRequests, networkQuiet, showsLoadingSign, looksEmpty } = require("../skills/easyscreenshotkit/scripts/lib/page");
 const { LOCATE } = require("../skills/easyscreenshotkit/scripts/lib/record");
 const { pngText } = require("../skills/easyscreenshotkit/scripts/lib/png");
 const { readPng, serve, near, descendants } = require("./helpers");
@@ -717,6 +717,137 @@ test("what counts as a loading sign: a heading or a line that says so, something
     await closeTab(chrome, tab);
   } finally {
     await chrome.close();
+  }
+});
+
+test("what counts as a view with nothing drawn: outside its menus and bars, no heading, no picture of any size and next to no words", { skip: noBrowser, timeout: 60_000 }, async () => {
+  setTimeLimit(50_000);
+  const chrome = await launch();
+  const words = "Three short sentences of a view's own words.";
+  const menu = `<nav>${"<a href='#/x'>A link in the menu</a> ".repeat(4)}</nav>`;
+  try {
+    const tab = await openTab(chrome, DEVICES.desktop);
+    const empty = async (html) => {
+      await tab.send("Runtime.evaluate", { expression: `document.body.innerHTML = ${JSON.stringify(html)}` });
+      return looksEmpty(tab);
+    };
+    const bare = [
+      "",
+      "<main></main>",
+      `${menu}<main><div style="width:60px;height:60px;border:6px solid #ccc"></div></main>`,
+      `<header><h1>Acme</h1>${menu}<p>Signed in as somebody with a long name</p></header><main><div></div></main>`,
+      `<aside>${words}</aside><footer>${words}</footer><main><p>Just a second</p></main>`,
+      `${menu}<main><img width="64" height="64" alt=""></main>`,
+      `<h1 style="display:none">Hidden</h1><main></main>`,
+      `<h1 style="position:absolute;left:-9999px">Parked</h1><main></main>`,
+      `<main><img width="400" height="300" alt="" style="visibility:hidden"></main>`,
+    ];
+    const drawn = [
+      "<h1>Plants</h1>",
+      `${menu}<main><h2>Plants</h2></main>`,
+      '<div role="heading" aria-level="1">Plants</div>',
+      `<main><p>${words}</p></main>`,
+      `${menu}<p>${words}</p>`,
+      '<main><header><h1>In the view</h1></header></main>',
+      '<main><canvas width="800" height="500"></canvas></main>',
+      '<main><img width="400" height="300" alt=""></main>',
+      '<main><iframe width="400" height="300"></iframe></main>',
+      // A menu that is not drawn takes nothing off the view's words.
+      `<nav style="display:none">${"A link in a closed menu ".repeat(8)}</nav><main><p>${words}</p></main>`,
+    ];
+    for (const html of bare) assert.equal(await empty(html), true, html);
+    for (const html of drawn) assert.equal(await empty(html), false, html);
+    await closeTab(chrome, tab);
+  } finally {
+    await chrome.close();
+  }
+});
+
+// Views whose data has not come by the end of their wait, served to the two
+// tests below. A blank view, one that shows a spinner beside a link and one
+// with a fixed box that says Loading all went into
+// pwa/manifest-screenshots.json with the note that a request was still
+// open: nothing showed a sign when the capture was taken, the box because
+// the clean-up had hidden it.
+const LATE = '<script>fetch("/longpoll").then(() => document.body.append("came"));</script>';
+const CLEANED_UP = (act) => `<script>new MutationObserver(() => { if (document.getElementById("easyscreenshotkit-hide")) { ${act} } }).observe(document.head, { childList: true });</script>`;
+const UNREADY = {
+  "/blank/": `<main></main>${LATE}`,
+  "/spin/": `<div id="onetrust-banner-sdk">We use cookies to give you the best experience of this site.</div><nav><a href="#/one">One</a></nav><main><div style="width:60px;height:60px;border:6px solid #ccc"></div></main>${LATE}`,
+  "/box/": `<div style="position:fixed;left:40%;top:40%;width:300px;height:120px;background:#fff"><span>Loading…</span></div><nav><a href="#/one">One</a></nav><main><h1>Plants</h1><p>The plants of the house, by the room they stand in.</p></main>${LATE}`,
+  // Its sign goes by itself, the moment the clean-up starts.
+  "/drew/": `<nav><a href="#/one">One</a></nav><h1 id="h">Loading…</h1>${CLEANED_UP('document.getElementById("h").textContent = "Drawn";')}`,
+  // It goes to another route as the clean-up starts, one that never gets its data.
+  "/moved/": `<nav><a href="#/one">One</a></nav><main id="view"><h1>One</h1></main>${CLEANED_UP('if (location.hash !== "#/two") { location.hash = "#/two"; document.getElementById("view").innerHTML = "<h1>Loading…</h1>"; fetch("/longpoll"); }')}`,
+  // Words and a heading, but no link, no picture and nothing below the first screen.
+  "/words/": `<main><h1>Plants</h1><p>The plants of the house, by the room they stand in.</p></main>${LATE}`,
+  // The same, with a link that comes as the clean-up starts.
+  "/link/": `<main id="view"><h1>Plants</h1><p>The plants of the house, by the room they stand in.</p></main>${LATE}${CLEANED_UP('if (!document.querySelector("a")) document.getElementById("view").insertAdjacentHTML("beforeend", \'<a href="#/two">Two</a>\');')}`,
+};
+
+async function unreadyFixture() {
+  const { server, origin } = await serve((req, res) => {
+    if (req.url === "/longpoll") return;
+    if (UNREADY[req.url]) return res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("View | Acme", UNREADY[req.url]));
+    res.writeHead(404).end("not found");
+  });
+  const root = tempDir();
+  return {
+    origin,
+    take: async (name, options = {}) => (await takeShots(`${origin}/${name}/#/one`, { dir: path.join(root, name), pages: 1, sizes: "desktop", pwa: true, timeLimit: 130_000, ...options })).manifest,
+    done: () => {
+      server.close();
+      server.closeAllConnections();
+      fs.rmSync(root, { recursive: true, force: true });
+    },
+    folder: (name) => path.join(root, name),
+  };
+}
+
+const UNREADY_LEFT_OUT = [
+  { page: 1, form_factor: "wide", reason: "still loading data after 10 s" },
+  { page: 1, form_factor: "narrow", reason: "still loading data after 2 s" },
+];
+
+test("a #route view still waiting for its data is left out for --pwa when it is blank, shows only a spinner or a sign the clean-up hides", { skip: noBrowser, timeout: 280_000 }, async () => {
+  const { take, done, folder } = await unreadyFixture();
+  try {
+    const blank = await take("blank");
+    assert.deepEqual(blank.pages[0].notes, ["still showed a loading screen after 20 s", "still loading data after 10 s", "pwa-narrow: still showed a loading screen after 20 s", "pwa-narrow: still loading data after 2 s"]);
+    assert.deepEqual([blank.pwa.file, blank.pwa.leftOut], ["", UNREADY_LEFT_OUT]);
+    const spin = await take("spin");
+    assert.deepEqual([spin.pages[0].hidden, spin.pages[0].notes], [1, ["still loading data after 10 s", "pwa-narrow: still loading data after 2 s"]]);
+    assert.deepEqual([spin.pwa.file, spin.pwa.leftOut], ["", UNREADY_LEFT_OUT]);
+    const box = await take("box");
+    assert.deepEqual([box.pages[0].hidden, box.pages[0].heading, box.pages[0].notes], [1, "Plants", ["still loading data after 10 s", "pwa-narrow: still loading data after 2 s"]]);
+    assert.deepEqual([box.pwa.file, box.pwa.leftOut], ["", UNREADY_LEFT_OUT]);
+    assert.equal(fs.existsSync(path.join(folder("box"), "pwa")), false);
+  } finally {
+    done();
+  }
+});
+
+// A sign that went by itself after the wait means the view has drawn. A view
+// that went to another route is judged by what that route shows. In a run
+// short of time, a view the wait for a page's content has not seen drawn
+// counts as not ready while a request is out, whatever words it has, and as
+// drawn once a link has come.
+test("a #route view whose sign has gone is kept, one that moved on is judged by the route it went to, and one short of time by what it has drawn", { skip: noBrowser, timeout: 240_000 }, async () => {
+  const { origin, take, done } = await unreadyFixture();
+  try {
+    const drew = await take("drew");
+    assert.deepEqual([drew.pages[0].hidden, drew.pages[0].notes, drew.pwa.leftOut, drew.pwa.screenshots.map((s) => s.label)], [0, [], [], ["Drawn", "Drawn"]]);
+    const moved = await take("moved");
+    assert.deepEqual(moved.pages[0].notes, ["still loading data after 10 s", `opened ${origin}/moved/#/one and landed on ${origin}/moved/#/two`]);
+    assert.deepEqual(moved.pwa.leftOut, [UNREADY_LEFT_OUT[0]]);
+    const words = await take("words", { timeLimit: 40_000 });
+    assert.deepEqual(words.pages[0].notes.slice(0, 2), ["still loading data after 10 s", "taken while it still showed a loading screen: time ran short; give more with --timeout"]);
+    assert.deepEqual(words.pwa.leftOut, [UNREADY_LEFT_OUT[0]]);
+    const link = await take("link", { timeLimit: 40_000 });
+    assert.deepEqual(link.pages[0].notes.slice(0, 1), ["a request was still open after 10 s"]);
+    assert.deepEqual(link.pwa.leftOut, []);
+  } finally {
+    done();
   }
 });
 

@@ -23,7 +23,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { launch, openTab, closeTab, navigate, currentUrl, CRASHED } = require("./chrome");
-const { metrics, scrollTo, walk, showsContent, waitForContent, settle, watchRequests, networkQuiet, waitForDrawn, showsLoadingSign, waitForFonts, clearHover, resetPictureWait, capture, captureScreen, capturePage } = require("./page");
+const { metrics, scrollTo, walk, showsContent, waitForContent, settle, watchRequests, networkQuiet, waitForDrawn, showsLoadingSign, looksEmpty, waitForFonts, clearHover, resetPictureWait, capture, captureScreen, capturePage } = require("./page");
 const { clean } = require("./clean");
 const { homeOf, pageKey, routeOf, viewKey, pathOf, pageUrl, anchorOf, siteOf, fold, kindOf, rankLinks, routeLinks, visitOrder, readSiteIndex, localeOf, alternateFor, oneLine, ROUTE_LINK } = require("./pick");
 const { pngFileIsWhole, pngSize, tagPng } = require("./png");
@@ -594,6 +594,11 @@ async function visit(chrome, page, group, theme, ctx, { check = null, links = fa
     const found = links || routes ? await readLinks(tab) : null;
     const m0 = await metrics(tab);
     const tidy = () => (ctx.clean ? clean(tab, { hide: ctx.hide, viewport: { width: m0.width, height: m0.viewportHeight } }) : { hidden: 0, unlocked: false, badSelectors: [] });
+    // Whether a view whose wait ended before it was ready shows a loading
+    // sign by then, read before the clean-up: that hides a fixed box that
+    // says Loading as it hides any other.
+    const signAfterWait = async () => view !== "quiet" && (await showsLoadingSign(tab));
+    let sign = await signAfterWait();
     let cleaned = await tidy();
     await waitForFonts(tab);
     await scrollTo(tab, 0);
@@ -610,6 +615,7 @@ async function visit(chrome, page, group, theme, ctx, { check = null, links = fa
     if (moved) {
       view = await waitForView(tab, nav, page.url, page.busy, opened);
       await settle(tab, 6_000);
+      sign = await signAfterWait();
       cleaned = await tidy();
       await waitForFonts(tab);
       await scrollTo(tab, 0);
@@ -617,19 +623,24 @@ async function visit(chrome, page, group, theme, ctx, { check = null, links = fa
     }
     // A page whose waits ended before it was ready, at their limit or as the
     // run's time ran short, may have had its data and drawn its content
-    // since: it is taken before them only when it still shows a loading
-    // sign, or a bare loading screen. One that looks drawn with a request
-    // still out is only said to have one. Its title and heading are read
-    // again, as it is taken.
+    // since. It counts as taken before them when it showed a loading sign
+    // as they ended and that has not gone by itself (with boxes hidden
+    // since, it may only be hidden), or when a request is still out and,
+    // as it is taken, it is a bare loading screen or looks empty. One that
+    // looks drawn with a request still out is only said to have one. Its
+    // title and heading are read again, as it is taken.
     let short = false;
     let busy = false;
     let open = "";
     if (view !== "quiet" || loaded === null || moved) {
-      if (view !== "quiet" && (await showsLoadingSign(tab))) {
-        short = view === "short";
-        busy = view === "busy";
-      } else if (view !== "quiet" && !networkQuiet(tab, 0)) open = view;
       if (loaded === null && (await showsContent(tab).catch(() => false))) loaded = true;
+      if (view !== "quiet") {
+        const out = !networkQuiet(tab, 0);
+        if ((sign && (cleaned.hidden > 0 || (await showsLoadingSign(tab)))) || (out && (loaded !== true || (await looksEmpty(tab))))) {
+          short = view === "short";
+          busy = view === "busy";
+        } else if (out) open = view;
+      }
       const now = await readInfo(tab);
       Object.assign(info, { title: now.title, heading: now.heading });
     }
