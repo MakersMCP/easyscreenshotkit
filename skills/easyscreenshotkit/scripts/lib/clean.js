@@ -6,6 +6,7 @@
 // consent on the user's behalf, and hiding gives the same picture.
 
 const { sleep } = require("./time");
+const { SIGN_IN } = require("./page");
 
 // The consent and chat tools seen most, by the ids and classes that are
 // theirs alone. The rule below catches anything fixed to the screen; these
@@ -61,11 +62,12 @@ const KNOWN = [
 
 // Hides every element the selectors match, with a rule for ones that come
 // later and inline for ones the page styled inline. A selector the browser
-// cannot read is skipped and named. Returns how many elements were showing.
-const HIDE_SELECTORS = `(function (selectors) {
+// cannot read is skipped and named. Returns how many elements were showing,
+// and how many of those showed a loading sign (signIn, see page.js).
+const HIDE_SELECTORS = `(function (selectors, signIn) {
   var style = document.getElementById("easyscreenshotkit-hide") || document.createElement("style");
   style.id = "easyscreenshotkit-hide";
-  var rules = [], bad = [], hidden = 0, big = false;
+  var rules = [], bad = [], hidden = 0, signs = 0, big = false;
   selectors.forEach(function (selector) {
     var found;
     try {
@@ -79,6 +81,7 @@ const HIDE_SELECTORS = `(function (selectors) {
       var r = el.getBoundingClientRect();
       if (r.width > 0 && r.height > 0) {
         hidden++;
+        if (signIn(el)) signs++;
         if (r.width * r.height >= 0.5 * innerWidth * innerHeight) big = true;
       }
       el.style.setProperty("display", "none", "important");
@@ -86,7 +89,7 @@ const HIDE_SELECTORS = `(function (selectors) {
   });
   style.textContent = rules.join("\\n");
   (document.head || document.documentElement).appendChild(style);
-  return { hidden: hidden, bad: bad, big: big };
+  return { hidden: hidden, signs: signs, bad: bad, big: big };
 })`;
 
 // Floating overlays repeat over the content in every capture. Hide every
@@ -104,11 +107,12 @@ function isPageChrome([x, y, width, height], viewportWidth, viewportHeight) {
 }
 
 // A fixed layer with a negative z-index sits behind the page (a gradient or
-// a video under the content) and stays.
+// a video under the content) and stays. Returns how many boxes it hid, and
+// how many of them showed a loading sign as they were hidden.
 async function hideFixed(cdp, viewportWidth, viewportHeight) {
   const snap = await cdp.send("DOMSnapshot.captureSnapshot", { computedStyles: ["position", "display", "z-index"] });
   const doc = (snap.documents || [])[0];
-  if (!doc || !doc.layout) return { hidden: 0, big: false };
+  if (!doc || !doc.layout) return { hidden: 0, signs: 0, big: false };
   const strings = snap.strings || [];
   const names = (doc.nodes.nodeName || []).map((i) => strings[i] || "");
   const backendIds = [];
@@ -143,14 +147,18 @@ async function hideFixed(cdp, viewportWidth, viewportHeight) {
       if (seen >= 0.5 * viewportWidth * viewportHeight) big = true;
     }
   }
-  if (backendIds.length === 0) return { hidden: 0, big };
+  if (backendIds.length === 0) return { hidden: 0, signs: 0, big };
   await cdp.send("DOM.getDocument", { depth: 0 });
   const { nodeIds = [] } = await cdp.send("DOM.pushNodesByBackendIdsToFrontend", {
     backendNodeIds: backendIds,
   });
   let hidden = 0;
+  let signs = 0;
   for (const nodeId of nodeIds) {
     if (!nodeId) continue;
+    // Whether the box shows a loading sign, asked before it is hidden: a
+    // sign that is gone afterwards may only be hidden.
+    if (await signIn(cdp, nodeId)) signs++;
     try {
       const { attributes = [] } = await cdp.send("DOM.getAttributes", { nodeId });
       const at = attributes.indexOf("style");
@@ -165,7 +173,20 @@ async function hideFixed(cdp, viewportWidth, viewportHeight) {
       // A node that vanished meanwhile needs no hiding.
     }
   }
-  return { hidden, big };
+  await cdp.send("Runtime.releaseObjectGroup", { objectGroup: GROUP }).catch(() => {});
+  return { hidden, signs, big };
+}
+
+// Whether the element a node of the DOM agent is shows a loading sign.
+const GROUP = "easyscreenshotkit-clean";
+async function signIn(cdp, nodeId) {
+  try {
+    const { object } = await cdp.send("DOM.resolveNode", { nodeId, objectGroup: GROUP });
+    const { result } = await cdp.send("Runtime.callFunctionOn", { objectId: object.objectId, functionDeclaration: `function () { return ${SIGN_IN}(this); }`, returnByValue: true });
+    return Boolean(result && result.value);
+  } catch {
+    return false;
+  }
 }
 
 // A consent dialog often stops the page from scrolling while it is open:
@@ -193,21 +214,22 @@ const UNLOCK = `(function () {
 
 // Cleans the page as it stands (scrolled to its top, after the walk, so a
 // box that comes up on scrolling is caught too). hide: more selectors the
-// user asked to hide. Returns {hidden, unlocked, badSelectors}.
+// user asked to hide. Returns {hidden, signs, unlocked, badSelectors}:
+// signs, how many of the boxes hidden showed a loading sign then.
 async function clean(cdp, { hide = [], viewport }) {
   const selectors = [...KNOWN, ...hide];
   const { result } = await cdp
-    .send("Runtime.evaluate", { expression: `${HIDE_SELECTORS}(${JSON.stringify(selectors)})`, returnByValue: true }, 10_000)
+    .send("Runtime.evaluate", { expression: `${HIDE_SELECTORS}(${JSON.stringify(selectors)}, ${SIGN_IN})`, returnByValue: true }, 10_000)
     .catch(() => ({ result: {} }));
-  const known = (result && result.value) || { hidden: 0, bad: [], big: false };
-  const fixed = await hideFixed(cdp, viewport.width, viewport.height).catch(() => ({ hidden: 0, big: false }));
+  const known = (result && result.value) || { hidden: 0, signs: 0, bad: [], big: false };
+  const fixed = await hideFixed(cdp, viewport.width, viewport.height).catch(() => ({ hidden: 0, signs: 0, big: false }));
   let unlocked = 0;
   if (known.big || fixed.big) {
     const answer = await cdp.send("Runtime.evaluate", { expression: UNLOCK, returnByValue: true }, 5_000).catch(() => ({ result: {} }));
     unlocked = Number(answer.result && answer.result.value) || 0;
   }
   await sleep(300);
-  return { hidden: known.hidden + fixed.hidden, unlocked: unlocked > 0, badSelectors: known.bad || [] };
+  return { hidden: known.hidden + fixed.hidden, signs: (known.signs || 0) + fixed.signs, unlocked: unlocked > 0, badSelectors: known.bad || [] };
 }
 
 module.exports = { KNOWN, isPageChrome, hideFixed, clean };

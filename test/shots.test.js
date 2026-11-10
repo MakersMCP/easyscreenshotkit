@@ -810,8 +810,13 @@ const UNREADY = {
   "/blank/": `<main></main>${LATE}`,
   "/spin/": `<div id="onetrust-banner-sdk">We use cookies to give you the best experience of this site.</div><nav><a href="#/one">One</a></nav><main><div style="width:60px;height:60px;border:6px solid #ccc"></div></main>${LATE}`,
   "/box/": `<div style="position:fixed;left:40%;top:40%;width:300px;height:120px;background:#fff"><span>Loading…</span></div><nav><a href="#/one">One</a></nav><main><h1>Plants</h1><p>The plants of the house, by the room they stand in.</p></main>${LATE}`,
+  // The same sign in a box the clean-up hides by a chat tool's id.
+  "/box-known/": `<div id="chat-widget-container"><span>Loading…</span></div><nav><a href="#/one">One</a></nav><main><h1>Plants</h1><p>The plants of the house, by the room they stand in.</p></main>${LATE}`,
   // Its sign goes by itself, the moment the clean-up starts.
   "/drew/": `<nav><a href="#/one">One</a></nav><h1 id="h">Loading…</h1>${CLEANED_UP('document.getElementById("h").textContent = "Drawn";')}`,
+  // The same, with a chat box the clean-up hides, which shows no sign: it
+  // counted as a sign hidden, and the view lost its captures.
+  "/drew-chat/": `<div id="chat" style="position:fixed;right:20px;bottom:20px;width:300px;height:200px;background:rgb(255,0,0)">Chat with us</div><nav><a href="#/one">One</a></nav><h1 id="h">Loading…</h1>${CLEANED_UP('document.getElementById("h").textContent = "Drawn";')}`,
   // It goes to another route as the clean-up starts, one that never gets its data.
   "/moved/": `<nav><a href="#/one">One</a></nav><main id="view"><h1>One</h1></main>${CLEANED_UP('if (location.hash !== "#/two") { location.hash = "#/two"; document.getElementById("view").innerHTML = "<h1>Loading…</h1>"; fetch("/longpoll"); }')}`,
   // It goes to another route as the first clean-up hides its chat box, and
@@ -863,10 +868,12 @@ test("a #route view still waiting for its data is left out for --pwa when it is 
     const spin = await take("spin");
     assert.deepEqual([spin.pages[0].hidden, spin.pages[0].notes], [1, ["still loading data after 10 s", "pwa-narrow: still loading data after 2 s"]]);
     assert.deepEqual([spin.pwa.file, spin.pwa.leftOut], ["", UNREADY_LEFT_OUT]);
-    const box = await take("box");
-    assert.deepEqual([box.pages[0].hidden, box.pages[0].heading, box.pages[0].notes], [1, "Plants", ["still loading data after 10 s", "pwa-narrow: still loading data after 2 s"]]);
-    assert.deepEqual([box.pwa.file, box.pwa.leftOut], ["", UNREADY_LEFT_OUT]);
-    assert.equal(fs.existsSync(path.join(folder("box"), "pwa")), false);
+    for (const name of ["box", "box-known"]) {
+      const box = await take(name);
+      assert.deepEqual([box.pages[0].hidden, box.pages[0].heading, box.pages[0].notes], [1, "Plants", ["still loading data after 10 s", "pwa-narrow: still loading data after 2 s"]], name);
+      assert.deepEqual([box.pwa.file, box.pwa.leftOut], ["", UNREADY_LEFT_OUT], name);
+      assert.equal(fs.existsSync(path.join(folder(name), "pwa")), false, name);
+    }
   } finally {
     done();
   }
@@ -883,6 +890,8 @@ test("a #route view whose sign has gone is kept, one that moved on is judged by 
   try {
     const drew = await take("drew");
     assert.deepEqual([drew.pages[0].hidden, drew.pages[0].notes, drew.pwa.leftOut, drew.pwa.screenshots.map((s) => s.label)], [0, [], [], ["Drawn", "Drawn"]]);
+    const chat = await take("drew-chat");
+    assert.deepEqual([chat.pages[0].hidden, chat.pages[0].notes, chat.pwa.leftOut, chat.pwa.screenshots.map((s) => s.label)], [1, [], [], ["Drawn", "Drawn"]]);
     const moved = await take("moved");
     assert.deepEqual(moved.pages[0].notes, ["still loading data after 10 s", `opened ${origin}/moved/#/one and landed on ${origin}/moved/#/two`]);
     assert.deepEqual(moved.pwa.leftOut, [UNREADY_LEFT_OUT[0]]);

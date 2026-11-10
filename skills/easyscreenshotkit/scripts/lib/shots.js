@@ -602,7 +602,7 @@ async function visit(chrome, page, group, theme, ctx, { check = null, links = fa
       const reason = rejectAtOnce({ asked: page.url, nav, info: glance }, check);
       if (reason) return { rejected: reason, nav, info: glance };
     } else if (glance.challenge || nav.status >= 400) {
-      return { nav, info: glance, loaded: false, links: [], shots: [], cleaned: { hidden: 0, unlocked: false, badSelectors: [] } };
+      return { nav, info: glance, loaded: false, links: [], shots: [], cleaned: { hidden: 0, signs: 0, unlocked: false, badSelectors: [] } };
     }
     const opened = Date.now();
     let view = await waitForView(tab, nav, page.url, page.busy, opened);
@@ -620,16 +620,18 @@ async function visit(chrome, page, group, theme, ctx, { check = null, links = fa
     else await scrollTo(tab, 0);
     const found = links || routes ? await readLinks(tab) : null;
     const m0 = await metrics(tab);
-    const tidy = () => (ctx.clean ? clean(tab, { hide: ctx.hide, viewport: { width: m0.width, height: m0.viewportHeight } }) : { hidden: 0, unlocked: false, badSelectors: [] });
+    const tidy = () => (ctx.clean ? clean(tab, { hide: ctx.hide, viewport: { width: m0.width, height: m0.viewportHeight } }) : { hidden: 0, signs: 0, unlocked: false, badSelectors: [] });
     // Whether a view whose wait ended before it was ready shows a loading
     // sign by then, read before the clean-up: that hides a fixed box that
     // says Loading as it hides any other.
     const signAfterWait = async () => view !== "quiet" && (await showsLoadingSign(tab));
     let sign = await signAfterWait();
     let cleaned = await tidy();
-    // What the clean-up hid after the sign was last read: a sign gone since
-    // may only be hidden. What it hid before is no such sign.
-    let hiddenSince = cleaned.hidden;
+    // The loading signs among the boxes the clean-up hid after the sign was
+    // last read: a sign gone since may only be hidden. A box that showed
+    // none, a chat bubble say, says nothing of it, and nor does one hidden
+    // before.
+    let signsHidden = cleaned.signs;
     await waitForFonts(tab);
     await scrollTo(tab, 0);
     await sleep(400);
@@ -649,7 +651,7 @@ async function visit(chrome, page, group, theme, ctx, { check = null, links = fa
       // The first clean-up's boxes stay hidden, and this one counts only
       // what came since. The report adds the two up.
       const again = await tidy();
-      hiddenSince = again.hidden;
+      signsHidden = again.signs;
       cleaned = { ...again, hidden: cleaned.hidden + again.hidden, unlocked: cleaned.unlocked || again.unlocked };
       await waitForFonts(tab);
       await scrollTo(tab, 0);
@@ -658,11 +660,11 @@ async function visit(chrome, page, group, theme, ctx, { check = null, links = fa
     // A page whose waits ended before it was ready, at their limit or as the
     // run's time ran short, may have had its data and drawn its content
     // since. It counts as taken before them when it showed a loading sign
-    // as they ended and that has not gone by itself (with boxes hidden
-    // since, it may only be hidden), or when a request is still out and,
-    // as it is taken, it is a bare loading screen or looks empty. One that
-    // looks drawn with a request still out is only said to have one. Its
-    // title and heading are read again, as it is taken.
+    // as they ended and that has not gone by itself (with a box that showed
+    // one hidden since, it may only be hidden), or when a request is still
+    // out and, as it is taken, it is a bare loading screen or looks empty.
+    // One that looks drawn with a request still out is only said to have
+    // one. Its title and heading are read again, as it is taken.
     let short = false;
     let busy = false;
     let open = "";
@@ -670,7 +672,7 @@ async function visit(chrome, page, group, theme, ctx, { check = null, links = fa
       if (loaded === null && (await showsContent(tab).catch(() => false))) loaded = true;
       if (view !== "quiet") {
         const out = !networkQuiet(tab, 0);
-        if ((sign && (hiddenSince > 0 || (await showsLoadingSign(tab)))) || (out && (loaded !== true || (await looksEmpty(tab))))) {
+        if ((sign && (signsHidden > 0 || (await showsLoadingSign(tab)))) || (out && (loaded !== true || (await looksEmpty(tab))))) {
           short = view === "short";
           busy = view === "busy";
         } else if (out) open = view;

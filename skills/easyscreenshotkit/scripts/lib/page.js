@@ -237,26 +237,30 @@ const DRAWN = `(el) => {
 // whole table is a placeholder.
 const LOADING_WORDS = "loading|please wait|one moment(?: please)?|yükleniyor|lütfen bekleyin|wird geladen|lädt|bitte warten|chargement|veuillez patienter|cargando|carregando|aguarde";
 const A_NAME = 'a[href], td:not([colspan]), th:not([colspan]), [role="cell"], [role="gridcell"]';
-const LOADING_SIGN = `(() => {
+// Whether an element, or anything in it, shows such a sign: as a function
+// for the page, of the element. The clean-up asks it of each box it hides.
+const SIGN_IN = `((root) => {
   const drawn = ${DRAWN};
   const shown = (el) => {
     const r = el.getBoundingClientRect();
     return r.bottom > 0 && r.top < innerHeight && drawn(el);
   };
-  if ([...document.querySelectorAll('[aria-busy="true"], [role="progressbar"]:not([aria-valuenow]), progress:not([value])')].some(shown)) return true;
+  const all = (selector) => [...(root.matches(selector) ? [root] : []), ...root.querySelectorAll(selector)];
+  if (all('[aria-busy="true"], [role="progressbar"]:not([aria-valuenow]), progress:not([value])').some(shown)) return true;
   const starts = /^(?:${LOADING_WORDS})(?![\\p{L}\\p{N}])/iu;
   const nothingElse = /^(?:${LOADING_WORDS})(?:[\\s,.:;…!–—-]+(?:${LOADING_WORDS}))*[\\s.…]*$/iu;
   const trailsOff = /(?:…|\\.{2,3})$/;
   const words = (el) => el.textContent.replace(/\\s+/g, " ").trim();
   const name = (el, text) => el.closest(${JSON.stringify(A_NAME)}) || [...el.querySelectorAll("a[href]")].some((a) => words(a) === text);
-  for (const el of document.querySelectorAll("body *")) {
+  for (const el of all("*")) {
     if (el.children.length && !/^H[1-6]$/.test(el.tagName) && el.getAttribute("role") !== "heading") continue;
     const text = words(el);
     if (text.length > 40 || !starts.test(text) || !shown(el)) continue;
     if (trailsOff.test(text) || (nothingElse.test(text) && !name(el, text))) return true;
   }
   return false;
-})()`;
+})`;
+const LOADING_SIGN = `${SIGN_IN}(document.documentElement)`;
 
 async function showsLoadingSign(cdp) {
   const { result } = await cdp.send("Runtime.evaluate", { expression: LOADING_SIGN, returnByValue: true }, 5_000).catch(() => ({ result: {} }));
@@ -601,6 +605,7 @@ async function capturePage(cdp, { scale = 1, maxHeight = 15_000 } = {}) {
 
 module.exports = {
   AROUND,
+  SIGN_IN,
   metrics,
   scrollTo,
   walk,
