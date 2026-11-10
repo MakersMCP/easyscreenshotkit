@@ -409,12 +409,14 @@ async function makeDemo(rawUrl, options = {}) {
     // The video.
     const look = { ...LOOKS[take.lightness < 0.45 ? "dark" : "light"], ...(backdrop ? { backdrop } : {}) };
     const layout = layoutOf({ frame, viewport });
+    // Drawing the frames has time of its own, however much of the run the
+    // recording took, and so has the start of the browser it draws them in.
+    if (timeLeft() < 120_000) setTimeLimit(Math.max(120_000, take.duration * 6_000));
     composer = await launch();
     let drawn;
     let poster;
     const video = run.file("demo.mp4");
     try {
-      if (timeLeft() < 120_000) setTimeLimit(Math.max(120_000, take.duration * 6_000));
       const sink = startVideo(ffmpeg, video, { fps, encoder, title: `${name} demo` });
       try {
         drawn = await renderVideo(composer, take, { layout, look, zoom, dir: frames, sink, log });

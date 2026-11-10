@@ -331,6 +331,38 @@ test("a demo is refused a --background the browser cannot draw before it records
   }
 });
 
+// Drawing the frames has time of its own, however much of the run the
+// recording took, and the browser they are drawn in starts in that time: it
+// started in what the recording had left, as little as a second for each of
+// its calls, and on a busy machine the demo failed after the whole
+// recording with "started but did not answer in 20 s". A preload notes the
+// time the run has left at each start of a browser.
+test("the browser a demo's frames are drawn in starts in the time the drawing has, not in what the recording left", { skip: missing, timeout: 200_000 }, async () => {
+  const { server, origin } = await fixture();
+  const root = tempDir();
+  const steps = path.join(root, "steps.yaml");
+  fs.writeFileSync(steps, "steps:\n  - visit: /\n  - wait: 0.3\n");
+  const notes = path.join(root, "starts.txt");
+  const preload = path.join(root, "starts.js");
+  const lib = path.resolve(__dirname, "../skills/easyscreenshotkit/scripts/lib");
+  fs.writeFileSync(preload, `const chrome = require(${JSON.stringify(path.join(lib, "chrome"))});\nconst { timeLeft } = require(${JSON.stringify(path.join(lib, "time"))});\nconst launch = chrome.launch;\nchrome.launch = (...args) => {\n  require("fs").appendFileSync(${JSON.stringify(notes)}, timeLeft() + "\\n");\n  return launch(...args);\n};\n`);
+  try {
+    const run = await new Promise((resolve) => {
+      const child = spawn(process.execPath, ["--require", preload, CLI, "demo", origin, "--steps", steps, "--timeout", "90", "--no-gif", "--out", path.join(root, "out")]);
+      let stderr = "";
+      child.stderr.on("data", (d) => (stderr += d));
+      child.on("close", (status) => resolve({ status, stderr }));
+    });
+    assert.equal(run.status, 0, run.stderr);
+    const [recording, drawing] = fs.readFileSync(notes, "utf8").trim().split("\n").map(Number);
+    assert.ok(recording > 80_000 && recording <= 90_000, `recording: ${recording}`);
+    assert.ok(drawing > 115_000, `drawing: ${drawing}`);
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // A named pipe nothing writes to holds a read of it for as long as it takes,
 // and a synchronous one held the process so that only SIGKILL ended it. A
 // read that is not synchronous lets a stop through, and a pipe that is

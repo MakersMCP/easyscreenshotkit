@@ -67,7 +67,9 @@ const CRASHED = "the browser's tab crashed";
 // fail() was called. timeoutMs: how long the browser has to take the
 // connection, which is closed again when it has not by then. A call that
 // gets no answer in its time fails with timedOut set, and one the browser
-// answers with an error with answered set.
+// answers with an error with answered set. A call's time is what it asks
+// for within what the run has left, a second at least, or with fixed what
+// it asks for whatever the run has left.
 function connect(wsUrl, { onClose = () => {}, timeoutMs = 30_000 } = {}) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(wsUrl);
@@ -118,7 +120,7 @@ function connect(wsUrl, { onClose = () => {}, timeoutMs = 30_000 } = {}) {
       clearTimeout(unanswered);
       resolve({
         over,
-        send(method, params = {}, timeoutMs = 30_000) {
+        send(method, params = {}, timeoutMs = 30_000, { fixed = false } = {}) {
           // A call on a connection that is closing or closed would get no
           // answer, and waited out its whole time limit: it fails at once.
           if (failure) return Promise.reject(new Error(failure));
@@ -128,7 +130,7 @@ function connect(wsUrl, { onClose = () => {}, timeoutMs = 30_000 } = {}) {
             const timer = setTimeout(() => {
               pending.delete(id);
               rej(Object.assign(new Error(`${method} timed out`), { timedOut: true }));
-            }, Math.max(1_000, Math.min(timeoutMs, timeLeft())));
+            }, fixed ? Math.max(1, timeoutMs) : Math.max(1_000, Math.min(timeoutMs, timeLeft())));
             pending.set(id, { resolve: res, reject: rej, timer });
             ws.send(JSON.stringify({ id, method, params }));
           });
@@ -331,12 +333,17 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
     }
   };
   // Chrome writes the port it picked to DevToolsActivePort in the profile.
-  // Each step after it has what is left of the wait.
+  // Each step after it has what is left of the wait, whatever the run has
+  // left: the wait itself is what the run could give it (see startWait).
   const portFile = path.join(profile, "DevToolsActivePort");
   const until = Date.now() + wait;
   const left = () => Math.max(1, until - Date.now());
   let refused = "";
   while (Date.now() < until && !exited && !refused) {
+    // Only the connection the start hands over can tell that the browser
+    // was lost as it closes: one that failed on the way, or that the start
+    // closed itself to try again, says nothing of the browser.
+    const attempt = { kept: false };
     try {
       const port = fs.readFileSync(portFile, "utf8").split("\n")[0].trim();
       if (/^\d+$/.test(port)) {
@@ -345,7 +352,7 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
         browser = await connect(version.webSocketDebuggerUrl, {
           timeoutMs: left(),
           onClose: () => {
-            if (!closing) lost = true;
+            if (attempt.kept && !closing) lost = true;
           },
         });
         // A page cannot make the browser save a file: a download it starts
@@ -355,7 +362,7 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
         // tab lifts this for every tab as soon as that tab's connection
         // closes, and a tab closed right after a download began saved it.
         // A browser that does not take the order is not used.
-        await browser.send("Browser.setDownloadBehavior", { behavior: "deny" }, left()).catch((err) => {
+        await browser.send("Browser.setDownloadBehavior", { behavior: "deny" }, left(), { fixed: true }).catch((err) => {
           if (err.answered) refused = err.message;
           throw err;
         });
@@ -363,6 +370,7 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
         // before the folder, and a stop can land in between. In a profile
         // that is the browser's temp folder, it goes with the profile.
         started.lock = lockFolderOf(profile);
+        attempt.kept = true;
         // gone(): whether the browser ended in the middle of the run.
         return { chrome: { base, browser, userAgent: String(version["User-Agent"] || ""), close, gone: () => lost } };
       }

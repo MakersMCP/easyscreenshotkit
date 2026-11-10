@@ -1742,13 +1742,16 @@ test("a browser that starts gets up to a minute to answer, as the run's time all
   }
 });
 
-test("a browser that starts and does not answer says so, and leaves nothing running", { skip: process.platform === "win32" && "the stand-in browser is a shell script", timeout: 90_000 }, async () => {
-  const root = tempDir();
-  // Stand-ins: one that never says its port, one whose address never
-  // answers, one whose address answers and whose connection is never
-  // taken, and one that takes it and answers every call with an error, as
-  // a browser that cannot be told to refuse downloads would.
-  const modes = ["mute", "quiet", "deaf", "refuser"];
+// Stand-in browsers, by mode: one that never says its port (mute), one
+// whose address never answers (quiet), one whose address answers and whose
+// connection is never taken (deaf), and ones that take it: one that answers
+// every call with an error, as a browser that cannot be told to refuse
+// downloads would (refuser), one whose first connection is reset as it is
+// made (flaky), one that answers each call 1.5 s after it came, as a browser
+// on a busy machine can (slow), and one that answers every call but never
+// opens a window (windowless). Each writes <mode>.json in root, with its pid
+// and its profile. Returns the wrapper that starts a mode, for CHROME_PATH.
+function standIns(root) {
   const script = path.join(root, "browser.js");
   fs.writeFileSync(
     script,
@@ -1757,10 +1760,16 @@ const crypto = require("crypto"), fs = require("fs"), http = require("http"), ne
 const [mode, ...args] = process.argv.slice(2);
 const profile = args.find((arg) => arg.startsWith("--user-data-dir=")).slice("--user-data-dir=".length);
 fs.writeFileSync(path.join(${JSON.stringify(root)}, mode + ".json"), JSON.stringify({ pid: process.pid, profile }));
-// A WebSocket that answers each call it is sent with an error.
-const refuse = (req, socket) => {
+const frame = (answer) => {
+  const data = Buffer.from(JSON.stringify(answer));
+  return Buffer.concat([Buffer.from(data.length < 126 ? [0x81, data.length] : [0x81, 126, data.length >> 8, data.length & 255]), data]);
+};
+let upgrades = 0;
+const take = (req, socket) => {
+  if (mode === "flaky" && ++upgrades === 1) return socket.destroy();
   const accept = crypto.createHash("sha1").update(req.headers["sec-websocket-key"] + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64");
   socket.write("HTTP/1.1 101 Switching Protocols\\r\\nUpgrade: websocket\\r\\nConnection: Upgrade\\r\\nSec-WebSocket-Accept: " + accept + "\\r\\n\\r\\n");
+  socket.on("error", () => {});
   let held = Buffer.alloc(0);
   socket.on("data", (chunk) => {
     held = Buffer.concat([held, chunk]);
@@ -1772,9 +1781,17 @@ const refuse = (req, socket) => {
       const text = Buffer.from(held.subarray(at + 4, at + 4 + length)).map((byte, i) => byte ^ mask[i % 4]).toString();
       const opcode = held[0] & 15;
       held = held.subarray(at + 4 + length);
+      if (opcode === 8) return void socket.end(Buffer.from([0x88, 0]));
       if (opcode !== 1) continue;
-      const answer = Buffer.from(JSON.stringify({ id: JSON.parse(text).id, error: { code: -32000, message: "Not allowed here" } }));
-      socket.write(Buffer.concat([Buffer.from(answer.length < 126 ? [0x81, answer.length] : [0x81, 126, answer.length >> 8, answer.length & 255]), answer]));
+      const { id, method } = JSON.parse(text);
+      if (mode === "windowless" && method === "Target.createTarget") continue;
+      const answer = mode === "refuser" ? { id, error: { code: -32000, message: "Not allowed here" } } : { id, result: {} };
+      const send = () => {
+        if (!socket.destroyed) socket.write(frame(answer));
+        if (method === "Browser.close") setTimeout(() => process.exit(0), 50);
+      };
+      if (mode === "slow") setTimeout(send, 1500);
+      else send();
     }
   });
 };
@@ -1783,27 +1800,65 @@ else net.createServer(() => {}).listen(0, "127.0.0.1", function () {
   const socket = this;
   const server = http.createServer((req, res) => {
     if (mode === "quiet") return;
-    const port = mode === "refuser" ? server.address().port : socket.address().port;
+    const port = mode === "deaf" ? socket.address().port : server.address().port;
     res.end(JSON.stringify({ "User-Agent": "Stand-in", webSocketDebuggerUrl: "ws://127.0.0.1:" + port + "/devtools/browser/x" }));
-  }).on("upgrade", refuse).listen(0, "127.0.0.1", () => fs.writeFileSync(path.join(profile, "DevToolsActivePort"), server.address().port + "\\n/devtools/browser/x\\n"));
+  }).on("upgrade", take).listen(0, "127.0.0.1", () => fs.writeFileSync(path.join(profile, "DevToolsActivePort"), server.address().port + "\\n/devtools/browser/x\\n"));
 });
 `,
   );
-  const wrapper = (mode) => {
+  return (mode) => {
     const file = path.join(root, mode);
     fs.writeFileSync(file, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(script)} ${mode} "$@"\n`, { mode: 0o755 });
     return file;
   };
+}
+
+// Ends each stand-in of these modes that is still running, told by its
+// command line where there is /proc.
+function endStandIns(root, modes) {
+  for (const mode of modes) {
+    try {
+      const { pid } = JSON.parse(fs.readFileSync(path.join(root, `${mode}.json`), "utf8"));
+      const ours = process.platform !== "linux" || fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").includes(path.join(root, "browser.js"));
+      if (ours) process.kill(pid, "SIGKILL");
+    } catch {
+      // Not started, or ended already.
+    }
+  }
+}
+
+// The start of a browser, with the run's time spent, as the demo's browser
+// for its frames starts after a long recording. One that does not answer,
+// or will not refuse downloads, is said so and left running nowhere. One
+// whose first connection failed and one slow to answer are taken: a
+// connection the start closed or lost on the way marked the browser as
+// lost, and the run failed at once with "The browser ended in the middle of
+// the run", and each call of the start had a second, what the run had left,
+// where the slow one took a second and a half.
+test("a browser's start: one that does not answer says so and leaves nothing running, one slow to answer or whose first connection failed is taken", { skip: process.platform === "win32" && "the stand-in browser is a shell script", timeout: 90_000 }, async () => {
+  const root = tempDir();
+  const failing = ["mute", "quiet", "deaf", "refuser"];
+  const starting = ["flaky", "slow"];
+  const modes = [...failing, ...starting];
+  const wrapper = standIns(root);
   const before = process.env.CHROME_PATH;
   try {
-    setTimeLimit(30_000);
+    setTimeLimit(500);
     const tries = modes.map((mode) => {
       process.env.CHROME_PATH = wrapper(mode);
       const started = Date.now();
-      // A stand-in taken for a browser is closed before the test fails: left
-      // open, it held the test's process after the test had failed.
+      // A stand-in taken for a browser is closed before the test goes on:
+      // left open, it held the test's process after the test had failed.
       return launch().then(
-        (chrome) => chrome.close().then(() => assert.fail(`${mode}: the stand-in was taken for a browser`)),
+        async (chrome) => {
+          const seconds = (Date.now() - started) / 1000;
+          const gone = chrome.gone();
+          await sleep(1_000);
+          const later = chrome.gone();
+          await chrome.close();
+          if (!starting.includes(mode)) assert.fail(`${mode}: the stand-in was taken for a browser`);
+          return { seconds, gone: [gone, later] };
+        },
         (err) => ({ err, seconds: (Date.now() - started) / 1000 }),
       );
     });
@@ -1813,9 +1868,13 @@ else net.createServer(() => {}).listen(0, "127.0.0.1", function () {
     const limit = new Promise((resolve, reject) => (timer = setTimeout(() => reject(new Error("a start of a stand-in did not end in 70 s")), 70_000)));
     const ended = await Promise.race([Promise.all(tries), limit]).finally(() => clearTimeout(timer));
     for (const [i, mode] of modes.entries()) {
-      const { err, seconds } = ended[i];
+      const { err, seconds, gone } = ended[i];
       if (mode === "refuser") {
         assert.equal(err.message, "refuser cannot be told to refuse the downloads a page starts (Not allowed here), so it was not used: a site could save files on this machine through it. Point CHROME_PATH at another browser.");
+        assert.ok(seconds < 15, `${mode}: ${seconds} s`);
+      } else if (starting.includes(mode)) {
+        assert.equal(err, undefined, `${mode}: ${err && err.message}`);
+        assert.deepEqual(gone, [false, false], `${mode}: taken for a browser that ended`);
         assert.ok(seconds < 15, `${mode}: ${seconds} s`);
       } else {
         assert.equal(err.message, `${mode} started but did not answer in 20 s. The machine may be too busy: try again, or give the run more time with --timeout.`);
@@ -1826,17 +1885,8 @@ else net.createServer(() => {}).listen(0, "127.0.0.1", function () {
       assert.equal(fs.existsSync(profile), false, profile);
     }
   } finally {
-    // Whatever failed, no stand-in goes on running: each one still there,
-    // told by its command line where there is /proc, is killed.
-    for (const mode of modes) {
-      try {
-        const { pid } = JSON.parse(fs.readFileSync(path.join(root, `${mode}.json`), "utf8"));
-        const ours = process.platform !== "linux" || fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").includes(script);
-        if (ours) process.kill(pid, "SIGKILL");
-      } catch {
-        // Not started, or ended already.
-      }
-    }
+    // Whatever failed, no stand-in goes on running.
+    endStandIns(root, modes);
     setTimeLimit(120_000);
     if (before === undefined) delete process.env.CHROME_PATH;
     else process.env.CHROME_PATH = before;
