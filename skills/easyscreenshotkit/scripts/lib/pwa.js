@@ -446,9 +446,11 @@ async function loadImage(src, base, guard) {
 // on the host and port given when that is not on it, as a run opens its
 // pages (see address.js): a manifest, the page that links it or a redirect
 // cannot send it to this machine or its network. A manifest read from a
-// file reads no such address at all.
-async function checkManifest(target) {
-  const guard = await guardFor(target.url || "");
+// file reads no such address at all. guard: the rule of a run that reads
+// the manifest its home page links (--pwa), by which that address is judged
+// too, as it is the page's and not the one the run was given.
+async function checkManifest(target, { guard: given = null } = {}) {
+  const guard = given || (await guardFor(target.url || ""));
   const found = await loadManifest(target, guard);
   const json = found.json && typeof found.json === "object" && !Array.isArray(found.json) ? found.json : {};
   const list = Array.isArray(json.screenshots) ? json.screenshots : [];

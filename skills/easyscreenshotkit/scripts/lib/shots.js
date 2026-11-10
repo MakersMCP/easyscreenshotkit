@@ -872,13 +872,15 @@ function savePwa(kept, run) {
 // The site's own manifest, read as --pwa-check reads it: where it is and
 // what Chrome makes of the screenshots it lists already. One sentence on it
 // goes in the summary. added: how many screenshots the run made for it.
-async function checkSite(href, home, added) {
+// guard: the run's rule for the addresses it opens, which the manifest and
+// its screenshots are read by, as the pages are opened by it.
+async function checkSite(href, home, added, guard) {
   if (!href) {
     return { site: null, note: `The home page links no web app manifest, so Chrome does not offer to install the site yet.${added ? " The screenshots in pwa/ are ready for when it has one." : ""}` };
   }
   let report;
   try {
-    report = await checkManifest({ url: href });
+    report = await checkManifest({ url: href }, { guard });
   } catch (err) {
     return { site: { manifest: href, error: err.message }, note: `The site's manifest could not be checked: ${err.message}` };
   }
@@ -1365,7 +1367,7 @@ async function takeShots(rawUrl, options = {}) {
     };
     // The site's own manifest is read while the sheet is drawn: no browser
     // needed.
-    const siteCheck = pwaSaved ? checkSite(siteManifest, kept[0].url, pwaSaved.screenshots.length) : null;
+    const siteCheck = pwaSaved ? checkSite(siteManifest, kept[0].url, pwaSaved.screenshots.length, chrome.guard) : null;
     log("Drawing the sheet");
     // The sheet takes a few seconds and is drawn even when the pages used up
     // the run's time. One that cannot be drawn is said so: the pages are

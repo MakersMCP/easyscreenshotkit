@@ -3048,3 +3048,38 @@ test("a page's version in another language at an address the run does not open, 
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// --pwa reads the manifest the home page links, and the screenshots it
+// lists, by the run's rule: one at an address the run does not open is not
+// read, and the summary says so. The check took the manifest's own address
+// for the one given, so it read a manifest anywhere on this machine and put
+// what it said into the report.
+test("--pwa reads no manifest the home page links at an address the run does not open", { skip: noBrowser, timeout: 150_000 }, async () => {
+  const seen = [];
+  const other = await serve((req, res) => {
+    seen.push({ url: req.url, agent: String(req.headers["user-agent"] || "") });
+    if (req.url === "/app.webmanifest") return res.writeHead(200, { "Content-Type": "application/manifest+json" }).end(JSON.stringify({ name: "Inside", screenshots: [{ src: "/wide.png", sizes: "1920x1080", type: "image/png", form_factor: "wide" }] }));
+    res.writeHead(404).end("not found");
+  });
+  const elsewhere = other.origin;
+  const { server, origin } = await serve((req, res) => {
+    if (req.url === "/") return res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Acme | Tools for teams", '<h1>Acme</h1><div style="height:1400px"></div>', { head: `<link rel="manifest" href="${elsewhere}/app.webmanifest">` }));
+    res.writeHead(404).end("not found");
+  });
+  const root = tempDir();
+  try {
+    const out = path.join(root, "shots");
+    const run = await runCli([origin, "--pages", "1", "--sizes", "desktop", "--pwa", "--out", out]);
+    assert.equal(run.status, 0, run.stderr);
+    const manifest = JSON.parse(fs.readFileSync(path.join(out, "manifest.json"), "utf8"));
+    assert.equal(manifest.pwa.note, `The site's manifest could not be checked: Could not read ${elsewhere}/app.webmanifest: it is ${NOT_GIVEN}`);
+    assert.deepEqual(manifest.pwa.site, { manifest: `${elsewhere}/app.webmanifest`, error: `Could not read ${elsewhere}/app.webmanifest: it is ${NOT_GIVEN}` });
+    // What the browser reads for itself, as it reads the manifest a page
+    // links, is the browser's; the kit itself read nothing there.
+    assert.deepEqual(seen.filter((request) => /easyscreenshotkit/.test(request.agent)), []);
+  } finally {
+    server.close();
+    other.server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
