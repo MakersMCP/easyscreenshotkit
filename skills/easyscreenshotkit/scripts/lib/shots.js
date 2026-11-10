@@ -984,7 +984,7 @@ async function takeShots(rawUrl, options = {}) {
               saveShots(page, got, themeName, run, written);
             } catch (err) {
               if (err.saveFailed) unsaved = unsaved || err;
-              else if (!chrome.gone()) page.notes.push(`${label} could not be taken: ${err.message}`);
+              else if (!chrome.gone()) page.notes.push(`${label} could not be taken: ${err.reason || err.message}`);
             }
           });
         }
@@ -1259,7 +1259,7 @@ async function takeShots(rawUrl, options = {}) {
     } catch (err) {
       alive();
       if (err.saveFailed) throw err;
-      notes.push(`sheet.png could not be drawn: ${run.told(err).message.replace(/\.$/, "")}.`);
+      notes.push(`sheet.png could not be drawn: ${err.reason || run.told(err).message.replace(/\.$/, "")}.`);
     }
     await chrome.close();
     chrome = null;

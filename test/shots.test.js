@@ -12,7 +12,7 @@ const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const test = require("node:test");
 const { takeShots, readInfo, DEVICES } = require("../skills/easyscreenshotkit/scripts/lib/shots");
-const { findChrome, launch, openTab, closeTab, navigate, killBrowsers, removeProfiles, removeStrayLocks, removeFetchFolders, fetchFolders, roomIn } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
+const { findChrome, launch, startWait, openTab, closeTab, navigate, killBrowsers, removeProfiles, removeStrayLocks, removeFetchFolders, fetchFolders, roomIn } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
 const { setTimeLimit, sleep } = require("../skills/easyscreenshotkit/scripts/lib/time");
 const { watchRequests, networkQuiet, showsLoadingSign, looksEmpty } = require("../skills/easyscreenshotkit/scripts/lib/page");
 const { LOCATE } = require("../skills/easyscreenshotkit/scripts/lib/record");
@@ -1719,6 +1719,170 @@ test("a browser that did not start with a nearly full temp folder says so", { sk
     fs.statfsSync = statfs;
     if (before === undefined) delete process.env.CHROME_PATH;
     else process.env.CHROME_PATH = before;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A browser that is slow to answer, as one is on a busy machine, has more
+// time when the run has it, and says what did not answer and what to do.
+// Its start, its address and its connection ended in a browser that "did
+// not start"; a window, in "Target.createTarget timed out"; a page that did
+// not answer, in "Page.navigate timed out".
+test("a browser that starts gets up to a minute to answer, as the run's time allows", () => {
+  try {
+    setTimeLimit(400_000);
+    assert.deepEqual(startWait(), { ms: 60_000, cut: false });
+    setTimeLimit(50_000);
+    const middle = startWait();
+    assert.ok(middle.ms > 34_000 && middle.ms <= 35_000 && middle.cut, JSON.stringify(middle));
+    setTimeLimit(30_000);
+    assert.deepEqual(startWait(), { ms: 20_000, cut: true });
+  } finally {
+    setTimeLimit(120_000);
+  }
+});
+
+test("a browser that starts and does not answer says so, and leaves nothing running", { skip: process.platform === "win32" && "the stand-in browser is a shell script", timeout: 90_000 }, async () => {
+  const root = tempDir();
+  // Stand-ins: one that never says its port, one whose address never
+  // answers, one whose address answers and whose connection is never
+  // taken, and one that takes it and answers every call with an error, as
+  // a browser that cannot be told to refuse downloads would.
+  const modes = ["mute", "quiet", "deaf", "refuser"];
+  const script = path.join(root, "browser.js");
+  fs.writeFileSync(
+    script,
+    `"use strict";
+const crypto = require("crypto"), fs = require("fs"), http = require("http"), net = require("net"), path = require("path");
+const [mode, ...args] = process.argv.slice(2);
+const profile = args.find((arg) => arg.startsWith("--user-data-dir=")).slice("--user-data-dir=".length);
+fs.writeFileSync(path.join(${JSON.stringify(root)}, mode + ".json"), JSON.stringify({ pid: process.pid, profile }));
+// A WebSocket that answers each call it is sent with an error.
+const refuse = (req, socket) => {
+  const accept = crypto.createHash("sha1").update(req.headers["sec-websocket-key"] + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64");
+  socket.write("HTTP/1.1 101 Switching Protocols\\r\\nUpgrade: websocket\\r\\nConnection: Upgrade\\r\\nSec-WebSocket-Accept: " + accept + "\\r\\n\\r\\n");
+  let held = Buffer.alloc(0);
+  socket.on("data", (chunk) => {
+    held = Buffer.concat([held, chunk]);
+    while (held.length >= 6) {
+      let length = held[1] & 127, at = 2;
+      if (length === 126) { length = held.readUInt16BE(2); at = 4; }
+      if (held.length < at + 4 + length) return;
+      const mask = held.subarray(at, at + 4);
+      const text = Buffer.from(held.subarray(at + 4, at + 4 + length)).map((byte, i) => byte ^ mask[i % 4]).toString();
+      const opcode = held[0] & 15;
+      held = held.subarray(at + 4 + length);
+      if (opcode !== 1) continue;
+      const answer = Buffer.from(JSON.stringify({ id: JSON.parse(text).id, error: { code: -32000, message: "Not allowed here" } }));
+      socket.write(Buffer.concat([Buffer.from(answer.length < 126 ? [0x81, answer.length] : [0x81, 126, answer.length >> 8, answer.length & 255]), answer]));
+    }
+  });
+};
+if (mode === "mute") setInterval(() => {}, 1000);
+else net.createServer(() => {}).listen(0, "127.0.0.1", function () {
+  const socket = this;
+  const server = http.createServer((req, res) => {
+    if (mode === "quiet") return;
+    const port = mode === "refuser" ? server.address().port : socket.address().port;
+    res.end(JSON.stringify({ "User-Agent": "Stand-in", webSocketDebuggerUrl: "ws://127.0.0.1:" + port + "/devtools/browser/x" }));
+  }).on("upgrade", refuse).listen(0, "127.0.0.1", () => fs.writeFileSync(path.join(profile, "DevToolsActivePort"), server.address().port + "\\n/devtools/browser/x\\n"));
+});
+`,
+  );
+  const wrapper = (mode) => {
+    const file = path.join(root, mode);
+    fs.writeFileSync(file, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(script)} ${mode} "$@"\n`, { mode: 0o755 });
+    return file;
+  };
+  const before = process.env.CHROME_PATH;
+  try {
+    setTimeLimit(30_000);
+    const tries = modes.map((mode) => {
+      process.env.CHROME_PATH = wrapper(mode);
+      const started = Date.now();
+      return launch().then(
+        () => assert.fail(`${mode}: the stand-in was taken for a browser`),
+        (err) => ({ err, seconds: (Date.now() - started) / 1000 }),
+      );
+    });
+    const ended = await Promise.all(tries);
+    for (const [i, mode] of modes.entries()) {
+      const { err, seconds } = ended[i];
+      if (mode === "refuser") {
+        assert.equal(err.message, "refuser cannot be told to refuse the downloads a page starts (Not allowed here), so it was not used: a site could save files on this machine through it. Point CHROME_PATH at another browser.");
+        assert.ok(seconds < 15, `${mode}: ${seconds} s`);
+      } else {
+        assert.equal(err.message, `${mode} started but did not answer in 20 s. The machine may be too busy: try again, or give the run more time with --timeout.`);
+        assert.ok(seconds >= 19 && seconds < 40, `${mode}: ${seconds} s`);
+      }
+      const { pid, profile } = JSON.parse(fs.readFileSync(path.join(root, `${mode}.json`), "utf8"));
+      assert.throws(() => process.kill(pid, 0), { code: "ESRCH" }, `${mode} is still running`);
+      assert.equal(fs.existsSync(profile), false, profile);
+    }
+  } finally {
+    setTimeLimit(120_000);
+    if (before === undefined) delete process.env.CHROME_PATH;
+    else process.env.CHROME_PATH = before;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a browser too busy to open a window, and a page with no answer, are said so in the time the run has left", { skip: noBrowser || (process.platform !== "linux" && "the browser's process is read from /proc"), timeout: 120_000 }, async () => {
+  const { server, origin } = await serve((req, res) => {
+    if (req.url === "/hang") return;
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Acme", "<h1>Acme</h1>"));
+  });
+  setTimeLimit(60_000);
+  const chrome = await launch();
+  let stopped = 0;
+  try {
+    // A page that does not answer.
+    const tab = await openTab(chrome, DEVICES.desktop);
+    setTimeLimit(6_000);
+    const silent = await navigate(tab, `${origin}/hang`).then(() => assert.fail("the page answered"), (err) => err);
+    assert.equal(silent.message, `Could not open ${origin}/hang: no answer in 6 s. The site may be down or slow, or the machine too busy: try again, or give the run more time with --timeout.`);
+    assert.equal(silent.reason, "no answer in 6 s");
+    setTimeLimit(60_000);
+    await closeTab(chrome, tab);
+    // A browser that answers nothing, stopped as a busy machine can hold it:
+    // its main process, told by the port its profile says it took.
+    const port = new URL(chrome.base).port;
+    const main = descendants(process.pid).find((p) => {
+      const profile = (/--user-data-dir=([^\s\0]+)/.exec(p.args) || [])[1];
+      if (!profile || /--type=/.test(p.args)) return false;
+      try {
+        return fs.readFileSync(path.join(profile, "DevToolsActivePort"), "utf8").split("\n")[0].trim() === port;
+      } catch {
+        return false;
+      }
+    });
+    assert.ok(main, "the browser's process");
+    stopped = main.pid;
+    process.kill(stopped, "SIGSTOP");
+    setTimeLimit(8_000);
+    const busy = await openTab(chrome, DEVICES.desktop).then(() => assert.fail("a window opened"), (err) => err);
+    assert.equal(busy.message, "The browser did not open a window in 8 s. The machine may be too busy: try again, or give the run more time with --timeout.");
+    assert.equal(busy.reason, "the browser did not open a window in 8 s");
+  } finally {
+    if (stopped) process.kill(stopped, "SIGCONT");
+    setTimeLimit(60_000);
+    await chrome.close();
+    server.close();
+    server.closeAllConnections();
+  }
+  // The address given, when it does not answer: the run fails with that
+  // sentence, where it printed Page.navigate timed out.
+  const hang = await serve((req, res) => {
+    if (req.url === "/") return;
+    res.writeHead(404).end("not found");
+  });
+  const root = tempDir();
+  try {
+    await assert.rejects(takeShots(hang.origin, { dir: path.join(root, "shots"), pages: 1, sizes: "desktop", timeLimit: 25_000 }), new RegExp(`^Error: Could not open ${asPattern(hang.origin)}/: no answer in \\d+ s\\. The site may be down or slow, or the machine too busy: try again, or give the run more time with --timeout\\.$`));
+    assert.equal(fs.existsSync(path.join(root, "shots")), false);
+  } finally {
+    hang.server.close();
+    hang.server.closeAllConnections();
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

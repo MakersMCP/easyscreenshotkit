@@ -73,4 +73,5 @@ What comes back:
 - A demo step that points at nothing stops the run and names the step. Check the selector or the words against the page, or put a `wait` for it before the step.
 - When the demo says ffmpeg is missing, ask the user to install it.
 - When it says the browser did not start because the temp folder's path is too long, run it again with `TMPDIR=/tmp` in front: an agent's sandbox can set a long one.
+- When it says the browser started but did not answer, or did not open a window, or that a page gave no answer in time, the machine or the site was too slow: run it again, with a longer `--timeout` when the message asks for one.
 - Never present a screenshot as the product's own when it did not come from easyscreenshotkit or from the user.

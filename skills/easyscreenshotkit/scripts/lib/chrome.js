@@ -64,8 +64,11 @@ const CRASHED = "the browser's tab crashed";
 
 // onClose: called once the connection has closed, whoever closed it. over:
 // settled once no answer can come any more, as the connection closed or
-// fail() was called.
-function connect(wsUrl, { onClose = () => {} } = {}) {
+// fail() was called. timeoutMs: how long the browser has to take the
+// connection, which is closed again when it has not by then. A call that
+// gets no answer in its time fails with timedOut set, and one the browser
+// answers with an error with answered set.
+function connect(wsUrl, { onClose = () => {}, timeoutMs = 30_000 } = {}) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(wsUrl);
     const pending = new Map();
@@ -75,6 +78,10 @@ function connect(wsUrl, { onClose = () => {} } = {}) {
     let failure = "";
     let ended;
     const over = new Promise((settle) => (ended = settle));
+    const unanswered = setTimeout(() => {
+      reject(Object.assign(new Error("The browser did not take the connection."), { timedOut: true }));
+      ws.close();
+    }, Math.max(1, timeoutMs));
     ws.onmessage = (event) => {
       let msg;
       try {
@@ -90,11 +97,15 @@ function connect(wsUrl, { onClose = () => {} } = {}) {
       if (!waiter) return;
       pending.delete(msg.id);
       clearTimeout(waiter.timer);
-      if (msg.error) waiter.reject(new Error(msg.error.message || "DevTools protocol error"));
+      if (msg.error) waiter.reject(Object.assign(new Error(msg.error.message || "DevTools protocol error"), { answered: true }));
       else waiter.resolve(msg.result || {});
     };
-    ws.onerror = () => reject(new Error("The browser connection failed."));
+    ws.onerror = () => {
+      clearTimeout(unanswered);
+      reject(new Error("The browser connection failed."));
+    };
     ws.onclose = () => {
+      clearTimeout(unanswered);
       for (const waiter of pending.values()) {
         clearTimeout(waiter.timer);
         waiter.reject(new Error("The browser connection closed."));
@@ -103,7 +114,8 @@ function connect(wsUrl, { onClose = () => {} } = {}) {
       ended();
       onClose();
     };
-    ws.onopen = () =>
+    ws.onopen = () => {
+      clearTimeout(unanswered);
       resolve({
         over,
         send(method, params = {}, timeoutMs = 30_000) {
@@ -115,7 +127,7 @@ function connect(wsUrl, { onClose = () => {} } = {}) {
           return new Promise((res, rej) => {
             const timer = setTimeout(() => {
               pending.delete(id);
-              rej(new Error(`${method} timed out`));
+              rej(Object.assign(new Error(`${method} timed out`), { timedOut: true }));
             }, Math.max(1_000, Math.min(timeoutMs, timeLeft())));
             pending.set(id, { resolve: res, reject: rej, timer });
             ws.send(JSON.stringify({ id, method, params }));
@@ -144,6 +156,7 @@ function connect(wsUrl, { onClose = () => {} } = {}) {
           ended();
         },
       });
+    };
   });
 }
 
@@ -163,17 +176,48 @@ async function launch({ lang = "", args = [] } = {}) {
   if (!binary) {
     throw new Error("No Chrome, Chromium, Edge or Brave found. Install one, or point CHROME_PATH at its binary.");
   }
+  const name = path.basename(binary);
   // A browser whose lock has a longer name than room was left for in its
   // profile (see roomIn) does not start there: it starts again with the
   // temp folder as its own.
-  let tried = await start(binary, { lang, args, own: true });
-  if (tried.tooDeep && tried.own) tried = await start(binary, { lang, args, own: false });
+  const wait = startWait();
+  let tried = await start(binary, { lang, args, own: true, wait: wait.ms });
+  if (tried.tooDeep && tried.own) tried = await start(binary, { lang, args, own: false, wait: wait.ms });
   if (tried.chrome) return tried.chrome;
-  if (tried.tooDeep) throw new Error(`${path.basename(binary)} did not start: the temp folder's path, ${os.tmpdir()}, is too long for the socket it opens there. Point TMPDIR at a folder with a shorter path.`);
+  if (tried.refused) throw new Error(`${name} cannot be told to refuse the downloads a page starts (${tried.refused}), so it was not used: a site could save files on this machine through it. Point CHROME_PATH at another browser.`);
+  if (tried.tooDeep) throw new Error(`${name} did not start: the temp folder's path, ${os.tmpdir()}, is too long for the socket it opens there. Point TMPDIR at a folder with a shorter path.`);
   const free = freeInTemp();
-  if (free !== null && free < TEMP_NEEDED) throw new Error(`${path.basename(binary)} did not start: the temp folder, ${os.tmpdir()}, has only ${Math.round(free / 1024)} KB free. Free some space there, or point TMPDIR at another disk.`);
-  throw new Error(`${path.basename(binary)} did not start. Try again, or point CHROME_PATH at another browser.`);
+  if (free !== null && free < TEMP_NEEDED) throw new Error(`${name} did not start: the temp folder, ${os.tmpdir()}, has only ${Math.round(free / 1024)} KB free. Free some space there, or point TMPDIR at another disk.`);
+  if (tried.silent) throw new Error(`${name} started but did not answer in ${Math.round(wait.ms / 1000)} s. ${busy(wait.cut)}`);
+  throw new Error(`${name} did not start. Try again, or point CHROME_PATH at another browser.`);
 }
+
+// A browser that started has START_MS to answer, or up to START_MAX_MS when
+// the run has the time, keeping AFTER_START_MS of it for its first page: on
+// a busy machine a browser can take long to answer. cut: whether the run's
+// time made the wait shorter than START_MAX_MS.
+const START_MS = 20_000;
+const START_MAX_MS = 60_000;
+const AFTER_START_MS = 15_000;
+
+function startWait() {
+  const room = timeLeft() - AFTER_START_MS;
+  return { ms: Math.max(START_MS, Math.min(START_MAX_MS, room)), cut: room < START_MAX_MS };
+}
+
+// A window has up to WINDOW_MS to open and a page up to ANSWER_MS to answer,
+// within what the run has left. cut: whether the run's time made the wait
+// shorter.
+const WINDOW_MS = 60_000;
+const ANSWER_MS = 60_000;
+
+function waitOf(most) {
+  const left = timeLeft();
+  return { ms: Math.max(1_000, Math.min(most, left)), cut: left < most };
+}
+
+// What to do about a browser or a page that did not answer in time.
+const busy = (cut) => `The machine may be too busy: try again${cut ? ", or give the run more time with --timeout" : ""}.`;
 
 // With less than this free in the temp folder, which holds its profile, a
 // browser that did not start is told so: with more, disk space is not why.
@@ -194,10 +238,13 @@ function freeInTemp() {
 // makes its lock in its temp folder, and in its first seconds a folder for
 // what it downloads for itself, which it leaves behind when it quits or is
 // killed before the download has ended. Both go with the profile then.
-// Returns {chrome} once it answers, else {own, tooDeep}: whether its profile
-// was its temp folder, and whether it ended because its lock's socket did
-// not fit in that folder.
-async function start(binary, { lang, args, own }) {
+// wait: how long it has to answer, its port, its address and the order to
+// refuse downloads all within it. Returns {chrome} once it answers, else
+// {own, tooDeep, silent, refused}: whether its profile was its temp folder,
+// whether it ended because its lock's socket did not fit in that folder,
+// whether it was still running without an answer when the wait ran out,
+// and the error it answered the order to refuse downloads with.
+async function start(binary, { lang, args, own, wait = START_MS }) {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-chrome-"));
   const inProfile = own && process.platform === "linux" && roomIn(profile);
   const locksBefore = lockFolders();
@@ -284,14 +331,19 @@ async function start(binary, { lang, args, own }) {
     }
   };
   // Chrome writes the port it picked to DevToolsActivePort in the profile.
+  // Each step after it has what is left of the wait.
   const portFile = path.join(profile, "DevToolsActivePort");
-  for (let waited = 0; waited < 20_000 && !exited; waited += 100) {
+  const until = Date.now() + wait;
+  const left = () => Math.max(1, until - Date.now());
+  let refused = "";
+  while (Date.now() < until && !exited && !refused) {
     try {
       const port = fs.readFileSync(portFile, "utf8").split("\n")[0].trim();
       if (/^\d+$/.test(port)) {
         base = `http://127.0.0.1:${port}`;
-        const version = await (await fetch(`${base}/json/version`, { signal: AbortSignal.timeout(5_000) })).json();
+        const version = await (await fetch(`${base}/json/version`, { signal: AbortSignal.timeout(left()) })).json();
         browser = await connect(version.webSocketDebuggerUrl, {
+          timeoutMs: left(),
           onClose: () => {
             if (!closing) lost = true;
           },
@@ -302,20 +354,28 @@ async function start(binary, { lang, args, own }) {
         // Said once, for the whole browser: Page.setDownloadBehavior on a
         // tab lifts this for every tab as soon as that tab's connection
         // closes, and a tab closed right after a download began saved it.
-        await browser.send("Browser.setDownloadBehavior", { behavior: "deny" }, 5_000).catch(() => {});
+        // A browser that does not take the order is not used.
+        await browser.send("Browser.setDownloadBehavior", { behavior: "deny" }, left()).catch((err) => {
+          if (err.answered) refused = err.message;
+          throw err;
+        });
         // Read now: a browser that is quitting removes the link to it
         // before the folder, and a stop can land in between. In a profile
         // that is the browser's temp folder, it goes with the profile.
         started.lock = lockFolderOf(profile);
-        const { userAgent = "" } = await browser.send("Browser.getVersion").catch(() => ({}));
         // gone(): whether the browser ended in the middle of the run.
-        return { chrome: { base, browser, userAgent, close, gone: () => lost } };
+        return { chrome: { base, browser, userAgent: String(version["User-Agent"] || ""), close, gone: () => lost } };
       }
     } catch {
-      // Not written yet, or not answering yet.
+      // Not written yet, or not answering yet: a connection made meanwhile
+      // is made again.
+      if (browser) browser.close();
+      browser = null;
     }
-    await sleep(100);
+    if (!refused) await sleep(100);
   }
+  // Still running, with no answer: on a busy machine, or a browser that hangs.
+  const silent = !exited && !refused;
   // A browser that ends before it answers, as Chrome does in a temp folder
   // whose path leaves no room for its lock's socket, leaves its lock folder
   // there, empty and with no link to it in the profile, and one of its
@@ -325,7 +385,7 @@ async function start(binary, { lang, args, own }) {
   await close();
   await sleep(300);
   fs.rmSync(profile, { recursive: true, force: true });
-  return { own: inProfile, tooDeep: removeStrayLocks(locksBefore) || deep };
+  return { own: inProfile, tooDeep: removeStrayLocks(locksBefore) || deep, silent, refused };
 }
 
 // The longest path a socket can have: 107 bytes on Linux, 103 on macOS.
@@ -421,45 +481,61 @@ function userAgentFor(device, chromeAgent) {
 
 // A new window holding one tab, set up as the device: its screen, touch,
 // user agent and language, light or dark, and reduced motion when asked.
+// The browser has WINDOW_MS for all of it, or what the run has left: one
+// that has not done it by then fails it with a sentence that says so, and
+// reason, its short form for a page or a window left out over it.
 async function openTab(chrome, device, { lang = "", theme = "light", reducedMotion = false } = {}) {
-  const { targetId } = await chrome.browser.send("Target.createTarget", { url: "about:blank", newWindow: true });
-  const cdp = await connect(`${chrome.base.replace(/^http/, "ws")}/devtools/page/${targetId}`);
-  cdp.targetId = targetId;
-  // A tab whose page crashed, as one killed for its memory does, answers
-  // nothing more while the browser goes on: its calls fail at once, with why,
-  // where each waited out its whole time limit and was called too slow.
-  cdp.on("Inspector.targetCrashed", () => cdp.fail(CRASHED));
-  // A dialog a page opens (an alert while it loads, a question before it is
-  // left) holds the tab until someone answers it, and nothing else does.
-  cdp.on("Page.javascriptDialogOpening", () => cdp.send("Page.handleJavaScriptDialog", { accept: true }).catch(() => {}));
+  const wait = waitOf(WINDOW_MS);
+  const until = Date.now() + wait.ms;
+  const left = () => Math.max(1, until - Date.now());
+  let cdp = null;
+  let targetId = "";
   try {
-    await cdp.send("Inspector.enable").catch(() => {});
-    await cdp.send("Page.enable");
-    await cdp.send("Emulation.setDeviceMetricsOverride", {
-      width: device.width,
-      height: device.height,
-      deviceScaleFactor: device.scale,
-      mobile: device.mobile,
-      screenWidth: device.width,
-      screenHeight: device.height,
-      ...(device.mobile ? { screenOrientation: { type: "portraitPrimary", angle: 0 } } : {}),
-    });
-    if (device.touch) await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
-    await cdp.send("Emulation.setUserAgentOverride", { ...userAgentFor(device, chrome.userAgent), ...(lang ? { acceptLanguage: lang } : {}) });
-    if (lang) await cdp.send("Emulation.setLocaleOverride", { locale: lang }).catch(() => {});
+    ({ targetId } = await chrome.browser.send("Target.createTarget", { url: "about:blank", newWindow: true }, left()));
+    cdp = await connect(`${chrome.base.replace(/^http/, "ws")}/devtools/page/${targetId}`, { timeoutMs: left() });
+    cdp.targetId = targetId;
+    // A tab whose page crashed, as one killed for its memory does, answers
+    // nothing more while the browser goes on: its calls fail at once, with
+    // why, where each waited out its whole time limit and was called too
+    // slow.
+    cdp.on("Inspector.targetCrashed", () => cdp.fail(CRASHED));
+    // A dialog a page opens (an alert while it loads, a question before it
+    // is left) holds the tab until someone answers it, and nothing else does.
+    cdp.on("Page.javascriptDialogOpening", () => cdp.send("Page.handleJavaScriptDialog", { accept: true }).catch(() => {}));
+    await cdp.send("Inspector.enable", {}, left()).catch(() => {});
+    await cdp.send("Page.enable", {}, left());
+    await cdp.send(
+      "Emulation.setDeviceMetricsOverride",
+      {
+        width: device.width,
+        height: device.height,
+        deviceScaleFactor: device.scale,
+        mobile: device.mobile,
+        screenWidth: device.width,
+        screenHeight: device.height,
+        ...(device.mobile ? { screenOrientation: { type: "portraitPrimary", angle: 0 } } : {}),
+      },
+      left(),
+    );
+    if (device.touch) await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 }, left());
+    await cdp.send("Emulation.setUserAgentOverride", { ...userAgentFor(device, chrome.userAgent), ...(lang ? { acceptLanguage: lang } : {}) }, left());
+    if (lang) await cdp.send("Emulation.setLocaleOverride", { locale: lang }, left()).catch(() => {});
     const features = [{ name: "prefers-color-scheme", value: theme === "dark" ? "dark" : "light" }];
     if (reducedMotion) features.push({ name: "prefers-reduced-motion", value: "reduce" });
-    await cdp.send("Emulation.setEmulatedMedia", { features });
+    await cdp.send("Emulation.setEmulatedMedia", { features }, left());
     // Under a page that paints no background of its own, the browser's own
     // (white, or dark grey in the dark theme): otherwise those pixels come
     // out see-through, and one screen of a page is RGBA while the next is
     // RGB.
     const ground = theme === "dark" ? { r: 18, g: 18, b: 18, a: 1 } : { r: 255, g: 255, b: 255, a: 1 };
-    await cdp.send("Emulation.setDefaultBackgroundColorOverride", { color: ground }).catch(() => {});
-    await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: true }).catch(() => {});
+    await cdp.send("Emulation.setDefaultBackgroundColorOverride", { color: ground }, left()).catch(() => {});
+    await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: true }, left()).catch(() => {});
   } catch (err) {
-    await closeTab(chrome, cdp);
-    throw err;
+    if (cdp) await closeTab(chrome, cdp);
+    else if (targetId) await chrome.browser.send("Target.closeTarget", { targetId }, 5_000).catch(() => {});
+    if (!err.timedOut) throw err;
+    const s = Math.round(wait.ms / 1000);
+    throw Object.assign(new Error(`The browser did not open a window in ${s} s. ${busy(wait.cut)}`), { reason: `the browser did not open a window in ${s} s` });
   }
   return cdp;
 }
@@ -477,7 +553,8 @@ async function closeTab(chrome, cdp) {
 // Returns the address the tab ended on, after any redirects, and the HTTP
 // status the page came with. An address that answers with a file to
 // download, at once or after a redirect, is refused: the browser saves
-// nothing (see launch()), and there is no page to take.
+// nothing (see launch()), and there is no page to take. One with no answer
+// in ANSWER_MS, or in what the run has left, is said so.
 const NOT_A_PAGE = "a file to download instead of a page";
 
 async function navigate(cdp, url) {
@@ -487,7 +564,12 @@ async function navigate(cdp, url) {
   const loaded = new Promise((resolve) => cdp.on("Page.loadEventFired", (onLoad = resolve)));
   const moved = new Promise((resolve) => cdp.on("Page.navigatedWithinDocument", (onMove = resolve)));
   try {
-    const { errorText, loaderId, isDownload } = await cdp.send("Page.navigate", { url });
+    const wait = waitOf(ANSWER_MS);
+    const { errorText, loaderId, isDownload } = await cdp.send("Page.navigate", { url }, wait.ms).catch((err) => {
+      if (!err.timedOut) throw err;
+      const s = Math.round(wait.ms / 1000);
+      throw Object.assign(new Error(`Could not open ${url}: no answer in ${s} s. The site may be down or slow, or the machine too busy: try again${wait.cut ? ", or give the run more time with --timeout" : ""}.`), { reason: `no answer in ${s} s` });
+    });
     if (isDownload) throw Object.assign(new Error(`Could not open ${url}: it answers with ${NOT_A_PAGE}.`), { refused: NOT_A_PAGE });
     // reason: the browser's own words, for a page left out over it.
     if (errorText) throw Object.assign(new Error(`Could not open ${url}: ${errorText}`), { reason: errorText });
@@ -596,4 +678,4 @@ function removeProfiles(browsers) {
   }
 }
 
-module.exports = { findChrome, onPath, launch, connect, openTab, closeTab, navigate, currentUrl, killBrowsers, removeProfiles, removeStrayLocks, removeFetchFolders, fetchFolders, roomIn, lockFolderOf, userAgentFor, CRASHED };
+module.exports = { findChrome, onPath, launch, startWait, connect, openTab, closeTab, navigate, currentUrl, killBrowsers, removeProfiles, removeStrayLocks, removeFetchFolders, fetchFolders, roomIn, lockFolderOf, userAgentFor, CRASHED };
