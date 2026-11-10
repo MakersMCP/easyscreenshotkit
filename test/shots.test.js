@@ -1830,8 +1830,10 @@ test("a browser that starts gets up to a minute to answer, as the run's time all
 // whose address never answers (quiet), one whose address answers and whose
 // connection is never taken (deaf), and ones that take it: one that answers
 // every call with an error, as a browser that cannot be told to refuse
-// downloads would (refuser), one whose first connection is reset as it is
-// made (flaky), one that answers each call 1.5 s after it came, as a browser
+// downloads would (refuser), one that answers every call but the order to
+// refuse downloads, as a browser too busy to take it can (mum), one whose
+// first connection is reset as it is made (flaky), one that answers each
+// call 1.5 s after it came, as a browser
 // on a busy machine can (slow), one that answers every call but never
 // opens a window (windowless), and one that stops answering once it has
 // opened a window, its window's connection never taken, as a browser stopped
@@ -1873,6 +1875,7 @@ const take = (req, socket) => {
       if (opcode !== 1) continue;
       const { id, method } = JSON.parse(text);
       if (mode === "windowless" && method === "Target.createTarget") continue;
+      if (mode === "mum" && method === "Browser.setDownloadBehavior") continue;
       if (hushed) continue;
       if (mode === "hushed" && method === "Target.createTarget") {
         hushed = true;
@@ -1923,15 +1926,18 @@ function endStandIns(root, modes) {
 
 // The start of a browser, with the run's time spent, as the demo's browser
 // for its frames starts after a long recording. One that does not answer,
-// or will not refuse downloads, is said so and left running nowhere. One
-// whose first connection failed and one slow to answer are taken: a
+// or will not refuse downloads, is said so and left running nowhere, and so
+// is one that answers all but the order to refuse downloads: a browser that
+// has not taken it is never used, whatever the machine's load, so no site
+// can save a file through it. One whose first connection failed and one
+// slow to answer are taken: a
 // connection the start closed or lost on the way marked the browser as
 // lost, and the run failed at once with "The browser ended in the middle of
 // the run", and each call of the start had a second, what the run had left,
 // where the slow one took a second and a half.
 test("a browser's start: one that does not answer says so and leaves nothing running, one slow to answer or whose first connection failed is taken", { skip: process.platform === "win32" && "the stand-in browser is a shell script", timeout: 90_000 }, async () => {
   const root = tempDir();
-  const failing = ["mute", "quiet", "deaf", "refuser"];
+  const failing = ["mute", "quiet", "deaf", "refuser", "mum"];
   const starting = ["flaky", "slow"];
   const modes = [...failing, ...starting];
   const wrapper = standIns(root);
