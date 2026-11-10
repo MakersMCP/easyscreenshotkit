@@ -58,6 +58,14 @@ and each --page, and the #routes in the site's sitemap, are listed with the
 pages it left out. An address that answers with a file to download is
 refused and named in the report, and the browser saves nothing.
 
+From the address given the run opens web addresses on the public internet
+only, and that host and port when the address given is on this machine or
+its network, as a site you run there is: a page, a redirect or a sitemap
+at localhost, 127.0.0.1, a private network or another address of that kind
+is not opened, and the report names it with the reason. --pwa-check reads
+a manifest's screenshots by the same rule, and from a manifest file none
+at such an address.
+
 When the address given is another page than the home page, or a #route of
 it, a home page that answers an error or a bot check, or cannot be opened,
 is left out with a note, and the run starts at the address given. An

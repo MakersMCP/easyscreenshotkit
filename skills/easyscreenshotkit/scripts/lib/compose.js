@@ -80,7 +80,7 @@ async function checkBackdrop(chrome, value, dir) {
   if (!PICTURE_FILE.test(file)) return;
   const page = path.join(dir, "picture.html");
   fs.writeFileSync(page, "<!doctype html><title>picture</title>");
-  const tab = await openTab(chrome, { width: 64, height: 64, scale: 1, mobile: false, touch: false, agent: "desktop" });
+  const tab = await openTab(chrome, { width: 64, height: 64, scale: 1, mobile: false, touch: false, agent: "desktop" }, { own: true });
   try {
     await navigate(tab, pathToFileURL(page).href);
     const expression = `new Promise((done) => { const img = new Image(); img.onload = () => done(img.naturalWidth); img.onerror = () => done(0); img.src = ${JSON.stringify(pathToFileURL(path.resolve(file)).href)}; })`;
@@ -391,7 +391,7 @@ async function renderVideo(chrome, take, { layout, look, zoom, dir, sink, log = 
   const AHEAD = 150;
   try {
     for (let i = 0; i < n; i++) {
-      const tab = await openTab(chrome, { width: WIDTH, height: HEIGHT, scale: 1, mobile: false, touch: false, agent: "desktop" });
+      const tab = await openTab(chrome, { width: WIDTH, height: HEIGHT, scale: 1, mobile: false, touch: false, agent: "desktop" }, { own: true });
       opened.push(tab);
       await navigate(tab, pathToFileURL(page).href);
     }
@@ -449,7 +449,7 @@ async function renderStill(chrome, take, { layout, look, zoom, dir, t }) {
   const regions = planCamera(take, { zoom });
   const page = path.join(dir, "compose.html");
   if (!fs.existsSync(page)) fs.writeFileSync(page, composeHtml(layout, look, take.viewport));
-  const tab = await openTab(chrome, { width: WIDTH, height: HEIGHT, scale: 1, mobile: false, touch: false, agent: "desktop" });
+  const tab = await openTab(chrome, { width: WIDTH, height: HEIGHT, scale: 1, mobile: false, touch: false, agent: "desktop" }, { own: true });
   try {
     await navigate(tab, pathToFileURL(page).href);
     return await drawFrame(tab, stateAt(take, regions, layout, t), "png");

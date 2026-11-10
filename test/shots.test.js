@@ -12,7 +12,8 @@ const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const test = require("node:test");
 const { takeShots, readInfo, DEVICES } = require("../skills/easyscreenshotkit/scripts/lib/shots");
-const { findChrome, launch, startWait, openTab, closeTab, navigate, killBrowsers, removeProfiles, removeStrayLocks, removeFetchFolders, fetchFolders, roomIn } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
+const { findChrome, launch, startWait, openTab, closeTab, navigate, currentUrl, killBrowsers, removeProfiles, removeStrayLocks, removeFetchFolders, fetchFolders, roomIn, BARRED } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
+const { guardFor } = require("../skills/easyscreenshotkit/scripts/lib/address");
 const { setTimeLimit, sleep } = require("../skills/easyscreenshotkit/scripts/lib/time");
 const { watchRequests, networkQuiet, showsLoadingSign, looksEmpty } = require("../skills/easyscreenshotkit/scripts/lib/page");
 const { LOCATE } = require("../skills/easyscreenshotkit/scripts/lib/record");
@@ -2761,5 +2762,124 @@ test("the browser opens no port: the run drives it over a pipe", { skip: noBrows
     await closeTab(chrome, tab);
   } finally {
     await chrome.close();
+  }
+});
+
+// From a site on the public internet the browser opens no address on this
+// machine or its network: not one given to it, not one a redirect leads to,
+// and not one a page moves on to by itself, which stays where it was. Here
+// the site's name is one the DNS does not know, which the browser takes to
+// this machine, as a site's name leads it to the site's server; the other
+// server is another program on this machine.
+test("from a public site the browser opens no address on this machine: given, after a redirect, or when a page moves on by itself", { skip: noBrowser, timeout: 120_000 }, async () => {
+  const seen = [];
+  const other = await serve((req, res) => {
+    seen.push(req.url);
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Inside", "<h1>Inside</h1>"));
+  });
+  const elsewhere = other.origin;
+  const local = `http://localhost:${new URL(elsewhere).port}`;
+  const { server, origin } = await serve((req, res) => {
+    if (req.url === "/away") return res.writeHead(302, { Location: `${elsewhere}/moved` }).end();
+    if (req.url === "/hop") return res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Hop", `<h1>Hop</h1><script>setTimeout(() => { location.href = "${local}/hop"; }, 100);</script>`));
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Acme", "<h1>Acme</h1>"));
+  });
+  const site = `http://public.example:${new URL(origin).port}`;
+  const secret = path.join(tempDir(), "secret.txt");
+  fs.writeFileSync(secret, "a file of this machine");
+  const chrome = await launch({ args: ["--host-resolver-rules=MAP public.example 127.0.0.1"] });
+  try {
+    chrome.guard = await guardFor(`${site}/`);
+    assert.equal(chrome.guard.local, false);
+    const tab = await openTab(chrome, DEVICES.desktop);
+    try {
+      assert.equal((await navigate(tab, `${site}/`)).status, 200);
+      await assert.rejects(navigate(tab, `${elsewhere}/given`), { message: `Could not open ${elsewhere}/given: it is not on the public internet.`, refused: "not on the public internet" });
+      await assert.rejects(navigate(tab, `${site}/away`), { message: `Could not open ${site}/away: it leads to ${elsewhere}/moved, which is not on the public internet.`, refused: `it leads to ${elsewhere}/moved, which is not on the public internet` });
+      await assert.rejects(navigate(tab, `file://127.0.0.1${secret}`), { refused: "not a web address" });
+      const barred = [];
+      tab.on(BARRED, (b) => barred.push(b));
+      await navigate(tab, `${site}/hop`);
+      await sleep(1_500);
+      assert.deepEqual(barred.map((b) => [b.url, b.why, b.main]), [[`${local}/hop`, "not on the public internet", true]]);
+      assert.equal(await currentUrl(tab), `${site}/hop`);
+      assert.deepEqual(seen, []);
+    } finally {
+      await closeTab(chrome, tab);
+    }
+  } finally {
+    await chrome.close();
+    server.close();
+    other.server.close();
+    fs.rmSync(path.dirname(secret), { recursive: true, force: true });
+  }
+});
+
+// A run given an address on this machine, as a developer gives the site
+// they run there, opens that host and port and no other address of the
+// machine: not a page of its tour or a --page there, not one a redirect
+// leads to or one a page moves on to by itself, and no sitemap robots.txt
+// names there. Each is named with the reason, and the other server sees no
+// request.
+const NOT_GIVEN = "not on the public internet, and not on the host and port given";
+
+test("a run opens no other address on this machine than the one given: not by its tour, a --page, a redirect, a page that moves on or a sitemap", { skip: noBrowser, timeout: 240_000 }, async () => {
+  const seen = [];
+  const other = await serve((req, res) => {
+    seen.push(req.url);
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Inside", "<h1>Inside</h1>"));
+  });
+  const elsewhere = other.origin;
+  const html = { "Content-Type": "text/html; charset=utf-8" };
+  const { server, origin } = await serve((req, res) => {
+    if (req.url === "/robots.txt") return res.writeHead(200, { "Content-Type": "text/plain" }).end(`User-agent: *\nSitemap: ${elsewhere}/sitemap.xml\n`);
+    if (req.url === "/") return res.writeHead(200, html).end(page("Acme | Tools for teams", `<header><nav><a href="${elsewhere}/pricing">Pricing</a><a href="/features">Features</a></nav></header><h1>Acme</h1><div style="height:1400px"></div>`));
+    if (req.url === "/features") return res.writeHead(302, { Location: `${elsewhere}/features` }).end();
+    if (req.url === "/hop") return res.writeHead(200, html).end(page("Hop | Acme", `<h1>Hop</h1><div style="height:1400px"></div><script>setTimeout(() => { location.href = "${elsewhere}/hop"; }, 200);</script>`));
+    res.writeHead(404).end("not found");
+  });
+  const root = tempDir();
+  try {
+    const out = path.join(root, "shots");
+    const run = await runCli([origin, "--pages", "4", "--sizes", "desktop", "--page", "/hop", "--page", `${elsewhere}/asked`, "--out", out]);
+    assert.equal(run.status, 0, run.stderr);
+    const manifest = JSON.parse(fs.readFileSync(path.join(out, "manifest.json"), "utf8"));
+    assert.deepEqual(manifest.pages.map((p) => p.slug), ["home", "hop"]);
+    assert.ok(manifest.pages[1].notes.includes(`it tried to open ${elsewhere}/hop, which is ${NOT_GIVEN}: it was not opened`), manifest.pages[1].notes.join("\n"));
+    const skipped = Object.fromEntries(manifest.skipped.map(({ url, reason }) => [url, reason]));
+    assert.equal(skipped[`${elsewhere}/asked`], NOT_GIVEN);
+    assert.equal(skipped[`${elsewhere}/pricing`], NOT_GIVEN);
+    assert.equal(skipped[`${origin}/features`], `it leads to ${elsewhere}/features, which is ${NOT_GIVEN}`);
+    assert.ok(manifest.notes.includes(`${elsewhere}/asked was asked for but not taken: ${NOT_GIVEN}.`), manifest.notes.join("\n"));
+    assert.deepEqual(seen, []);
+  } finally {
+    server.close();
+    other.server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A page's version in another language that a link names at an address
+// that is no web address, as file://127.0.0.1/... names a file of a site
+// on this machine, is not opened: the browser showed the file, and the run
+// took it for the home page.
+test("a page's version in another language at an address that is no web address is not opened", { skip: noBrowser, timeout: 120_000 }, async () => {
+  const root = tempDir();
+  const secret = path.join(root, "secret.txt");
+  fs.writeFileSync(secret, "a file of this machine");
+  const { server, origin } = await serve((req, res) => {
+    if (req.url !== "/") return res.writeHead(404).end("not found");
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Acme | Tools for teams", "<h1>Acme</h1><div style=\"height:1400px\"></div>", { head: `<link rel="alternate" hreflang="tr" href="file://127.0.0.1${secret}">` }));
+  });
+  try {
+    const out = path.join(root, "shots");
+    const run = await runCli([origin, "--pages", "2", "--sizes", "desktop", "--lang", "tr", "--out", out]);
+    assert.equal(run.status, 0, run.stderr);
+    const manifest = JSON.parse(fs.readFileSync(path.join(out, "manifest.json"), "utf8"));
+    assert.deepEqual(manifest.pages.map((p) => p.url), [`${origin}/`]);
+    assert.ok(manifest.notes.includes("The home page names no tr version of itself, so it was opened with tr as the browser's language."), manifest.notes.join("\n"));
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });

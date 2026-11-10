@@ -13,6 +13,7 @@ const os = require("os");
 const path = require("path");
 const { spawn } = require("child_process");
 const { timeLeft, sleep } = require("./time");
+const { NOT_WEB } = require("./address");
 
 const MAC = [
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -293,6 +294,10 @@ function pipeTo(child, { onClose = () => {}, watch = null } = {}) {
         over: Promise.race([ending, over]),
         send: (method, params = {}, timeoutMs = 30_000, options = {}) => call(method, params, timeoutMs, options, state),
         ...subscribe(state.listeners),
+        // An event of the kit's own for this tab (see openTab).
+        emit(method, params) {
+          for (const listener of state.listeners.get(method) || []) listener(params);
+        },
         close() {
           endSession(state, CLOSED);
         },
@@ -560,8 +565,9 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
     started.lock = lockFolderOf(profile);
     kept = true;
     // gone(): whether the browser ended or stopped answering in the middle
-    // of the run; stalled(): whether it stopped answering.
-    return { chrome: { pid: child.pid, browser, userAgent: String(version.userAgent || ""), close, watch, gone: () => lost, stalled: () => stalled } };
+    // of the run; stalled(): whether it stopped answering. guard: set by the
+    // run, the rule for the addresses its pages may open (see address.js).
+    return { chrome: { pid: child.pid, browser, userAgent: String(version.userAgent || ""), close, watch, gone: () => lost, stalled: () => stalled, guard: null } };
   } catch {
     // No answer in the wait, an answer that refused, or a browser that
     // ended before it answered: its pipe closes a moment before it is
@@ -683,13 +689,23 @@ function userAgentFor(device, chromeAgent) {
   return { userAgent: chromeAgent.replace("HeadlessChrome", "Chrome") };
 }
 
+// The event a tab whose page tried to open an address the run's guard
+// refuses gets (see openTab): {url, why, main}, main when it was the page
+// itself and not a frame in it.
+const BARRED = "easyscreenshotkit.addressRefused";
+
 // A new window holding one tab, set up as the device: its screen, touch,
 // user agent and language, light or dark, and reduced motion when asked.
 // The browser has WINDOW_MS for all of it, or what the run has left: one
 // that has not done it by then fails it with a sentence that says so, and
 // reason, its short form for a page or a window left out over it. One that
-// has stopped answering altogether fails it with that (see start()).
-async function openTab(chrome, device, { lang = "", theme = "light", reducedMotion = false } = {}) {
+// has stopped answering altogether fails it with that (see start()). own:
+// a tab for the kit's own pages (the sheet, the demo's frames), which opens
+// files the kit made; any other opens web addresses only, and with the
+// run's guard set (chrome.guard), each page and frame it loads is judged by
+// it first, a redirect and a page that moves on by itself included: one it
+// refuses is not loaded, and the tab stays where it was, as for a download.
+async function openTab(chrome, device, { lang = "", theme = "light", reducedMotion = false, own = false } = {}) {
   const wait = waitOf(WINDOW_MS);
   const until = Date.now() + wait.ms;
   const left = () => Math.max(1, until - Date.now());
@@ -700,6 +716,21 @@ async function openTab(chrome, device, { lang = "", theme = "light", reducedMoti
     const { sessionId } = await chrome.browser.send("Target.attachToTarget", { targetId, flatten: true }, left());
     cdp = chrome.browser.session(sessionId);
     cdp.targetId = targetId;
+    cdp.own = own;
+    cdp.guard = own ? null : chrome.guard || null;
+    if (cdp.guard) {
+      const guard = cdp.guard;
+      const tab = cdp;
+      // An answer that does not come is found by the calls the run makes.
+      const quick = { fixed: true, watched: false };
+      cdp.on("Fetch.requestPaused", async (p) => {
+        const why = await guard.refuses(p.request.url).catch(() => NOT_WEB);
+        if (!why) return void tab.send("Fetch.continueRequest", { requestId: p.requestId }, 10_000, quick).catch(() => {});
+        tab.emit(BARRED, { url: p.request.url, why, main: p.frameId === targetId });
+        tab.send("Fetch.failRequest", { requestId: p.requestId, errorReason: "Aborted" }, 10_000, quick).catch(() => {});
+      });
+      await cdp.send("Fetch.enable", { patterns: [{ urlPattern: "*", resourceType: "Document", requestStage: "Request" }] }, left());
+    }
     // A tab whose page crashed, as one killed for its memory does, answers
     // nothing more while the browser goes on: its calls fail at once, with
     // why, where each waited out its whole time limit and was called too
@@ -767,15 +798,25 @@ async function closeTab(chrome, cdp) {
 // status the page came with. An address that answers with a file to
 // download, at once or after a redirect, is refused: the browser saves
 // nothing (see launch()), and there is no page to take. One with no answer
-// in ANSWER_MS, or in what the run has left, is said so.
+// in ANSWER_MS, or in what the run has left, is said so. In a tab for a
+// site (see openTab), an address that is no web address is never opened,
+// and neither is one the run's guard refuses, nor one a redirect leads to:
+// refused says what it is, for a page left out over it.
 const NOT_A_PAGE = "a file to download instead of a page";
 
 async function navigate(cdp, url) {
+  if (!cdp.own) {
+    const why = cdp.guard ? await cdp.guard.refuses(url) : /^https?:$/i.test(protocolOf(url)) ? "" : NOT_WEB;
+    if (why) throw Object.assign(new Error(`Could not open ${url}: it is ${why}.`), { refused: why });
+  }
   let onLoad;
   let onMove;
+  let onBarred;
   let timer;
+  let barred = null;
   const loaded = new Promise((resolve) => cdp.on("Page.loadEventFired", (onLoad = resolve)));
   const moved = new Promise((resolve) => cdp.on("Page.navigatedWithinDocument", (onMove = resolve)));
+  cdp.on(BARRED, (onBarred = (b) => (barred = barred || (b.main ? b : null))));
   try {
     const wait = waitOf(ANSWER_MS);
     const { errorText, loaderId, isDownload } = await cdp.send("Page.navigate", { url }, wait.ms).catch((err) => {
@@ -784,6 +825,10 @@ async function navigate(cdp, url) {
       throw Object.assign(new Error(`Could not open ${url}: no answer in ${s} s. The site may be down or slow, or the machine too busy: try again${wait.cut ? ", or give the run more time with --timeout" : ""}.`), { reason: `no answer in ${s} s` });
     });
     if (isDownload) throw Object.assign(new Error(`Could not open ${url}: it answers with ${NOT_A_PAGE}.`), { refused: NOT_A_PAGE });
+    if (errorText && barred) {
+      const why = `it leads to ${barred.url}, which is ${barred.why}`;
+      throw Object.assign(new Error(`Could not open ${url}: ${why}.`), { refused: why });
+    }
     // reason: the browser's own words, for a page left out over it.
     if (errorText) throw Object.assign(new Error(`Could not open ${url}: ${errorText}`), { reason: errorText });
     // The wait is cleared once the page has loaded: left running, it kept
@@ -796,12 +841,21 @@ async function navigate(cdp, url) {
     clearTimeout(timer);
     cdp.off("Page.loadEventFired", onLoad);
     cdp.off("Page.navigatedWithinDocument", onMove);
+    cdp.off(BARRED, onBarred);
   }
   const finalUrl = await currentUrl(cdp, url);
   const { result } = await cdp
     .send("Runtime.evaluate", { expression: "(performance.getEntriesByType('navigation')[0] || {}).responseStatus || 0", returnByValue: true }, 5_000)
     .catch(() => ({ result: {} }));
   return { url: finalUrl, status: Number(result && result.value) || 0 };
+}
+
+function protocolOf(url) {
+  try {
+    return new URL(url).protocol;
+  } catch {
+    return "";
+  }
 }
 
 // The address the tab shows now: an app can move to another #route of its
@@ -891,4 +945,4 @@ function removeProfiles(browsers) {
   }
 }
 
-module.exports = { findChrome, onPath, launch, startWait, openTab, closeTab, navigate, currentUrl, killBrowsers, removeProfiles, removeStrayLocks, removeFetchFolders, fetchFolders, roomIn, lockFolderOf, userAgentFor, CRASHED };
+module.exports = { findChrome, onPath, launch, startWait, openTab, closeTab, navigate, currentUrl, killBrowsers, removeProfiles, removeStrayLocks, removeFetchFolders, fetchFolders, roomIn, lockFolderOf, userAgentFor, CRASHED, BARRED };

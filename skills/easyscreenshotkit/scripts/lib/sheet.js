@@ -70,7 +70,7 @@ function sheetHtml(manifest, dir) {
 async function renderSheet(chrome, manifest, run) {
   if (!manifest.pages.some((page) => picksFor(page).length)) return null;
   run.write("sheet.html", sheetHtml(manifest, run.part));
-  const tab = await openTab(chrome, SHEET);
+  const tab = await openTab(chrome, SHEET, { own: true });
   try {
     await navigate(tab, pathToFileURL(run.file("sheet.html")).href);
     resetPictureWait(tab, 15_000);

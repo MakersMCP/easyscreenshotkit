@@ -27,6 +27,7 @@ const { cameraAt } = require("./motion");
 const { findFfmpeg, pickEncoder, startVideo, makeGif, MISSING } = require("./ffmpeg");
 const { tagPng, pngSize, pngFileIsWhole } = require("./png");
 const { setTimeLimit, timeLeft } = require("./time");
+const { guardFor } = require("./address");
 const { begin, checkDir, stopOnSignals } = require("./outdir");
 const version = require("./version");
 
@@ -74,6 +75,14 @@ keeps it. A tour follows paths only: the notes in steps.json name the
 #routes in the site's sitemap. An address that answers with a file to
 download is refused: a tour leaves it out and says so, a visit step to one
 stops the demo, and the browser saves nothing.
+
+From the address given a demo opens web addresses on the public internet
+only, and that host and port when the address given is on this machine or
+its network, as a site you run there is. A visit step to localhost,
+127.0.0.1, a private network or another address of that kind, or to a page
+that redirects to one, stops the demo; a click on a link to one leaves the
+page where it was, with a note in steps.json; a tour leaves such a page
+out and says so.
 
 When the address given is another page than the home page, or a #route of
 it, a tour whose home page answers an error or a bot check, or cannot be
@@ -387,6 +396,9 @@ async function makeDemo(rawUrl, options = {}) {
   try {
     fs.mkdirSync(frames);
     chrome = await launch({ lang, args: [`--force-device-scale-factor=${density}`] });
+    // The pages the demo opens, by a step, a click or the tour, are of the
+    // address given or on the public internet (see address.js).
+    chrome.guard = await guardFor(asked);
     recorder = new Recorder(chrome, { dir: frames, out: target, base: asked, fps, viewport, hide: [...hide, ...(script ? script.hide : [])], clean: tidy, theme, lang, reducedMotion, log });
     try {
       await checkBackdrop(chrome, background, frames);
@@ -442,6 +454,7 @@ async function makeDemo(rawUrl, options = {}) {
     }
     if (!take.frames.length) throw new Error("No frame was recorded.");
     for (const url of take.refused.slice(0, 5)) notes.push(`The page started a download of ${String(url).slice(0, 200)}, which the browser refused: no file was saved.`);
+    for (const { url, why } of take.barred.slice(0, 5)) notes.push(`The page tried to open ${String(url).slice(0, 200)}, which is ${why}: it was not opened, and the page stayed where it was.`);
     if (take.slow) notes.push("A page drew slowly in this browser, so it was recorded in slow motion and played back at speed; its own animations look right, scripted ones may run fast.");
 
     // The video.

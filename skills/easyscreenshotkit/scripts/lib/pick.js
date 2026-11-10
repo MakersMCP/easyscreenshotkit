@@ -12,6 +12,7 @@
 // site's robots.txt asks crawlers to stay out of.
 
 const zlib = require("zlib");
+const { guardFor, getChecked } = require("./address");
 
 const fold = (text) =>
   String(text || "")
@@ -208,13 +209,16 @@ const LANG_CODE = /^[a-z]{2,3}(-[a-z0-9]{2,8})*$/i;
 // The site's own page in the language asked for, of the alternates a page
 // names (<link rel="alternate" hreflang="tr" href="/tr/">): the first whose
 // hreflang is a language code for that language, or for the language
-// without its region, or null. Any other hreflang is not taken: it is the
-// page's own words, which would go into the log, the summary and the
-// report as they are, a line break of their own included.
+// without its region, and whose address is a web address, or null. Any
+// other hreflang is not taken: it is the page's own words, which would go
+// into the log, the summary and the report as they are, a line break of
+// their own included. Nor is any other address: file://localhost/... names
+// the host of a site on this machine, and opened it shows a file of it.
 function alternateFor(alternates, lang) {
   if (!lang) return null;
   const want = fold(lang);
-  return (alternates || []).find((alt) => LANG_CODE.test(String(alt.lang)) && (fold(alt.lang) === want || fold(alt.lang).split("-")[0] === want.split("-")[0])) || null;
+  const web = (href) => /^https?:\/\//i.test(String(href || ""));
+  return (alternates || []).find((alt) => LANG_CODE.test(String(alt.lang)) && web(alt.href) && (fold(alt.lang) === want || fold(alt.lang).split("-")[0] === want.split("-")[0])) || null;
 }
 
 // The home page for an address: the site's root, or its language root
@@ -588,17 +592,13 @@ function sitemapOrder(urls) {
 
 const FETCH_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
 
-async function fetchText(url, { limit = 5_000_000, timeout = 8_000 } = {}) {
-  const res = await fetch(url, { headers: { "user-agent": FETCH_AGENT, accept: "*/*" }, redirect: "follow", signal: AbortSignal.timeout(timeout) });
-  if (!res.ok || !res.body) return "";
-  const chunks = [];
-  let size = 0;
-  for await (const chunk of res.body) {
-    chunks.push(chunk);
-    size += chunk.length;
-    if (size > limit) break;
-  }
-  let body = Buffer.concat(chunks);
+// A file of the site, read as text, "" when it does not answer with one.
+// guard: the run's rule for the addresses it reads (see address.js), which
+// each redirect is held to as well.
+async function fetchText(url, { limit = 5_000_000, timeout = 8_000, guard } = {}) {
+  const res = await getChecked(url, { guard, headers: { "user-agent": FETCH_AGENT, accept: "*/*" }, timeoutMs: timeout, maxBytes: limit });
+  if (!res.ok) return "";
+  let body = res.body;
   if (body[0] === 0x1f && body[1] === 0x8b) {
     try {
       body = zlib.gunzipSync(body, { maxOutputLength: limit * 4 });
@@ -610,11 +610,14 @@ async function fetchText(url, { limit = 5_000_000, timeout = 8_000 } = {}) {
 }
 
 // robots.txt and up to 500 addresses from the sitemaps, read with a time
-// limit; a site without them gives empty lists.
-async function readSiteIndex(origin, { max = 500, sitemapFiles = 4 } = {}) {
+// limit; a site without them gives empty lists. guard: the run's rule for
+// the addresses it reads, the site's own by default: a sitemap robots.txt
+// names elsewhere is read only where the run may go.
+async function readSiteIndex(origin, { max = 500, sitemapFiles = 4, guard = null } = {}) {
+  guard = guard || (await guardFor(origin));
   let robots = { sitemaps: [], rules: [] };
   try {
-    robots = parseRobots(await fetchText(`${origin}/robots.txt`, { limit: 500_000, timeout: 6_000 }));
+    robots = parseRobots(await fetchText(`${origin}/robots.txt`, { limit: 500_000, timeout: 6_000, guard }));
   } catch {
     // No robots.txt: nothing is off limits.
   }
@@ -629,7 +632,7 @@ async function readSiteIndex(origin, { max = 500, sitemapFiles = 4 } = {}) {
     read++;
     let parsed;
     try {
-      parsed = parseSitemap(await fetchText(next, { timeout: 8_000 }));
+      parsed = parseSitemap(await fetchText(next, { timeout: 8_000, guard }));
     } catch {
       continue;
     }

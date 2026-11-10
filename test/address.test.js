@@ -1,0 +1,130 @@
+"use strict";
+
+// Which addresses a run opens and reads (lib/address.js): only web
+// addresses, and from a site on the public internet only addresses on it,
+// so a site, a steps file or a manifest cannot send the kit to this
+// machine or its network. No browser here.
+
+const assert = require("node:assert/strict");
+const dns = require("node:dns");
+const http = require("node:http");
+const test = require("node:test");
+const { guardFor, getChecked, notPublicIp } = require("../skills/easyscreenshotkit/scripts/lib/address");
+const { alternateFor } = require("../skills/easyscreenshotkit/scripts/lib/pick");
+
+const NOT_PUBLIC = "not on the public internet";
+const NOT_GIVEN = "not on the public internet, and not on the host and port given";
+
+test("an address on this machine, a private network or a range kept aside is not on the public internet, in any form it is written in", () => {
+  for (const ip of ["127.0.0.1", "127.8.9.10", "10.1.2.3", "172.16.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "224.0.0.1", "::1", "::", "fe80::1", "fd12::1", "[::1]", "fe80::1%eth0"]) {
+    assert.equal(notPublicIp(ip), true, ip);
+  }
+  // IPv6 forms that hold an IPv4 address are judged by that address.
+  for (const ip of ["::ffff:7f00:1", "::ffff:127.0.0.1", "::7f00:1", "::ffff:0:7f00:1", "2002:7f00:1::", "64:ff9b::a00:1", "64:ff9b:1::1"]) {
+    assert.equal(notPublicIp(ip), true, ip);
+  }
+  for (const ip of ["8.8.8.8", "93.184.215.14", "2606:4700::1111", "::ffff:8.8.8.8", "2002:808:808::", "64:ff9b::808:808"]) {
+    assert.equal(notPublicIp(ip), false, ip);
+  }
+  assert.equal(notPublicIp("not an address"), true);
+});
+
+test("from a public address a run opens web addresses on the public internet only, and from one on this machine that host and port too", async () => {
+  const lookup = dns.lookup;
+  // Names as a DNS server of the site's own would answer them.
+  const names = { "public.example": "93.184.215.14", "inside.example": "10.0.0.7", "both.example": ["93.184.215.14", "127.0.0.1"] };
+  dns.lookup = (host, options, callback) => {
+    const known = names[host];
+    if (!known) return process.nextTick(callback, Object.assign(new Error(`getaddrinfo ENOTFOUND ${host}`), { code: "ENOTFOUND", hostname: host }));
+    process.nextTick(callback, null, [known].flat().map((address) => ({ address, family: 4 })));
+  };
+  try {
+    const fromPublic = await guardFor("https://public.example/app/#/plants");
+    assert.equal(fromPublic.local, false);
+    for (const [url, why] of [
+      ["https://public.example/pricing", ""],
+      ["http://93.184.215.14:8080/", ""],
+      ["http://127.0.0.1:9222/json/list", NOT_PUBLIC],
+      ["http://0x7f000001/", NOT_PUBLIC],
+      ["http://127.1:40000/", NOT_PUBLIC],
+      ["http://[::ffff:127.0.0.1]/", NOT_PUBLIC],
+      ["http://localhost:3000/", NOT_PUBLIC],
+      ["http://app.localhost/", NOT_PUBLIC],
+      ["http://169.254.169.254/latest/meta-data/", NOT_PUBLIC],
+      ["http://inside.example/", NOT_PUBLIC],
+      ["http://both.example/", NOT_PUBLIC],
+      ["file://localhost/etc/passwd", "not a web address"],
+      ["file:///etc/passwd", "not a web address"],
+      ["data:text/html,hi", "not a web address"],
+      ["javascript:alert(1)", "not a web address"],
+      ["no address", "not a web address"],
+    ]) {
+      assert.equal(await fromPublic.refuses(url), why, url);
+    }
+    // A site on this machine, as a developer runs one: that host and port,
+    // and the public internet.
+    const fromLocal = await guardFor("http://localhost:3000/");
+    assert.equal(fromLocal.local, true);
+    for (const [url, why] of [
+      ["http://localhost:3000/pricing", ""],
+      ["http://localhost:3000/app/#/plants", ""],
+      ["https://public.example/", ""],
+      ["http://localhost:3001/", NOT_GIVEN],
+      ["http://127.0.0.1:3000/", NOT_GIVEN],
+      ["http://inside.example/", NOT_GIVEN],
+      ["file://localhost/etc/passwd", "not a web address"],
+    ]) {
+      assert.equal(await fromLocal.refuses(url), why, url);
+    }
+    // A name that resolves to an address on a private network is such an
+    // address itself.
+    assert.equal((await guardFor("http://inside.example/")).local, true);
+    // No address given, as for a manifest read from a file: the public
+    // internet only.
+    const none = await guardFor("");
+    assert.equal(await none.refuses("http://127.0.0.1:3000/x.png"), NOT_PUBLIC);
+    assert.equal(await none.refuses("https://public.example/x.png"), "");
+  } finally {
+    dns.lookup = lookup;
+  }
+});
+
+test("a file the kit reads itself is not read from an address the run does not open, nor after a redirect to one", async () => {
+  const seen = [];
+  const other = http.createServer((req, res) => {
+    seen.push(req.url);
+    res.end("from the other server");
+  });
+  await new Promise((resolve) => other.listen(0, "127.0.0.1", resolve));
+  const elsewhere = `http://127.0.0.1:${other.address().port}`;
+  const site = http.createServer((req, res) => {
+    if (req.url === "/away") return res.writeHead(302, { Location: `${elsewhere}/moved` }).end();
+    if (req.url === "/twice") return res.writeHead(301, { Location: "/here" }).end();
+    res.writeHead(200, { "Content-Type": "text/plain" }).end(`here: ${req.url}`);
+  });
+  await new Promise((resolve) => site.listen(0, "127.0.0.1", resolve));
+  const origin = `http://127.0.0.1:${site.address().port}`;
+  try {
+    const guard = await guardFor(`${origin}/`);
+    const got = await getChecked(`${origin}/twice`, { guard });
+    assert.deepEqual([got.status, got.url, got.body.toString()], [200, `${origin}/here`, "here: /here"]);
+    await assert.rejects(getChecked(`${origin}/away`, { guard }), { refused: `it leads to ${elsewhere}/moved, which is ${NOT_GIVEN}` });
+    await assert.rejects(getChecked(`${elsewhere}/asked`, { guard }), { refused: `it is ${NOT_GIVEN}` });
+    await assert.rejects(getChecked(`${elsewhere}/asked`, { guard: await guardFor("") }), { refused: `it is ${NOT_PUBLIC}` });
+    assert.deepEqual(seen, []);
+  } finally {
+    site.close();
+    other.close();
+  }
+});
+
+test("a page's version in another language is taken only at a web address", () => {
+  const alternates = [
+    { lang: "tr", href: "file://127.0.0.1/etc/hostname" },
+    { lang: "tr", href: "file://localhost/etc/passwd" },
+    { lang: "de", href: "javascript:alert(1)" },
+  ];
+  assert.equal(alternateFor(alternates, "tr"), null);
+  assert.equal(alternateFor(alternates, "de"), null);
+  assert.deepEqual(alternateFor([...alternates, { lang: "tr", href: "https://acme.com/tr/" }], "tr"), { lang: "tr", href: "https://acme.com/tr/" });
+});

@@ -366,3 +366,54 @@ test("--pwa-check: a site's address leads to the manifest its page links", async
     server.close();
   }
 });
+
+// A manifest, the page that links it or a redirect cannot send the check to
+// this machine or its network: from an address on this machine it reads
+// only that host and port, from a manifest file only the public internet.
+// It read every address it was given there, and told an open port from a
+// closed one by what it said of each screenshot.
+test("--pwa-check reads nothing from an address on this machine other than the one given, nor from one a manifest file names", async () => {
+  const seen = [];
+  const other = await serve((req, res) => {
+    seen.push(req.url);
+    res.writeHead(200, { "Content-Type": "image/png" }).end(pngHead(1920, 1080));
+  });
+  const elsewhere = other.origin;
+  const NOT_GIVEN = "not on the public internet, and not on the host and port given";
+  const { server, origin } = await serve((req, res) => {
+    if (req.url === "/") return res.writeHead(200, { "Content-Type": "text/html" }).end(`<!doctype html><link rel="manifest" href="${elsewhere}/app.webmanifest"><h1>Acme</h1>`);
+    if (req.url === "/app.webmanifest") {
+      const screenshots = [
+        { src: `${elsewhere}/wide.png`, sizes: "1920x1080", type: "image/png", form_factor: "wide", label: "Home" },
+        { src: "/moved.png", sizes: "1920x1080", type: "image/png", form_factor: "wide", label: "Plans" },
+        { src: "/here.png", sizes: "1920x1080", type: "image/png", form_factor: "wide", label: "Docs" },
+      ];
+      return res.writeHead(200, { "Content-Type": "application/manifest+json" }).end(JSON.stringify({ name: "Acme", screenshots }));
+    }
+    if (req.url === "/moved.png") return res.writeHead(302, { Location: `${elsewhere}/moved.png` }).end();
+    if (req.url === "/here.png") return res.writeHead(200, { "Content-Type": "image/png" }).end(pngHead(1920, 1080));
+    res.writeHead(404).end();
+  });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-pwa-"));
+  try {
+    await assert.rejects(checkManifest({ url: `${origin}/` }), { message: `Could not read ${elsewhere}/app.webmanifest, the manifest ${origin}/ links: it is ${NOT_GIVEN}` });
+    const report = await checkManifest({ url: `${origin}/app.webmanifest` });
+    assert.deepEqual(
+      report.screenshots.map((shot) => [shot.n, shot.error, Boolean(shot.image)]),
+      [
+        [1, `it is ${NOT_GIVEN}`, false],
+        [2, `it leads to ${elsewhere}/moved.png, which is ${NOT_GIVEN}`, false],
+        [3, "", true],
+      ],
+    );
+    const file = path.join(dir, "manifest.json");
+    fs.writeFileSync(file, JSON.stringify({ name: "Acme", screenshots: [{ src: `${elsewhere}/wide.png`, sizes: "1920x1080", type: "image/png", form_factor: "wide" }, { src: `${origin}/here.png`, sizes: "1920x1080", type: "image/png", form_factor: "wide" }] }));
+    const fromFile = await checkManifest({ file });
+    assert.deepEqual(fromFile.screenshots.map((shot) => shot.error), ["it is not on the public internet", "it is not on the public internet"]);
+    assert.deepEqual(seen, []);
+  } finally {
+    server.close();
+    other.server.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

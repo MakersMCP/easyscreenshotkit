@@ -27,6 +27,7 @@ const fs = require("fs");
 const path = require("path");
 const { pngSize } = require("./png");
 const { oneLine } = require("./pick");
+const { guardFor, getChecked } = require("./address");
 const version = require("./version");
 
 const MIN_SIDE = 320;
@@ -342,18 +343,22 @@ const AGENT = `easyscreenshotkit/${version} (+https://github.com/EminBudak/easys
 
 function reasonOf(err) {
   if (err && (err.name === "TimeoutError" || err.name === "AbortError")) return `no answer in ${FETCH_MS / 1000} s`;
-  const cause = err && err.cause;
+  if (err && err.refused) return err.refused;
+  const cause = (err && err.cause) || err;
   if (cause && cause.code === "ENOTFOUND") return `${cause.hostname || "the host"} was not found`;
-  if (cause && cause.code) return cause.code;
   if (err && err.code === "ENOENT") return `there is no file ${err.path}`;
+  if (cause && cause.code === "ENOTPUBLIC") return cause.message.replace(/^\S+ is /, "it is ");
+  if (cause && cause.code) return cause.code;
   return (err && err.message) || String(err);
 }
 
-async function get(url, accept) {
-  const res = await fetch(url, { headers: { "User-Agent": AGENT, Accept: accept }, redirect: "follow", signal: AbortSignal.timeout(FETCH_MS) });
+// A file from the web, every address on the way held to guard, the rule of
+// the check (see checkManifest).
+async function get(url, accept, guard) {
+  const res = await getChecked(url, { guard, headers: { "user-agent": AGENT, accept }, timeoutMs: FETCH_MS, maxBytes: MAX_BYTES + 1 });
   if (!res.ok) throw new Error(`answered ${res.status}`);
-  if (Number(res.headers.get("content-length") || 0) > MAX_BYTES) throw new Error(`over ${MAX_BYTES / 1024 / 1024} MB`);
-  return { url: res.url || url, type: res.headers.get("content-type") || "", body: Buffer.from(await res.arrayBuffer()) };
+  if (res.body.length > MAX_BYTES) throw new Error(`over ${MAX_BYTES / 1024 / 1024} MB`);
+  return { url: res.url, type: res.type, body: res.body };
 }
 
 function parseJson(text, where) {
@@ -384,8 +389,8 @@ function manifestLink(html, base) {
 }
 
 // target: {file} or {url}. A web address may be the manifest itself or a
-// page that links it.
-async function loadManifest(target) {
+// page that links it. guard: the rule for the addresses the check reads.
+async function loadManifest(target, guard) {
   if (target.file) {
     let text;
     try {
@@ -398,7 +403,7 @@ async function loadManifest(target) {
   }
   let got;
   try {
-    got = await get(target.url, "application/manifest+json, application/json;q=0.9, text/html;q=0.8, */*;q=0.5");
+    got = await get(target.url, "application/manifest+json, application/json;q=0.9, text/html;q=0.8, */*;q=0.5", guard);
   } catch (err) {
     throw new Error(`Could not read ${target.url}: ${reasonOf(err)}`);
   }
@@ -408,7 +413,7 @@ async function loadManifest(target) {
   if (!href) throw new Error(`${got.url} links no web app manifest (no <link rel="manifest"> in its HTML). Give the manifest's own address or file.`);
   let manifest;
   try {
-    manifest = await get(href, "application/manifest+json, application/json;q=0.9, */*;q=0.5");
+    manifest = await get(href, "application/manifest+json, application/json;q=0.9, */*;q=0.5", guard);
   } catch (err) {
     throw new Error(`Could not read ${href}, the manifest ${got.url} links: ${reasonOf(err)}`);
   }
@@ -418,13 +423,13 @@ async function loadManifest(target) {
 // A screenshot's file, from the web or next to a manifest file. Next to a
 // file, a src that starts with "/" is taken from the manifest's folder: a
 // manifest usually sits at the site's root.
-async function loadImage(src, base) {
+async function loadImage(src, base, guard) {
   const data = /^data:([^,]*?)(;base64)?,(.*)$/is.exec(src);
   if (data) return imageInfo(data[2] ? Buffer.from(data[3], "base64") : Buffer.from(decodeURIComponent(data[3]), "utf8"));
   if (base.url || /^https?:\/\//i.test(src)) {
     const url = new URL(src, base.url).href;
     if (!/^https?:/i.test(url)) throw new Error(`${url} is not a web address`);
-    return imageInfo((await get(url, "image/png,image/jpeg;q=0.9,image/*;q=0.8,*/*;q=0.5")).body);
+    return imageInfo((await get(url, "image/png,image/jpeg;q=0.9,image/*;q=0.8,*/*;q=0.5", guard)).body);
   }
   let name = src.split(/[?#]/)[0];
   try {
@@ -436,15 +441,21 @@ async function loadImage(src, base) {
 }
 
 // --pwa-check: the manifest read, its screenshots' files read (the first 8,
-// as Chrome does), and Chrome's rules applied.
+// as Chrome does), and Chrome's rules applied. The check reads the address
+// it is given, and from there web addresses on the public internet only, or
+// on the host and port given when that is not on it, as a run opens its
+// pages (see address.js): a manifest, the page that links it or a redirect
+// cannot send it to this machine or its network. A manifest read from a
+// file reads no such address at all.
 async function checkManifest(target) {
-  const found = await loadManifest(target);
+  const guard = await guardFor(target.url || "");
+  const found = await loadManifest(target, guard);
   const json = found.json && typeof found.json === "object" && !Array.isArray(found.json) ? found.json : {};
   const list = Array.isArray(json.screenshots) ? json.screenshots : [];
   const images = await Promise.all(
     list.slice(0, LOOKED_AT).map((entry) => {
       const src = entry && typeof entry.src === "string" ? entry.src.trim() : "";
-      return src ? loadImage(src, found.base).catch((err) => ({ error: reasonOf(err) })) : undefined;
+      return src ? loadImage(src, found.base, guard).catch((err) => ({ error: reasonOf(err) })) : undefined;
     }),
   );
   // A file with screenshots and nothing else, such as the

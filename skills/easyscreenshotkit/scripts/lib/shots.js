@@ -22,7 +22,7 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
-const { launch, openTab, closeTab, navigate, currentUrl, CRASHED } = require("./chrome");
+const { launch, openTab, closeTab, navigate, currentUrl, CRASHED, BARRED } = require("./chrome");
 const { AROUND, metrics, scrollTo, walk, showsContent, waitForContent, settle, watchRequests, networkQuiet, waitForDrawn, showsLoadingSign, looksEmpty, waitForFonts, clearHover, resetPictureWait, capture, captureScreen, capturePage } = require("./page");
 const { clean } = require("./clean");
 const { homeOf, pageKey, routeOf, viewKey, pathOf, pageUrl, anchorOf, siteOf, fold, wordsOf, kindOf, rankLinks, routeLinks, visitOrder, readSiteIndex, localeOf, alternateFor, oneLine, ROUTE_LINK } = require("./pick");
@@ -31,6 +31,7 @@ const { PWA_SHOTS, LOOKED_AT, planPwa, checkManifest } = require("./pwa");
 const { renderSheet } = require("./sheet");
 const { begin, checkDir, realFolder } = require("./outdir");
 const { setTimeLimit, timeLeft, sleep } = require("./time");
+const { guardFor } = require("./address");
 const version = require("./version");
 
 // The devices a size names. Desktop at 1600x900 shows a site's full menu
@@ -659,6 +660,12 @@ async function visit(chrome, page, group, theme, ctx, { check = null, links = fa
     resetPictureWait(tab);
     await watchRequests(tab);
     const nav = await navigate(tab, page.url);
+    // A page that tries to move on by itself to an address the run does not
+    // open stays where it is (see openTab), and its notes say so.
+    const barred = [];
+    tab.on(BARRED, (b) => {
+      if (b.main && !barred.some((known) => known.url === b.url)) barred.push(b);
+    });
     // A bot check, an error or a redirect to a sign-in page is known at once:
     // no need to wait for it to settle.
     const glance = await readInfo(tab);
@@ -781,7 +788,7 @@ async function visit(chrome, page, group, theme, ctx, { check = null, links = fa
         shots.push({ size: shot.size, full: true, png: whole.png, scale: shot.scale, cssWidth: m.width, cssHeight: whole.height, truncated: whole.truncated, sections });
       }
     }
-    return { nav, info, loaded, busy, open, waited: page.busy ? BUSY_WAIT_MS : VIEW_WAIT_MS, short, links: found, shots, cleaned };
+    return { nav, info, loaded, busy, open, waited: page.busy ? BUSY_WAIT_MS : VIEW_WAIT_MS, short, links: found, shots, cleaned, barred };
   } finally {
     await closeTab(chrome, tab);
   }
@@ -1026,6 +1033,9 @@ async function takeShots(rawUrl, options = {}) {
   };
   try {
     chrome = await launch({ lang });
+    // The pages the run opens, and the sitemaps it reads, are of the
+    // address given or on the public internet (see address.js).
+    chrome.guard = await guardFor(asked);
     const [first] = groups;
     const firstTheme = themes[0];
     // The #route views whose other windows are still to be taken.
@@ -1111,6 +1121,7 @@ async function takeShots(rawUrl, options = {}) {
       });
       page.notes.push(...waitNotes(result));
       if (movedOn(page.asked, result.nav.url)) page.notes.push(`opened ${page.asked} and landed on ${result.nav.url}`);
+      for (const b of (result.barred || []).slice(0, 3)) page.notes.push(`it tried to open ${b.url}, which is ${b.why}: it was not opened`);
       kept.push(page);
       saveShots(page, result, firstTheme, run, written);
       log(`${String(page.n).padStart(2, "0")} ${page.slug}  ${pathOf(result.nav.url)}`);
@@ -1121,7 +1132,7 @@ async function takeShots(rawUrl, options = {}) {
     // The home page, or only the address given when one page is asked for.
     const startUrl = wanted === 1 ? asked : home;
     log(`Opening ${startUrl}`);
-    const indexing = wanted > 1 ? readSiteIndex(new URL(home).origin).catch(() => ({ robots: null, urls: [] })) : Promise.resolve({ robots: null, urls: [] });
+    const indexing = wanted > 1 ? readSiteIndex(new URL(home).origin, { guard: chrome.guard }).catch(() => ({ robots: null, urls: [] })) : Promise.resolve({ robots: null, urls: [] });
     let start = newPage(startUrl, wanted === 1 && given ? "given" : "home", wanted === 1 && given ? "the address given" : "the home page");
     let begun = Date.now();
     let result = null;

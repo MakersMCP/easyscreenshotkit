@@ -1576,6 +1576,62 @@ test("a click on a download link saves no file", { skip: missing || (process.pla
   }
 });
 
+// A demo opens no address on this machine but the host and port it was
+// given: not by a visit step, nor by a click on a link, nor by its tour's
+// menu, which a site or a steps file could point at the machine's other
+// ports, as at the DevTools of another job's browser. A click's page stays
+// where it was, as for a download, and the demo says so; a visit step to
+// one stops the demo, with the demo before it as it was.
+test("a demo opens no other address on this machine than the one it was given", { skip: missing, timeout: 240_000 }, async () => {
+  const seen = [];
+  const other = await serve((req, res) => {
+    seen.push(req.url);
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Inside", "<h1>Inside</h1>"));
+  });
+  const elsewhere = other.origin;
+  const NOT_GIVEN = "not on the public internet, and not on the host and port given";
+  const { server, origin } = await serve((req, res) => {
+    if (req.url === "/") return res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Acme | Tools", `<header><nav><a href="${elsewhere}/pricing">Pricing</a></nav></header><h1>Acme</h1><p style="font-size:32px;padding:0 40px"><a href="${elsewhere}/inside">Go inside</a></p><div style="height:1400px;background:rgb(0,160,0)"></div>`));
+    res.writeHead(404).end("not found");
+  });
+  const root = tempDir();
+  const dir = path.join(root, "demo");
+  const run = (args) =>
+    new Promise((resolve) => {
+      const child = spawn(process.execPath, [CLI, "demo", ...args]);
+      let err = "";
+      child.stderr.on("data", (d) => (err += d));
+      child.on("close", (code) => resolve({ code, err }));
+    });
+  try {
+    const click = path.join(root, "click.yaml");
+    fs.writeFileSync(click, 'steps:\n  - visit: /\n  - click: "text=Go inside"\n    zoom: false\n  - wait: 1\n');
+    const clicked = await run([origin, "--steps", click, "--out", dir, "--no-gif"]);
+    assert.equal(clicked.code, 0, clicked.err);
+    const { notes, pages } = JSON.parse(fs.readFileSync(path.join(dir, "steps.json"), "utf8"));
+    assert.deepEqual(notes.filter((note) => /tried to open/.test(note)), [`The page tried to open ${elsewhere}/inside, which is ${NOT_GIVEN}: it was not opened, and the page stayed where it was.`]);
+    assert.deepEqual(pages.map((shown) => shown.url), [`${origin}/`]);
+
+    const before = snapshot(dir);
+    const visit = path.join(root, "visit.yaml");
+    fs.writeFileSync(visit, `steps:\n  - visit: /\n  - visit: ${elsewhere}/visited\n`);
+    const refused = await run([origin, "--steps", visit, "--out", dir, "--no-gif"]);
+    assert.equal(refused.code, 1, refused.err);
+    assert.match(refused.err, new RegExp(`^easyscreenshotkit demo: step 2 \\(visit\\): Could not open ${elsewhere}/visited: it is ${NOT_GIVEN}\\.$`, "m"));
+    assert.deepEqual(snapshot(dir), before);
+
+    const tour = await run([origin, "--pages", "2", "--no-gif", "--out", path.join(root, "tour")]);
+    assert.equal(tour.code, 0, tour.err);
+    const toured = JSON.parse(fs.readFileSync(path.join(root, "tour", "steps.json"), "utf8"));
+    assert.ok(toured.notes.includes(`Left out ${elsewhere}/pricing: ${NOT_GIVEN}.`), toured.notes.join("\n"));
+    assert.deepEqual(seen, []);
+  } finally {
+    server.close();
+    other.server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a step that points at nothing stops the run with its number and leaves nothing behind", { skip: missing, timeout: 120_000 }, async () => {
   const { server, origin } = await fixture();
   const root = tempDir();

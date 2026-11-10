@@ -23,7 +23,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { openTab, closeTab, navigate, currentUrl } = require("./chrome");
+const { openTab, closeTab, navigate, currentUrl, BARRED } = require("./chrome");
 const { metrics, walk, waitForContent, settle, watchRequests, networkQuiet, waitForDrawn, waitForFonts, resetPictureWait, waitForPictures } = require("./page");
 const { clean } = require("./clean");
 const { readInfo, siteName } = require("./shots");
@@ -271,7 +271,7 @@ class Recorder {
     this.quiet = false;
     this.url = "";
     this.cursor = { x: viewport.width * 0.64, y: viewport.height * 0.76 };
-    this.take = { start: { ...this.cursor }, shownAt: null, moves: [], clicks: [], typing: [], keys: [], scrolls: [], cuts: [], urls: [], refused: [] };
+    this.take = { start: { ...this.cursor }, shownAt: null, moves: [], clicks: [], typing: [], keys: [], scrolls: [], cuts: [], urls: [], refused: [], barred: [] };
     this.pages = [];
   }
 
@@ -304,6 +304,15 @@ class Recorder {
       if (p.frameId !== this.frameId) return;
       this.refusedAt = Date.now();
       if (!this.take.refused.includes(p.url)) this.take.refused.push(p.url);
+    });
+    // A page the page itself tried to open (a link, a script) at an address
+    // the run does not open (see openTab): it is not loaded, and the page
+    // stays where it is, as for a download. A visit's own is told by its
+    // step.
+    tab.on(BARRED, (b) => {
+      if (!b.main || this.quiet) return;
+      this.refusedAt = Date.now();
+      if (!this.take.barred.some((known) => known.url === b.url)) this.take.barred.push({ url: b.url, why: b.why });
     });
     // An app that changes its address without loading a page (its own
     // router): the title bar follows. A new #route is another page; a new

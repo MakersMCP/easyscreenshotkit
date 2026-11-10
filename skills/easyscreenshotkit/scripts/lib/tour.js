@@ -54,7 +54,7 @@ async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = 
   const given = viewKey(asked) !== viewKey(home) ? asked : "";
   const asks = pagesAsked(extra, asked, home);
   log(`Opening ${home}`);
-  const indexing = wanted > 1 ? readSiteIndex(new URL(home).origin).catch(() => ({ robots: null, urls: [] })) : Promise.resolve({ robots: null, urls: [] });
+  const indexing = wanted > 1 ? readSiteIndex(new URL(home).origin, { guard: chrome.guard }).catch(() => ({ robots: null, urls: [] })) : Promise.resolve({ robots: null, urls: [] });
   // Opens the page the tour starts at. refused: why it cannot be, in the
   // words of the pages left out. alternates: look for its version in the
   // language asked for.
