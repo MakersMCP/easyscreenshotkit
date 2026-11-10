@@ -18,7 +18,7 @@ A launch video, a Product Hunt gallery, a pitch deck or a README needs the produ
 - Linux, where it is tested: on the latest Ubuntu, on every push and before every release. This release has also run on Ubuntu 26.04 with ffmpeg 8.0, and on Ubuntu 22.04 with ffmpeg 4.4.2. It is written for macOS and Windows as well, but this release has not been run on either.
 - Room on the disk for the files of a run and those of the run before it, as the earlier files stay until the new ones are in place, and in the temp folder for the browser's profile. A demo keeps the frames it records in the folder it saves in until it ends, about 2 MB for each second of the video: a 13 s tour of four pages took 28 MB at most.
 - On Linux and macOS, a temp folder whose path leaves the browser room for the socket it opens there, about 60 characters at most. `TMPDIR=/tmp` in front of the command fixes a longer one.
-- Network access to the site. No account, no API key and no npm dependencies.
+- Network access to the site. Installing it needs the network, and `npx easyscreenshotkit@latest` asks npm for the newest version each time it runs. No account, no API key and no npm dependencies.
 
 ## What you get
 
