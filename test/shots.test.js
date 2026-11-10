@@ -1842,9 +1842,10 @@ test("a browser's start: one that does not answer says so and leaves nothing run
   const modes = [...failing, ...starting];
   const wrapper = standIns(root);
   const before = process.env.CHROME_PATH;
+  let tries = [];
   try {
     setTimeLimit(500);
-    const tries = modes.map((mode) => {
+    tries = modes.map((mode) => {
       process.env.CHROME_PATH = wrapper(mode);
       const started = Date.now();
       // A stand-in taken for a browser is closed before the test goes on:
@@ -1885,8 +1886,10 @@ test("a browser's start: one that does not answer says so and leaves nothing run
       assert.equal(fs.existsSync(profile), false, profile);
     }
   } finally {
-    // Whatever failed, no stand-in goes on running.
+    // Whatever failed, no stand-in goes on running, and the starts still
+    // under way end with them, each removing its profile.
     endStandIns(root, modes);
+    await Promise.race([Promise.allSettled(tries), sleep(5_000)]);
     setTimeLimit(120_000);
     if (before === undefined) delete process.env.CHROME_PATH;
     else process.env.CHROME_PATH = before;
