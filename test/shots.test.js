@@ -893,6 +893,35 @@ test("an app that goes to another route after the wait is named by that route, a
   }
 });
 
+// The clean-up ran again for the route the app went to, and its result took
+// the place of the first one's: the boxes the first one had hidden were not
+// counted, and "scroll unlocked" was lost. Here the app goes to its other
+// route as the first clean-up hides its box.
+test("what the clean-up did before an app went to another route still counts", { skip: noBrowser, timeout: 120_000 }, async () => {
+  const moves = '<script>new MutationObserver(() => { location.hash = "#/two"; }).observe(document.getElementById("box"), { attributes: true });</script>';
+  const VIEWS = {
+    "/bubble/": `<div id="box" style="position:fixed;right:20px;bottom:20px;width:300px;height:300px;background:rgb(255,0,0)">Chat with us</div><nav><a href="#/one">One</a></nav><h1>View</h1>${moves}`,
+    "/dialog/": `<div id="box" style="position:fixed;inset:0;background:rgb(255,0,0)">Sign up to our letter</div><nav><a href="#/one">One</a></nav><h1>View</h1><div style="height:1400px"></div>${moves}`,
+  };
+  const { server, origin } = await serve((req, res) => {
+    if (VIEWS[req.url]) return res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("View | Acme", VIEWS[req.url], { style: "html,body{overflow:hidden}" }));
+    res.writeHead(404).end("not found");
+  });
+  const root = tempDir();
+  const take = async (name) => (await takeShots(`${origin}/${name}/#/one`, { dir: path.join(root, name), pages: 1, sizes: "desktop", timeLimit: 100_000 })).manifest.pages[0];
+  try {
+    const bubble = await take("bubble");
+    assert.deepEqual([bubble.url, bubble.hidden, bubble.notes], [`${origin}/bubble/#/two`, 1, [`opened ${origin}/bubble/#/one and landed on ${origin}/bubble/#/two`]]);
+    const png = readPng(path.join(root, "bubble", bubble.shots[0].file));
+    assert.ok(!near(css(png, 2, 1400, 700), [255, 0, 0]), "the box is hidden");
+    const dialog = await take("dialog");
+    assert.deepEqual([dialog.url, dialog.hidden, dialog.notes], [`${origin}/dialog/#/two`, 1, [`opened ${origin}/dialog/#/one and landed on ${origin}/dialog/#/two`, "scroll unlocked"]]);
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // A dialog held the tab until someone answered it, and nothing did: the run
 // failed some way into its time limit with a message that said nothing of it.
 test("a page that opens a dialog while it loads is taken", { skip: noBrowser, timeout: 100_000 }, async () => {

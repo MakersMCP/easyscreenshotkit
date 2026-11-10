@@ -627,7 +627,10 @@ async function visit(chrome, page, group, theme, ctx, { check = null, links = fa
       view = await waitForView(tab, nav, page.url, page.busy, opened);
       await settle(tab, 6_000);
       sign = await signAfterWait();
-      cleaned = await tidy();
+      // The first clean-up's boxes stay hidden, and this one counts only
+      // what came since.
+      const again = await tidy();
+      cleaned = { ...again, hidden: cleaned.hidden + again.hidden, unlocked: cleaned.unlocked || again.unlocked };
       await waitForFonts(tab);
       await scrollTo(tab, 0);
       await sleep(400);
