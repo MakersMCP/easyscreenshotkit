@@ -92,7 +92,8 @@ is stopped with Ctrl-C or a TERM signal leaves an earlier demo there as it
 was and adds nothing.
 
 Needs Node 22 or newer, Chrome, Chromium, Edge or Brave, and ffmpeg. Set
-CHROME_PATH or FFMPEG_PATH to pick them.`;
+CHROME_PATH or FFMPEG_PATH to pick them. The demo drives the browser over a
+pipe, so it opens no port.`;
 
 function parseDemo(argv) {
   const options = { pages: 4, extra: [], hide: [], zoom: 1.5, frame: true, background: "", fps: 30, theme: "light", lang: "", reducedMotion: false, clean: true, gif: true, json: false, timeout: 900 };

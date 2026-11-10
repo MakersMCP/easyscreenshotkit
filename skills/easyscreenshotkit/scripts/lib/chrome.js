@@ -2,10 +2,11 @@
 
 // The browser: a Chrome, Chromium, Edge or Brave already on this machine,
 // started headless with a throwaway profile and driven over the DevTools
-// protocol with the WebSocket built into Node 22. Nothing is downloaded.
-// Finding, starting and closing the browser come from easybrandkit 0.2.1;
-// every page here opens in a window of its own, set up as the device it is
-// captured on.
+// protocol on a pipe, the two file descriptors it is started with, so it
+// opens no port: no other program on the machine can reach it, and a page
+// cannot either. Nothing is downloaded. Finding, starting and closing the
+// browser come from easybrandkit 0.2.1; every page here opens in a window of
+// its own, set up as the device it is captured on.
 
 const fs = require("fs");
 const os = require("os");
@@ -71,148 +72,239 @@ const PROBE_MS = 10_000;
 // What a call fails with once the browser has stopped answering.
 const STALLED = "The browser stopped answering.";
 
-// onClose: called once the connection has closed, whoever closed it. over:
-// settled once no answer can come any more, as the connection closed or
-// fail() was called. timeoutMs: how long the browser has to take the
-// connection, which is closed again when it has not by then. A call that
-// gets no answer in its time fails with timedOut set, and one the browser
-// answers with an error with answered set. A call's time is what it asks
-// for within what the run has left, a second at least, or with fixed what
-// it asks for whatever the run has left. watch: asks whether the browser
-// still answers (see start()), once a call, or the connection itself, has
-// had no answer for SLOW_MS, and again when a call's time runs out, and
-// resolves to the error a call fails with when it does not, or to null;
-// the call or the connection that asked fails with that error at once. A
-// call sent with watched false is not watched.
-function connect(wsUrl, { onClose = () => {}, timeoutMs = 30_000, watch = null } = {}) {
-  return new Promise((resolve, reject) => {
-    const ws = new WebSocket(wsUrl);
-    const pending = new Map();
-    const listeners = new Map();
-    let nextId = 0;
-    // Set by fail(): every call goes on failing with it.
-    let failure = "";
-    let ended;
-    const over = new Promise((settle) => (ended = settle));
-    let opened = false;
-    const unanswered = setTimeout(() => {
-      clearTimeout(slowOpen);
-      reject(Object.assign(new Error("The browser did not take the connection."), { timedOut: true }));
-      ws.close();
-    }, Math.max(1, timeoutMs));
-    // A browser that stopped answering as a window's connection was made,
-    // as one stopped then does, is found while it waits, as for a call: it
-    // waited out the window's whole time before.
-    const slowOpen =
-      watch && timeoutMs > SLOW_MS
-        ? setTimeout(async () => {
-            const lost = await watch();
-            if (!lost || opened) return;
-            clearTimeout(unanswered);
-            reject(lost);
-            ws.close();
-          }, SLOW_MS)
-        : null;
-    ws.onmessage = (event) => {
-      let msg;
-      try {
-        msg = JSON.parse(typeof event.data === "string" ? event.data : String(event.data));
-      } catch {
-        return;
+// What a call fails with once the connection it went on has closed.
+const CLOSED = "The browser connection closed.";
+
+// The largest message the browser can send that is read: one past it fails
+// the call it answers, as a string that long cannot be made of it.
+const MESSAGE_MAX = 256 * 1024 * 1024;
+
+// The DevTools protocol on the pipe a browser was started with: it reads
+// each call from file descriptor 3 and writes each answer and event on 4,
+// each one JSON ended by a NUL byte. The browser itself answers on this
+// connection; a window's tab answers in a session of it (see session()), as
+// it does on a connection of its own over a WebSocket.
+//
+// onClose: called once the pipe has closed, as it does when the browser
+// ends. over: settled once no answer can come any more, as the pipe closed
+// or fail() was called. A call that gets no answer in its time fails with
+// timedOut set, and one the browser answers with an error with answered set.
+// A call's time is what it asks for within what the run has left, a second
+// at least, or with fixed what it asks for whatever the run has left. watch:
+// asks whether the browser still answers (see start()), once a call has had
+// no answer for SLOW_MS, and again when a call's time runs out, and
+// resolves to the error a call fails with when it does not, or to null; the
+// call that asked fails with that error at once. A call sent with watched
+// false is not watched.
+function pipeTo(child, { onClose = () => {}, watch = null } = {}) {
+  // A program that could not be started has no pipe: every call fails.
+  const none = { on() {}, write() {}, end() {}, destroyed: true, writable: false };
+  const input = (child.stdio && child.stdio[3]) || none;
+  const output = (child.stdio && child.stdio[4]) || none;
+  const pending = new Map();
+  const listeners = new Map();
+  // The sessions of the windows' tabs, by their id.
+  const sessions = new Map();
+  let nextId = 0;
+  // Set by fail(): every call goes on failing with it.
+  let failure = "";
+  let shut = false;
+  let ended;
+  const over = new Promise((settle) => (ended = settle));
+
+  const settle = (waiter) => {
+    clearTimeout(waiter.timer);
+    clearTimeout(waiter.slow);
+  };
+  // Ends a session: each of its calls under way fails with message.
+  const endSession = (state, message) => {
+    if (state.done) return;
+    state.done = message;
+    for (const [id, waiter] of pending) {
+      if (waiter.session !== state) continue;
+      pending.delete(id);
+      settle(waiter);
+      waiter.reject(new Error(message));
+    }
+    sessions.delete(state.id);
+    state.ended();
+  };
+  const dispatch = (msg) => {
+    if (!msg || typeof msg !== "object") return;
+    if (msg.method) {
+      const state = msg.sessionId ? sessions.get(msg.sessionId) : null;
+      if (msg.sessionId && !state) return;
+      for (const listener of (state ? state.listeners : listeners).get(msg.method) || []) listener(msg.params || {});
+      // A tab whose window closed, or that crashed and went, answers no
+      // more: its calls fail at once, as on a connection that closed.
+      if (!msg.sessionId && msg.method === "Target.detachedFromTarget") {
+        const gone = sessions.get((msg.params || {}).sessionId);
+        if (gone) endSession(gone, CLOSED);
       }
-      if (msg && msg.method) {
-        for (const listener of listeners.get(msg.method) || []) listener(msg.params || {});
-        return;
+      return;
+    }
+    const waiter = pending.get(msg.id);
+    if (!waiter) return;
+    pending.delete(msg.id);
+    settle(waiter);
+    if (msg.error) waiter.reject(Object.assign(new Error(msg.error.message || "DevTools protocol error"), { answered: true }));
+    else waiter.resolve(msg.result || {});
+  };
+  // A message comes in parts: they are kept until its NUL, and one longer
+  // than MESSAGE_MAX is let go of, failing the call it answers, whose id
+  // is at its start.
+  let parts = [];
+  let size = 0;
+  let head = "";
+  const take = () => {
+    if (size > MESSAGE_MAX) {
+      const id = Number((/^\{"id":(\d+)/.exec(head) || [])[1]);
+      const waiter = pending.get(id);
+      if (waiter) {
+        pending.delete(id);
+        settle(waiter);
+        waiter.reject(new Error(`The browser's answer to ${waiter.method} is over ${MESSAGE_MAX / 1024 / 1024} MB, too large to read.`));
       }
-      const waiter = msg && pending.get(msg.id);
-      if (!waiter) return;
-      pending.delete(msg.id);
-      clearTimeout(waiter.timer);
-      clearTimeout(waiter.slow);
-      if (msg.error) waiter.reject(Object.assign(new Error(msg.error.message || "DevTools protocol error"), { answered: true }));
-      else waiter.resolve(msg.result || {});
-    };
-    ws.onerror = () => {
-      clearTimeout(unanswered);
-      clearTimeout(slowOpen);
-      reject(new Error("The browser connection failed."));
-    };
-    ws.onclose = () => {
-      clearTimeout(unanswered);
-      clearTimeout(slowOpen);
+      return;
+    }
+    let msg = null;
+    try {
+      msg = JSON.parse(Buffer.concat(parts, size).toString("utf8"));
+    } catch {
+      return;
+    }
+    dispatch(msg);
+  };
+  output.on("data", (chunk) => {
+    let from = 0;
+    let at;
+    while ((at = chunk.indexOf(0, from)) !== -1) {
+      const piece = chunk.subarray(from, at);
+      if (!size) head = piece.subarray(0, 32).toString("latin1");
+      size += piece.length;
+      if (size <= MESSAGE_MAX) parts.push(piece);
+      take();
+      parts = [];
+      size = 0;
+      from = at + 1;
+    }
+    if (from < chunk.length) {
+      const piece = chunk.subarray(from);
+      if (!size) head = piece.subarray(0, 32).toString("latin1");
+      size += piece.length;
+      if (size <= MESSAGE_MAX) parts.push(piece);
+      else parts = [];
+    }
+  });
+  const closeAll = () => {
+    if (shut) return;
+    shut = true;
+    for (const waiter of pending.values()) {
+      settle(waiter);
+      waiter.reject(new Error(CLOSED));
+    }
+    pending.clear();
+    for (const state of [...sessions.values()]) endSession(state, CLOSED);
+    ended();
+    onClose();
+  };
+  output.on("end", closeAll);
+  output.on("close", closeAll);
+  output.on("error", closeAll);
+  input.on("error", () => {});
+  // A browser that ended answers no more, though a process it left can hold
+  // the pipe open, as one a wrapper script starts beside it does: what it
+  // sent before it ended is read first.
+  child.once("exit", () => setImmediate(closeAll));
+  if (output === none) closeAll();
+
+  const call = (method, params, timeoutMs, { fixed = false, watched = true } = {}, state = null) => {
+    // A call on a connection that is closed, or a session that ended, would
+    // get no answer and wait out its whole time limit: it fails at once.
+    if (failure) return Promise.reject(new Error(failure));
+    if (state && state.done) return Promise.reject(new Error(state.done));
+    if (shut || input.destroyed || !input.writable) return Promise.reject(new Error(CLOSED));
+    const id = ++nextId;
+    const ask = watched && watch;
+    return new Promise((res, rej) => {
+      const limit = fixed ? Math.max(1, timeoutMs) : Math.max(1_000, Math.min(timeoutMs, timeLeft()));
+      // A browser that stopped answering is found while a long call waits,
+      // not at the end of its wait, and the call fails with that at once.
+      const slow =
+        ask && limit > SLOW_MS
+          ? setTimeout(async () => {
+              const lost = await ask();
+              if (!lost || !pending.has(id)) return;
+              pending.delete(id);
+              clearTimeout(timer);
+              rej(lost);
+            }, SLOW_MS)
+          : null;
+      const timer = setTimeout(async () => {
+        pending.delete(id);
+        clearTimeout(slow);
+        const lost = ask ? await ask() : null;
+        rej(lost || Object.assign(new Error(`${method} timed out`), { timedOut: true }));
+      }, limit);
+      pending.set(id, { resolve: res, reject: rej, timer, slow, method, session: state });
+      input.write(`${JSON.stringify({ id, method, params, ...(state ? { sessionId: state.id } : {}) })}\0`);
+    });
+  };
+  const subscribe = (map) => ({
+    on(method, listener) {
+      map.set(method, [...(map.get(method) || []), listener]);
+    },
+    off(method, listener) {
+      map.set(method, (map.get(method) || []).filter((known) => known !== listener));
+    },
+  });
+
+  return {
+    over,
+    send: (method, params = {}, timeoutMs = 30_000, options = {}) => call(method, params, timeoutMs, options),
+    ...subscribe(listeners),
+    close() {
+      input.end();
+    },
+    closed() {
+      return Boolean(failure) || shut;
+    },
+    // Fails every call under way and every call to come with message, on
+    // this connection and in each session of it.
+    fail(message) {
+      failure = message;
       for (const waiter of pending.values()) {
-        clearTimeout(waiter.timer);
-        clearTimeout(waiter.slow);
-        waiter.reject(new Error("The browser connection closed."));
+        settle(waiter);
+        waiter.reject(new Error(message));
       }
       pending.clear();
+      for (const state of [...sessions.values()]) endSession(state, message);
       ended();
-      onClose();
-    };
-    ws.onopen = () => {
-      opened = true;
-      clearTimeout(unanswered);
-      clearTimeout(slowOpen);
-      resolve({
-        over,
-        send(method, params = {}, timeoutMs = 30_000, { fixed = false, watched = true } = {}) {
-          // A call on a connection that is closing or closed would get no
-          // answer, and waited out its whole time limit: it fails at once.
-          if (failure) return Promise.reject(new Error(failure));
-          if (ws.readyState !== WebSocket.OPEN) return Promise.reject(new Error("The browser connection closed."));
-          const id = ++nextId;
-          const ask = watched && watch;
-          return new Promise((res, rej) => {
-            const limit = fixed ? Math.max(1, timeoutMs) : Math.max(1_000, Math.min(timeoutMs, timeLeft()));
-            // A browser that stopped answering is found while a long call
-            // waits, not at the end of its wait, and the call fails with
-            // that at once.
-            const slow =
-              ask && limit > SLOW_MS
-                ? setTimeout(async () => {
-                    const lost = await ask();
-                    if (!lost || !pending.has(id)) return;
-                    pending.delete(id);
-                    clearTimeout(timer);
-                    rej(lost);
-                  }, SLOW_MS)
-                : null;
-            const timer = setTimeout(async () => {
-              pending.delete(id);
-              clearTimeout(slow);
-              const lost = ask ? await ask() : null;
-              rej(lost || Object.assign(new Error(`${method} timed out`), { timedOut: true }));
-            }, limit);
-            pending.set(id, { resolve: res, reject: rej, timer, slow });
-            ws.send(JSON.stringify({ id, method, params }));
-          });
-        },
-        on(method, listener) {
-          listeners.set(method, [...(listeners.get(method) || []), listener]);
-        },
-        off(method, listener) {
-          listeners.set(method, (listeners.get(method) || []).filter((known) => known !== listener));
-        },
+    },
+    // A tab's session, once the browser attached the connection to it
+    // (Target.attachToTarget with flatten): its calls, its events, and an
+    // end of its own, with the same calls a connection has. close() ends it
+    // here; the tab is closed with Target.closeTarget.
+    session(id) {
+      const state = { id, listeners: new Map(), done: "", ended: null };
+      const ending = new Promise((done) => (state.ended = done));
+      sessions.set(id, state);
+      return {
+        over: Promise.race([ending, over]),
+        send: (method, params = {}, timeoutMs = 30_000, options = {}) => call(method, params, timeoutMs, options, state),
+        ...subscribe(state.listeners),
         close() {
-          ws.close();
+          endSession(state, CLOSED);
         },
         closed() {
-          return Boolean(failure) || ws.readyState !== WebSocket.OPEN;
+          return Boolean(failure) || shut || Boolean(state.done);
         },
-        // Fails every call under way and every call to come with message.
         fail(message) {
-          failure = message;
-          for (const waiter of pending.values()) {
-            clearTimeout(waiter.timer);
-            clearTimeout(waiter.slow);
-            waiter.reject(new Error(message));
-          }
-          pending.clear();
-          ended();
+          endSession(state, message);
         },
-      });
-    };
-  });
+      };
+    },
+  };
 }
 
 // The browsers this process has started and not closed yet, each with its
@@ -296,9 +388,9 @@ function freeInTemp() {
 // makes its lock in its temp folder, and in its first seconds a folder for
 // what it downloads for itself, which it leaves behind when it quits or is
 // killed before the download has ended. Both go with the profile then.
-// wait: how long it has to answer, its port, its address and the order to
-// refuse downloads all within it. Returns {chrome} once it answers, else
-// {own, tooDeep, silent, refused}: whether its profile was its temp folder,
+// wait: how long it has to answer, its version and the order to refuse
+// downloads both within it. Returns {chrome} once it answers, else {own,
+// tooDeep, silent, refused}: whether its profile was its temp folder,
 // whether it ended because its lock's socket did not fit in that folder,
 // whether it was still running without an answer when the wait ran out,
 // and the error it answered the order to refuse downloads with.
@@ -309,11 +401,15 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
   // In the temp folder, the folders the browser may leave there (see
   // removeFetchFolders); none, in a profile that is its temp folder too.
   const fetching = inProfile ? null : fetchFolders();
+  // The protocol goes over a pipe, file descriptors 3 and 4, and not over a
+  // port: a port on 127.0.0.1 is open to every program on the machine, and
+  // through it to every job of a service that runs this kit for many
+  // people, which could read and drive the pages of another job's browser.
   const child = spawn(
     binary,
     [
       "--headless=new",
-      "--remote-debugging-port=0",
+      "--remote-debugging-pipe",
       `--user-data-dir=${profile}`,
       "--window-size=1600,900",
       "--hide-scrollbars",
@@ -334,7 +430,7 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
       ...(process.getuid && process.getuid() === 0 ? ["--no-sandbox"] : []),
       "about:blank",
     ],
-    { stdio: "ignore", env: { ...process.env, ...configIn(profile), ...(inProfile ? { TMPDIR: profile } : {}) } },
+    { stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"], env: { ...process.env, ...configIn(profile), ...(inProfile ? { TMPDIR: profile } : {}) } },
   );
   let exited = false;
   // Whether the browser ended, or its connection closed, before close()
@@ -352,8 +448,18 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
   // lock: its lock folder, read once it answers (see lockFolderOf).
   const started = { child, profile, lock: "", fetching };
   open.add(started);
-  let base = "";
-  let browser = null;
+  // Whether the start handed the browser over: only then does the pipe's
+  // end, or a call with no answer, tell of a browser lost in the middle of
+  // the run.
+  let kept = false;
+  // Whether it answered at all: one that never did is not asked to quit.
+  let answered = false;
+  const browser = pipeTo(child, {
+    onClose: () => {
+      if (kept && !closing) lost = true;
+    },
+    watch: () => (kept ? watch() : Promise.resolve(null)),
+  });
   // Chrome is asked to quit first: killed outright, its helper processes go
   // on writing to the profile for a while and the folder cannot be removed.
   // A profile that still cannot be removed is left in the temp folder; the
@@ -361,11 +467,12 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
   const close = async () => {
     closing = true;
     let killed = lost;
-    if (browser && !exited) {
-      await browser.send("Browser.close", {}, 3_000).catch(() => {});
+    // A browser that never answered is not asked.
+    if (answered && !exited && !browser.closed()) {
+      await browser.send("Browser.close", {}, 3_000, { fixed: true, watched: false }).catch(() => {});
       for (let i = 0; i < 50 && !exited; i++) await sleep(100);
     }
-    if (browser) browser.close();
+    browser.close();
     if (!exited) {
       killed = true;
       child.kill("SIGKILL");
@@ -391,7 +498,7 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
     }
   };
   // Whether the browser still answers, asked once a call to it or to one of
-  // its tabs has had no answer for a while (see connect()): asked for its
+  // its tabs has had no answer for a while (see pipeTo()): asked for its
   // version, a running browser answers at once, whatever its pages do. One
   // that does not in PROBE_MS has stopped answering, as one that hung or
   // was stopped, or one on a machine too busy to run it: every window and
@@ -422,57 +529,44 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
         .finally(() => (asking = null));
     return asking;
   };
-  // Chrome writes the port it picked to DevToolsActivePort in the profile.
-  // Each step after it has what is left of the wait, whatever the run has
-  // left: the wait itself is what the run could give it (see startWait).
-  const portFile = path.join(profile, "DevToolsActivePort");
+  // The browser reads its first call once it is up. It has the whole wait to
+  // answer it, and the order to refuse downloads what is left of it,
+  // whatever the run has left: the wait itself is what the run could give
+  // it (see startWait).
   const until = Date.now() + wait;
   const left = () => Math.max(1, until - Date.now());
   let refused = "";
-  while (Date.now() < until && !exited && !refused) {
-    // Only the connection the start hands over can tell that the browser
-    // was lost as it closes: one that failed on the way, or that the start
-    // closed itself to try again, says nothing of the browser.
-    const attempt = { kept: false };
-    try {
-      const port = fs.readFileSync(portFile, "utf8").split("\n")[0].trim();
-      if (/^\d+$/.test(port)) {
-        base = `http://127.0.0.1:${port}`;
-        const version = await (await fetch(`${base}/json/version`, { signal: AbortSignal.timeout(left()) })).json();
-        browser = await connect(version.webSocketDebuggerUrl, {
-          timeoutMs: left(),
-          onClose: () => {
-            if (attempt.kept && !closing) lost = true;
-          },
-          watch: () => (attempt.kept ? watch() : Promise.resolve(null)),
-        });
-        // A page cannot make the browser save a file: a download it starts
-        // (a link to an attachment, a redirect to one) is refused before
-        // anything is written, in the Downloads folder or anywhere else.
-        // Said once, for the whole browser: Page.setDownloadBehavior on a
-        // tab lifts this for every tab as soon as that tab's connection
-        // closes, and a tab closed right after a download began saved it.
-        // A browser that does not take the order is not used.
-        await browser.send("Browser.setDownloadBehavior", { behavior: "deny" }, left(), { fixed: true }).catch((err) => {
-          if (err.answered) refused = err.message;
-          throw err;
-        });
-        // Read now: a browser that is quitting removes the link to it
-        // before the folder, and a stop can land in between. In a profile
-        // that is the browser's temp folder, it goes with the profile.
-        started.lock = lockFolderOf(profile);
-        attempt.kept = true;
-        // gone(): whether the browser ended or stopped answering in the
-        // middle of the run; stalled(): whether it stopped answering.
-        return { chrome: { base, browser, userAgent: String(version["User-Agent"] || ""), close, watch, gone: () => lost, stalled: () => stalled } };
-      }
-    } catch {
-      // Not written yet, or not answering yet: a connection made meanwhile
-      // is made again.
-      if (browser) browser.close();
-      browser = null;
-    }
-    if (!refused) await sleep(100);
+  try {
+    // One that answers with an error has answered all the same.
+    const version = await browser.send("Browser.getVersion", {}, left(), { fixed: true }).catch((err) => {
+      if (err.answered) return {};
+      throw err;
+    });
+    answered = true;
+    // A page cannot make the browser save a file: a download it starts (a
+    // link to an attachment, a redirect to one) is refused before anything
+    // is written, in the Downloads folder or anywhere else. Said once, for
+    // the whole browser, on the connection that lasts as long as it does:
+    // Page.setDownloadBehavior on a tab lifts this for every tab as soon as
+    // that tab's connection closes, and a tab closed right after a download
+    // began saved it. A browser that does not take the order is not used.
+    await browser.send("Browser.setDownloadBehavior", { behavior: "deny" }, left(), { fixed: true }).catch((err) => {
+      if (err.answered) refused = err.message;
+      throw err;
+    });
+    // Read now: a browser that is quitting removes the link to it before
+    // the folder, and a stop can land in between. In a profile that is the
+    // browser's temp folder, it goes with the profile.
+    started.lock = lockFolderOf(profile);
+    kept = true;
+    // gone(): whether the browser ended or stopped answering in the middle
+    // of the run; stalled(): whether it stopped answering.
+    return { chrome: { pid: child.pid, browser, userAgent: String(version.userAgent || ""), close, watch, gone: () => lost, stalled: () => stalled } };
+  } catch {
+    // No answer in the wait, an answer that refused, or a browser that
+    // ended before it answered: its pipe closes a moment before it is
+    // known to have ended.
+    for (let i = 0; i < 20 && browser.closed() && !exited; i++) await sleep(100);
   }
   // Still running, with no answer: on a busy machine, or a browser that hangs.
   const silent = !exited && !refused;
@@ -603,7 +697,8 @@ async function openTab(chrome, device, { lang = "", theme = "light", reducedMoti
   let targetId = "";
   try {
     ({ targetId } = await chrome.browser.send("Target.createTarget", { url: "about:blank", newWindow: true }, left()));
-    cdp = await connect(`${chrome.base.replace(/^http/, "ws")}/devtools/page/${targetId}`, { timeoutMs: left(), watch: chrome.watch });
+    const { sessionId } = await chrome.browser.send("Target.attachToTarget", { targetId, flatten: true }, left());
+    cdp = chrome.browser.session(sessionId);
     cdp.targetId = targetId;
     // A tab whose page crashed, as one killed for its memory does, answers
     // nothing more while the browser goes on: its calls fail at once, with
@@ -796,4 +891,4 @@ function removeProfiles(browsers) {
   }
 }
 
-module.exports = { findChrome, onPath, launch, startWait, connect, openTab, closeTab, navigate, currentUrl, killBrowsers, removeProfiles, removeStrayLocks, removeFetchFolders, fetchFolders, roomIn, lockFolderOf, userAgentFor, CRASHED };
+module.exports = { findChrome, onPath, launch, startWait, openTab, closeTab, navigate, currentUrl, killBrowsers, removeProfiles, removeStrayLocks, removeFetchFolders, fetchFolders, roomIn, lockFolderOf, userAgentFor, CRASHED };

@@ -1466,13 +1466,13 @@ function runningWith(profile) {
 }
 
 // The browser a process has started, from /proc: the child it gave a
-// debugging port. 0 when there is none.
+// debugging pipe. 0 when there is none.
 function browserOf(pid) {
   try {
     const kids = fs.readFileSync(`/proc/${pid}/task/${pid}/children`, "utf8").trim().split(/\s+/).filter(Boolean);
     const found = kids.find((kid) => {
       try {
-        return fs.readFileSync(`/proc/${kid}/cmdline`, "utf8").includes("--remote-debugging-port");
+        return fs.readFileSync(`/proc/${kid}/cmdline`, "utf8").includes("--remote-debugging-pipe");
       } catch {
         return false;
       }
@@ -1826,81 +1826,64 @@ test("a browser that starts gets up to a minute to answer, as the run's time all
   }
 });
 
-// Stand-in browsers, by mode: one that never says its port (mute), one
-// whose address never answers (quiet), one whose address answers and whose
-// connection is never taken (deaf), and ones that take it: one that answers
-// every call with an error, as a browser that cannot be told to refuse
+// Stand-in browsers, by mode, that speak the DevTools protocol on the pipe
+// the kit starts a browser with (file descriptors 3 and 4): one that never
+// reads it (mute), and ones that answer: one that answers every call but
+// its version with an error, as a browser that cannot be told to refuse
 // downloads would (refuser), one that answers every call but the order to
-// refuse downloads, as a browser too busy to take it can (mum), one whose
-// first connection is reset as it is made (flaky), one that answers each
-// call 1.5 s after it came, as a browser
-// on a busy machine can (slow), one that answers every call but never
-// opens a window (windowless), and one that stops answering once it has
-// opened a window, its window's connection never taken, as a browser stopped
-// right then does (hushed). Each writes <mode>.json in root, with its pid
-// and its profile. Returns the wrapper that starts a mode, for CHROME_PATH.
+// refuse downloads, as a browser too busy to take it can (mum), one that
+// answers each call 1.5 s after it came, as a browser on a busy machine can
+// (slow), one that answers every call but never opens a window
+// (windowless), and one that stops answering once it has opened a window,
+// as a browser stopped right then does (hushed). Each writes <mode>.json in
+// root, with its pid and its profile. Returns the wrapper that starts a
+// mode, for CHROME_PATH.
 function standIns(root) {
   const script = path.join(root, "browser.js");
   fs.writeFileSync(
     script,
     `"use strict";
-const crypto = require("crypto"), fs = require("fs"), http = require("http"), net = require("net"), path = require("path");
+const fs = require("fs"), path = require("path");
 const [mode, ...args] = process.argv.slice(2);
 const profile = args.find((arg) => arg.startsWith("--user-data-dir=")).slice("--user-data-dir=".length);
 fs.writeFileSync(path.join(${JSON.stringify(root)}, mode + ".json"), JSON.stringify({ pid: process.pid, profile }));
-const frame = (answer) => {
-  const data = Buffer.from(JSON.stringify(answer));
-  return Buffer.concat([Buffer.from(data.length < 126 ? [0x81, data.length] : [0x81, 126, data.length >> 8, data.length & 255]), data]);
-};
-let upgrades = 0;
+const output = fs.createWriteStream(null, { fd: 4 });
+output.on("error", () => {});
+const answer = (message) => output.write(JSON.stringify(message) + "\\0");
 let hushed = false;
-const take = (req, socket) => {
-  if (mode === "flaky" && ++upgrades === 1) return socket.destroy();
-  if (hushed) return void socket.on("error", () => {});
-  const accept = crypto.createHash("sha1").update(req.headers["sec-websocket-key"] + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64");
-  socket.write("HTTP/1.1 101 Switching Protocols\\r\\nUpgrade: websocket\\r\\nConnection: Upgrade\\r\\nSec-WebSocket-Accept: " + accept + "\\r\\n\\r\\n");
-  socket.on("error", () => {});
-  let held = Buffer.alloc(0);
-  socket.on("data", (chunk) => {
-    held = Buffer.concat([held, chunk]);
-    while (held.length >= 6) {
-      let length = held[1] & 127, at = 2;
-      if (length === 126) { length = held.readUInt16BE(2); at = 4; }
-      if (held.length < at + 4 + length) return;
-      const mask = held.subarray(at, at + 4);
-      const text = Buffer.from(held.subarray(at + 4, at + 4 + length)).map((byte, i) => byte ^ mask[i % 4]).toString();
-      const opcode = held[0] & 15;
-      held = held.subarray(at + 4 + length);
-      if (opcode === 8) return void socket.end(Buffer.from([0x88, 0]));
-      if (opcode !== 1) continue;
-      const { id, method } = JSON.parse(text);
-      if (mode === "windowless" && method === "Target.createTarget") continue;
-      if (mode === "mum" && method === "Browser.setDownloadBehavior") continue;
-      if (hushed) continue;
-      if (mode === "hushed" && method === "Target.createTarget") {
-        hushed = true;
-        socket.write(frame({ id, result: { targetId: "t1" } }));
-        continue;
-      }
-      const answer = mode === "refuser" ? { id, error: { code: -32000, message: "Not allowed here" } } : { id, result: {} };
-      const send = () => {
-        if (!socket.destroyed) socket.write(frame(answer));
-        if (method === "Browser.close") setTimeout(() => process.exit(0), 50);
-      };
-      if (mode === "slow") setTimeout(send, 1500);
-      else send();
-    }
-  });
+let held = Buffer.alloc(0);
+const take = (text) => {
+  const { id, method, sessionId } = JSON.parse(text);
+  if (mode === "windowless" && method === "Target.createTarget") return;
+  if (mode === "mum" && method === "Browser.setDownloadBehavior") return;
+  if (hushed) return;
+  if (mode === "hushed" && method === "Target.createTarget") {
+    hushed = true;
+    return answer({ id, result: { targetId: "t1" } });
+  }
+  const result = method === "Browser.getVersion" ? { product: "Stand-in/1", userAgent: "Stand-in" } : method === "Target.createTarget" ? { targetId: "t1" } : method === "Target.attachToTarget" ? { sessionId: "s1" } : {};
+  const reply = mode === "refuser" && method !== "Browser.getVersion" ? { id, error: { code: -32000, message: "Not allowed here" } } : { id, result, ...(sessionId ? { sessionId } : {}) };
+  const send = () => {
+    answer(reply);
+    if (method === "Browser.close") setTimeout(() => process.exit(0), 50);
+  };
+  if (mode === "slow") setTimeout(send, 1500);
+  else send();
 };
 if (mode === "mute") setInterval(() => {}, 1000);
-else net.createServer(() => {}).listen(0, "127.0.0.1", function () {
-  const socket = this;
-  const server = http.createServer((req, res) => {
-    if (mode === "quiet") return;
-    const port = mode === "deaf" ? socket.address().port : server.address().port;
-    res.end(JSON.stringify({ "User-Agent": "Stand-in", webSocketDebuggerUrl: "ws://127.0.0.1:" + port + "/devtools/browser/x" }));
-  }).on("upgrade", take).listen(0, "127.0.0.1", () => fs.writeFileSync(path.join(profile, "DevToolsActivePort"), server.address().port + "\\n/devtools/browser/x\\n"));
-});
+else {
+  const input = fs.createReadStream(null, { fd: 3 });
+  input.on("error", () => {});
+  input.on("data", (chunk) => {
+    held = Buffer.concat([held, chunk]);
+    let at;
+    while ((at = held.indexOf(0)) >= 0) {
+      const text = held.subarray(0, at).toString();
+      held = held.subarray(at + 1);
+      take(text);
+    }
+  });
+}
 `,
   );
   return (mode) => {
@@ -1929,16 +1912,13 @@ function endStandIns(root, modes) {
 // or will not refuse downloads, is said so and left running nowhere, and so
 // is one that answers all but the order to refuse downloads: a browser that
 // has not taken it is never used, whatever the machine's load, so no site
-// can save a file through it. One whose first connection failed and one
-// slow to answer are taken: a
-// connection the start closed or lost on the way marked the browser as
-// lost, and the run failed at once with "The browser ended in the middle of
-// the run", and each call of the start had a second, what the run had left,
+// can save a file through it. One slow to answer is taken, and not marked
+// as lost: each call of the start had a second, what the run had left,
 // where the slow one took a second and a half.
-test("a browser's start: one that does not answer says so and leaves nothing running, one slow to answer or whose first connection failed is taken", { skip: process.platform === "win32" && "the stand-in browser is a shell script", timeout: 90_000 }, async () => {
+test("a browser's start: one that does not answer says so and leaves nothing running, one slow to answer is taken", { skip: process.platform === "win32" && "the stand-in browser is a shell script", timeout: 90_000 }, async () => {
   const root = tempDir();
-  const failing = ["mute", "quiet", "deaf", "refuser", "mum"];
-  const starting = ["flaky", "slow"];
+  const failing = ["mute", "refuser", "mum"];
+  const starting = ["slow"];
   const modes = [...failing, ...starting];
   const wrapper = standIns(root);
   const before = process.env.CHROME_PATH;
@@ -2011,19 +1991,9 @@ test("a browser too busy to open a window, a page with no answer, and a browser 
   setTimeLimit(60_000);
   let chrome = await launch();
   let stopped = 0;
-  // A browser's main process, told by the port its profile says it took.
-  const mainOf = (browser) => {
-    const port = new URL(browser.base).port;
-    return descendants(process.pid).find((p) => {
-      const profile = (/--user-data-dir=([^\s\0]+)/.exec(p.args) || [])[1];
-      if (!profile || /--type=/.test(p.args)) return false;
-      try {
-        return fs.readFileSync(path.join(profile, "DevToolsActivePort"), "utf8").split("\n")[0].trim() === port;
-      } catch {
-        return false;
-      }
-    });
-  };
+  // A browser's main process, the one the run started, among this
+  // process's children.
+  const mainOf = (browser) => descendants(process.pid).find((p) => p.pid === browser.pid && !/--type=/.test(p.args));
   // Killed, and gone once this process has heard it ended.
   const ended = async (pid) => {
     for (let i = 0; i < 50; i++) {
@@ -2088,8 +2058,8 @@ test("a browser too busy to open a window, a page with no answer, and a browser 
     server.close();
     server.closeAllConnections();
   }
-  // A browser that stops answering as a window's connection is made, which
-  // it never takes: found as a call's is, where the run waited out the
+  // A browser that stops answering as it opens a window, which it never
+  // hands over: found as any call's is, where the run waited out the
   // window's whole minute, 5 s more to close it, and then asked.
   const hushedRoot = tempDir();
   const hushedBefore = process.env.CHROME_PATH;
@@ -2738,5 +2708,58 @@ test("an address that answers with a file is refused, the report says so, and no
   } finally {
     server.close();
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// The browser is driven over a pipe and opens no port. A port on 127.0.0.1
+// is open to every program on the machine: on a service that runs the kit
+// for many people, another job found it and read and drove the pages of
+// this one's browser through it.
+test("the browser opens no port: the run drives it over a pipe", { skip: noBrowser || (process.platform !== "linux" && "sockets are read from /proc"), timeout: 60_000 }, async () => {
+  const chrome = await launch();
+  try {
+    const main = { pid: chrome.pid, args: fs.readFileSync(`/proc/${chrome.pid}/cmdline`, "utf8") };
+    assert.match(main.args, /--remote-debugging-pipe/);
+    assert.doesNotMatch(main.args, /--remote-debugging-port/);
+    const profile = /--user-data-dir=([^\0]+)/.exec(main.args)[1];
+    assert.equal(fs.existsSync(path.join(profile, "DevToolsActivePort")), false);
+    const tab = await openTab(chrome, DEVICES.desktop);
+    // Every socket that listens for TCP on this machine, and every socket
+    // the browser's processes hold: none is both.
+    const listening = new Set();
+    for (const table of ["/proc/net/tcp", "/proc/net/tcp6"]) {
+      let lines = [];
+      try {
+        lines = fs.readFileSync(table, "utf8").trim().split("\n").slice(1);
+      } catch {
+        // No IPv6 here.
+      }
+      for (const line of lines) {
+        const fields = line.trim().split(/\s+/);
+        if (fields[3] === "0A") listening.add(fields[9]);
+      }
+    }
+    const held = [];
+    for (const { pid } of [main, ...descendants(chrome.pid)]) {
+      let fds = [];
+      try {
+        fds = fs.readdirSync(`/proc/${pid}/fd`);
+      } catch {
+        continue;
+      }
+      for (const fd of fds) {
+        try {
+          const socket = /^socket:\[(\d+)\]$/.exec(fs.readlinkSync(`/proc/${pid}/fd/${fd}`));
+          if (socket) held.push(socket[1]);
+        } catch {
+          // Closed meanwhile.
+        }
+      }
+    }
+    assert.ok(held.length > 0, "the browser's sockets");
+    assert.deepEqual(held.filter((inode) => listening.has(inode)), []);
+    await closeTab(chrome, tab);
+  } finally {
+    await chrome.close();
   }
 });

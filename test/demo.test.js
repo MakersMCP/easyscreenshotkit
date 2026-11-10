@@ -1438,9 +1438,9 @@ test("a demo whose browser ends or whose tab crashes in the middle of it fails, 
 });
 
 // The browser that draws the frames stopped as it starts drawing, as one
-// that hangs stops answering, whatever call or window's connection the stop
-// lands in: the demo fails within half a minute or so, says why, ends the
-// browser and leaves an earlier demo as it was.
+// that hangs stops answering, whatever call the stop lands in, the opening
+// of a window included: the demo fails within half a minute or so, says
+// why, ends the browser and leaves an earlier demo as it was.
 test("a demo whose browser stops answering as it draws the frames fails, and leaves an earlier demo as it was", { skip: missing || (process.platform !== "linux" && "the browser's processes are read from /proc"), timeout: 300_000 }, async () => {
   const { server, origin } = await fixture();
   const root = tempDir();

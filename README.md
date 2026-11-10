@@ -224,7 +224,7 @@ On Linux the browser keeps its lock in its profile; on macOS, and on Linux when 
 
 Installed globally (`npm install -g easyscreenshotkit`), the command is `easyscreenshotkit`. npx keeps the copy an earlier run fetched, so `npx easyscreenshotkit@latest` is how you get a newer version.
 
-easyscreenshotkit drives the browser you already have over the Chrome DevTools Protocol, with a throwaway profile, and downloads nothing (see [Requirements](#requirements)). On Linux the browser keeps its crash reports in that profile too, not in the folder of your own browser of its kind.
+easyscreenshotkit drives the browser you already have over the Chrome DevTools Protocol, with a throwaway profile, and downloads nothing (see [Requirements](#requirements)). It talks to the browser over a pipe, so the browser opens no port on your machine that another program could use to read or drive its pages. On Linux the browser keeps its crash reports in that profile too, not in the folder of your own browser of its kind.
 
 That browser refuses every download a page starts, such as a link or a redirect to a file, so a site cannot save a file on your machine. On Linux, Chrome still writes what such an address sends to a temporary file in your Downloads folder, or in the temp folder when there is none, and removes it within a fraction of a second as it refuses the download. A browser killed in that moment, as `kill -9` kills it, can leave that file there, and now and then Chrome leaves one there empty; its name is `.com.google.Chrome.` and six characters.
 
@@ -232,7 +232,7 @@ An address that answers with a file, at once or after a redirect, is refused as 
 
 On Linux and macOS the browser opens a socket in the temp folder and does not start when the temp folder's path is too long for one, over about 60 characters; the run says so, and `TMPDIR=/tmp` fixes it.
 
-On a busy machine the browser can be slow: it gets up to a minute to answer once it has started, to open each window and for each page to answer, as far as `--timeout` leaves time. When one of them runs out, a run that cannot go on says which and what to do, and a page or window it leaves out over it is named in the report with the reason. When a call to the browser, or the connection to a window it opens, has kept the run waiting 15 s, the browser is asked for its version, which a running browser answers at once. One that gives no answer to that in 10 s has stopped answering, as one that hangs does: the run ends it and fails, leaving the earlier run's files as they were.
+On a busy machine the browser can be slow: it gets up to a minute to answer once it has started, to open each window and for each page to answer, as far as `--timeout` leaves time. When one of them runs out, a run that cannot go on says which and what to do, and a page or window it leaves out over it is named in the report with the reason. When a call to the browser, the opening of a window included, has kept the run waiting 15 s, the browser is asked for its version, which a running browser answers at once. One that gives no answer to that in 10 s has stopped answering, as one that hangs does: the run ends it and fails, leaving the earlier run's files as they were.
 
 ## Screenshots for a web app manifest
 

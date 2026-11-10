@@ -78,7 +78,7 @@ For a demo video of the site instead, run easyscreenshotkit demo <url>; see
 easyscreenshotkit demo --help.
 
 Needs Node 22 or newer and Chrome, Chromium, Edge or Brave. Set CHROME_PATH
-to pick the browser.`;
+to pick the browser. The run drives it over a pipe, so it opens no port.`;
 
 function parse(argv) {
   const options = { pages: 5, extra: [], hide: [], sizes: "desktop,mobile,full", theme: "light", lang: "", reducedMotion: false, clean: true, pwa: false, pwaCheck: "", json: false, timeout: 300 };
