@@ -745,6 +745,33 @@ test("a view's own heading is its first h1 outside its menus and bars", { skip: 
   }
 });
 
+// An app that puts its own name in an h1 in its header: the view's heading
+// in manifest.json and SCREENSHOTS.md, and the label of each of its
+// captures for --pwa, were the app's name. They are the view's own h1. A
+// page that is no view keeps its first h1, as before.
+test("a #route view's heading and its labels for --pwa are its own h1, not the app's name in its header", { skip: noBrowser, timeout: 150_000 }, async () => {
+  const { server, origin } = await serve((req, res) => {
+    const html = (body) => res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(body);
+    if (req.url === "/") return html(page("Brightmoss", '<header><h1>Brightmoss</h1></header><main><h1>Plant care</h1><p><a href="/app/">Open the app</a></p></main>'));
+    if (req.url === "/app/") return html(page("Brightmoss · Plants", '<header><h1>Brightmoss</h1></header><nav><a href="#/plants">Plants</a></nav><main><h1>Your plants</h1><p>Fern, calathea and the fiddle leaf fig, by the room they stand in.</p></main>'));
+    res.writeHead(404).end("not found");
+  });
+  const root = tempDir();
+  try {
+    const { manifest } = await takeShots(`${origin}/app/#/plants`, { dir: path.join(root, "view"), pages: 1, sizes: "desktop", pwa: true, timeLimit: 100_000 });
+    assert.equal(manifest.site, "Brightmoss");
+    assert.equal(manifest.pages[0].heading, "Your plants");
+    assert.match(fs.readFileSync(path.join(root, "view", "SCREENSHOTS.md"), "utf8"), /^- Main heading: Your plants$/m);
+    assert.deepEqual(manifest.pwa.screenshots.map((s) => s.label), ["Your plants", "Your plants"]);
+    const home = (await takeShots(origin, { dir: path.join(root, "home"), pages: 1, sizes: "desktop", pwa: true, timeLimit: 100_000 })).manifest;
+    assert.equal(home.pages[0].heading, "Brightmoss");
+    assert.deepEqual(home.pwa.screenshots.map((s) => s.label), ["Brightmoss", "Brightmoss"]);
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("what counts as a view with nothing drawn: outside its menus and bars, no heading, no picture 100 px each way or more and fewer than 20 characters", { skip: noBrowser, timeout: 60_000 }, async () => {
   setTimeLimit(50_000);
   const chrome = await launch();

@@ -145,6 +145,11 @@ test("a run's screenshots: checked, labelled from the screen's main heading, 4 w
   assert.equal(labelOf([{ text: "Plans", level: 2 }, { text: "Pricing", level: 1 }], {}), "Pricing");
   assert.equal(labelOf([{ text: "Menu", level: 3 }, { text: "Plans", level: 2 }], {}), "Plans");
   assert.equal(labelOf([], { heading: "", title: "Acme | Home", slug: "home" }), "Acme | Home");
+  // A view's own heading, where an app has its name in an h1 above it.
+  const bar = [{ text: "Brightmoss", level: 1 }, { text: "Your plants", level: 1 }];
+  assert.equal(labelOf(bar, { viewHeading: "Your plants" }), "Your plants");
+  assert.equal(labelOf(bar, { viewHeading: "" }), "Brightmoss");
+  assert.equal(labelOf([{ text: "Brightmoss", level: 1 }], { heading: "Your plants", viewHeading: "Your plants" }), "Brightmoss");
   const capture = (width, height, text) => ({ png: pngHead(width, height), headings: [{ text, level: 1 }] });
   const pages = Array.from({ length: 5 }, (_, i) => ({
     n: i + 1,

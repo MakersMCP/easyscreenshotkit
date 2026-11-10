@@ -759,7 +759,7 @@ function saveShots(page, result, theme, run, written) {
 // pwa/manifest-screenshots.json, whose src paths hold when the screenshots
 // folder sits next to the manifest.
 function savePwa(kept, run) {
-  const plan = planPwa(kept.map((page) => ({ n: page.n, slug: page.slug, heading: page.heading, title: page.title, captures: page.pwa })));
+  const plan = planPwa(kept.map((page) => ({ n: page.n, slug: page.slug, heading: page.heading, viewHeading: page.viewHeading, title: page.title, captures: page.pwa })));
   const out = {
     file: "",
     screenshots: [],
@@ -1025,6 +1025,10 @@ async function takeShots(rawUrl, options = {}) {
     const keep = (page, result) => {
       page.n = kept.length + 1;
       const { keys, named } = identity(page.asked, result.nav.url, result.info.canonical);
+      // A view of a web app is told by its own heading, the first h1 outside
+      // the bars around it: an app can put its own name in an h1 in the bar
+      // along its top, the same on every view.
+      const view = Boolean(routeOf(page.asked) || routeOf(result.nav.url));
       const taken = new Set(kept.map((other) => other.slug));
       const base = page.slug || slugOf(named, home);
       let slug = base;
@@ -1033,7 +1037,8 @@ async function takeShots(rawUrl, options = {}) {
       Object.assign(page, {
         url: result.nav.url,
         title: result.info.title,
-        heading: result.info.heading,
+        heading: (view && result.info.viewHeading) || result.info.heading,
+        viewHeading: view ? result.info.viewHeading : "",
         description: result.info.description,
         lang: result.info.lang,
         textHash: result.info.textHash,

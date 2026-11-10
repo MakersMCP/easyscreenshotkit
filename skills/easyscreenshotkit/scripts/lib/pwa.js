@@ -266,22 +266,26 @@ function checkScreenshots(list, images = [], options = {}) {
 }
 
 // A screenshot's label, read out by screen readers: the main heading on that
-// screen, else the page's own heading or title.
+// screen, else the page's own heading or title. On a view of a web app, the
+// view's own heading (viewHeading) when it is on that screen: an app can put
+// its own name in an h1 in the bar along its top, on every view the same.
 function labelOf(headings, page) {
   const found = (headings || []).filter((heading) => heading && heading.text);
-  const main = found.find((heading) => heading.level === 1) || found.slice().sort((a, b) => a.level - b.level)[0];
+  const own = page.viewHeading ? found.find((heading) => heading.level === 1 && heading.text === page.viewHeading.slice(0, 120)) : null;
+  const main = own || found.find((heading) => heading.level === 1) || found.slice().sort((a, b) => a.level - b.level)[0];
   const text = String((main && main.text) || page.heading || page.title || page.slug || "").replace(/\s+/g, " ").trim();
   return text.length > 120 ? `${text.slice(0, 117).trimEnd()}...` : text;
 }
 
 // The screenshots a run hands over for a manifest. pages: [{n, slug,
-// heading, title, captures: {wide, narrow}}], each capture {png, headings,
-// unready}, unready saying why it was taken before its view was ready, or
-// "". Every capture is checked with Chrome's rules first. Chrome looks at the
-// first 8 entries only, wide and narrow together, so at most 8 go in: 4 of
-// each when there are, the room one leaves going to the other, and no more
-// than 5 narrow ones. Returns {files: [{name, form, page, png, entry}],
-// entries, leftOut: [{page, form, reason}], check}.
+// heading, viewHeading, title, captures: {wide, narrow}}], each capture
+// {png, headings, unready}, unready saying why it was taken before its
+// view was ready, or "". Every capture is checked with Chrome's rules
+// first. Chrome looks at the first 8 entries only, wide and narrow
+// together, so at most 8 go in: 4 of each when there are, the room one
+// leaves going to the other, and no more than 5 narrow ones. Returns
+// {files: [{name, form, page, png, entry}], entries, leftOut: [{page,
+// form, reason}], check}.
 function planPwa(pages) {
   const leftOut = [];
   const usable = { wide: [], narrow: [] };
