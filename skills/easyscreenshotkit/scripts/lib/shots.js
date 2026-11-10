@@ -25,7 +25,7 @@ const crypto = require("crypto");
 const { launch, openTab, closeTab, navigate, currentUrl, CRASHED, BARRED } = require("./chrome");
 const { AROUND, metrics, scrollTo, walk, showsContent, waitForContent, settle, watchRequests, networkQuiet, waitForDrawn, showsLoadingSign, looksEmpty, waitForFonts, clearHover, resetPictureWait, capture, captureScreen, capturePage } = require("./page");
 const { clean } = require("./clean");
-const { homeOf, pageKey, routeOf, viewKey, pathOf, pageUrl, anchorOf, siteOf, fold, wordsOf, kindOf, rankLinks, routeLinks, visitOrder, readSiteIndex, localeOf, alternateFor, oneLine, ROUTE_LINK } = require("./pick");
+const { homeOf, pageKey, routeOf, viewKey, pathOf, pageUrl, anchorOf, siteOf, fold, wordsOf, kindOf, rankLinks, routeLinks, visitOrder, readSiteIndex, indexNotes, localeOf, alternateFor, oneLine, ROUTE_LINK } = require("./pick");
 const { pngFileIsWhole, pngSize, tagPng } = require("./png");
 const { PWA_SHOTS, LOOKED_AT, planPwa, checkManifest } = require("./pwa");
 const { renderSheet } = require("./sheet");
@@ -1269,6 +1269,7 @@ async function takeShots(rawUrl, options = {}) {
       const homeKey = pageKey(kept[0].url);
       // Then the pages found on the home page and in the sitemap.
       const index = await indexing;
+      notes.push(...indexNotes(index.refused));
       const ranked = rankLinks(result.links || [], index.urls || [], {
         home: kept[0].url,
         robots: index.robots,

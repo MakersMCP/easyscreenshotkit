@@ -612,16 +612,22 @@ async function fetchText(url, { limit = 5_000_000, timeout = 8_000, guard } = {}
 // robots.txt and up to 500 addresses from the sitemaps, read with a time
 // limit; a site without them gives empty lists. guard: the run's rule for
 // the addresses it reads, the site's own by default: a sitemap robots.txt
-// names elsewhere is read only where the run may go.
+// names elsewhere is read only where the run may go. refused: the files it
+// did not read for that, each with where it was named and why, for the
+// run's notes (see indexNotes()).
 async function readSiteIndex(origin, { max = 500, sitemapFiles = 4, guard = null } = {}) {
   guard = guard || (await guardFor(origin));
+  const refused = [];
   let robots = { sitemaps: [], rules: [] };
   try {
     robots = parseRobots(await fetchText(`${origin}/robots.txt`, { limit: 500_000, timeout: 6_000, guard }));
-  } catch {
+  } catch (err) {
     // No robots.txt: nothing is off limits.
+    if (err.refused) refused.push({ url: `${origin}/robots.txt`, from: "", reason: err.refused });
   }
   const queue = sitemapOrder(robots.sitemaps.length ? robots.sitemaps : [`${origin}/sitemap.xml`]);
+  // Where each sitemap was named: robots.txt, or the sitemap that lists it.
+  const from = new Map(robots.sitemaps.map((url) => [url, "robots.txt"]));
   const urls = [];
   const seen = new Set();
   let read = 0;
@@ -633,16 +639,28 @@ async function readSiteIndex(origin, { max = 500, sitemapFiles = 4, guard = null
     let parsed;
     try {
       parsed = parseSitemap(await fetchText(next, { timeout: 8_000, guard }));
-    } catch {
+    } catch (err) {
+      if (err.refused) refused.push({ url: next, from: from.get(next) || "", reason: err.refused });
       continue;
     }
-    queue.unshift(...sitemapOrder(parsed.sitemaps).slice(0, 3));
+    const inner = sitemapOrder(parsed.sitemaps).slice(0, 3);
+    for (const url of inner) if (!from.has(url)) from.set(url, `the sitemap ${next}`);
+    queue.unshift(...inner);
     for (const url of parsed.urls) {
       if (urls.length >= max) break;
       urls.push(url);
     }
   }
-  return { robots, urls };
+  return { robots, urls, refused };
+}
+
+// The notes on robots.txt and the sitemaps a run did not read, as they are
+// at an address it does not open, or lead to one: the first three.
+function indexNotes(refused = []) {
+  return refused.slice(0, 3).map(({ url, from, reason }) => {
+    if (/\/robots\.txt$/.test(url) && !from) return `${url} was not read: ${reason}.`;
+    return `The sitemap ${url}${from ? `, which ${from} names,` : ""} was not read: ${reason}.`;
+  });
 }
 
 module.exports = {
@@ -675,4 +693,5 @@ module.exports = {
   parseSitemap,
   sitemapOrder,
   readSiteIndex,
+  indexNotes,
 };

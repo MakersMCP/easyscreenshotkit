@@ -1661,6 +1661,7 @@ test("a demo opens no other address on this machine than the one it was given", 
       `Left out ${elsewhere}/pricing: ${NOT_GIVEN}.`,
       `Left out ${origin}/features: it leads to ${elsewhere}/login, which is ${NOT_GIVEN}.`,
       `The home page names its de version at ${elsewhere}/de/, which is ${NOT_GIVEN}: it was not opened, and the home page was taken with de as the browser's language.`,
+      `The sitemap ${elsewhere}/sitemap.xml, which robots.txt names, was not read: it is ${NOT_GIVEN}.`,
     ]) {
       assert.ok(toured.notes.includes(note), `${note}\n${toured.notes.join("\n")}`);
     }

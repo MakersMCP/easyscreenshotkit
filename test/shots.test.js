@@ -2903,6 +2903,7 @@ test("a run opens no other address on this machine than the one given: not by it
     assert.equal(skipped[`${elsewhere}/pricing`], NOT_GIVEN);
     assert.equal(skipped[`${origin}/features`], `it leads to ${elsewhere}/features, which is ${NOT_GIVEN}`);
     assert.ok(manifest.notes.includes(`${elsewhere}/asked was asked for but not taken: ${NOT_GIVEN}.`), manifest.notes.join("\n"));
+    assert.ok(manifest.notes.includes(`The sitemap ${elsewhere}/sitemap.xml, which robots.txt names, was not read: it is ${NOT_GIVEN}.`), manifest.notes.join("\n"));
     assert.deepEqual(seen, []);
   } finally {
     server.close();

@@ -13,7 +13,7 @@
 const { openTab, closeTab, navigate } = require("./chrome");
 const { waitForContent, settle, walk, watchRequests } = require("./page");
 const { readInfo, readLinks, rejectAtOnce, rejectReason, slugOf, siteName, identity, pagesAsked, waitForView, notOpened, alternateNote } = require("./shots");
-const { homeOf, pageKey, routeOf, viewKey, pathOf, readable, siteOf, rankLinks, routeLinks, visitOrder, readSiteIndex, kindOf, alternateFor } = require("./pick");
+const { homeOf, pageKey, routeOf, viewKey, pathOf, readable, siteOf, rankLinks, routeLinks, visitOrder, readSiteIndex, indexNotes, kindOf, alternateFor } = require("./pick");
 const { TOP_COVER } = require("./record");
 const { timeLeft } = require("./time");
 
@@ -47,7 +47,7 @@ async function probe(chrome, url, check, ctx, { links = false } = {}) {
 // the home page, the address given and each --page, and the #routes the
 // sitemap lists, which the tour does not follow (routes), and what else the
 // demo's notes say (notes): a version of the home page in the language
-// asked for that was not taken.
+// asked for that was not taken, robots.txt and the sitemaps not read.
 async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = "", theme = "light", reducedMotion = false, log = () => {} } = {}) {
   const ctx = { lang, theme, reducedMotion };
   let home = homeOf(asked);
@@ -170,6 +170,7 @@ async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = 
     }
   }
   const index = await indexing;
+  notes.push(...indexNotes(index.refused));
   // short: the tour looked for no more pages of its own as time ran short,
   // with fewer than it was asked for.
   let short = false;
