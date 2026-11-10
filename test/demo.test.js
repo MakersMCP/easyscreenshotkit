@@ -13,7 +13,7 @@ const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const test = require("node:test");
 const { parseDemo, prepareDemoDir, openDemo, makeDemo, routesNote, what, frameAt, stepEntries, pageEntries } = require("../skills/easyscreenshotkit/scripts/lib/demo");
-const { pickPages, tourSteps } = require("../skills/easyscreenshotkit/scripts/lib/tour");
+const { pickPages, tourSteps, SECTIONS } = require("../skills/easyscreenshotkit/scripts/lib/tour");
 const { setTimeLimit } = require("../skills/easyscreenshotkit/scripts/lib/time");
 const { readSteps } = require("../skills/easyscreenshotkit/scripts/lib/steps");
 const { findChrome, launch, openTab, closeTab, navigate } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
@@ -854,6 +854,35 @@ test("a #route in the address and in a steps file: each view opened on its route
   }
 });
 
+// A tour given the least --timeout, a minute, of a #route view with a
+// --page: it recorded the home page alone, the view given and the --page
+// dropped without a word, and said it was done. Every page asked for is in
+// the video or named in the notes, the view given is in it or the demo
+// fails, and the tour says why it looked for no more pages.
+test("a tour given a minute shows the #route view given or fails, and names every page it left out", { skip: missing, timeout: 200_000 }, async () => {
+  const { server, origin } = await fixture();
+  const root = tempDir();
+  const dir = path.join(root, "tour");
+  const asked = [`${origin}/app/#/plants`, `${origin}/app/#/light`];
+  try {
+    let manifest = null;
+    try {
+      ({ manifest } = await makeDemo(asked[0], { dir, pages: 4, extra: ["#/light"], gif: false, timeLimit: 60_000 }));
+    } catch (err) {
+      assert.equal(err.message, "time ran out while recording; give more with --timeout");
+      assert.equal(fs.existsSync(dir), false);
+      return;
+    }
+    const shown = manifest.pages.map((p) => p.url);
+    assert.ok(shown.includes(asked[0]), shown.join(", "));
+    for (const url of asked) assert.ok(shown.includes(url) || manifest.notes.includes(`Left out ${url}: time ran out; give more with --timeout.`), `${url}\n${manifest.notes.join("\n")}`);
+    assert.ok(manifest.notes.includes("Time ran out after 3 pages: a tour looks for more only while 4 minutes of the run are left; give more with --timeout."), manifest.notes.join("\n"));
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // An address copied from the browser after a sign-in can end in what the
 // sign-in left there. Kept, it would open the app on a view that is not
 // there (Loading… for good, here) and be written into steps.json.
@@ -1018,6 +1047,76 @@ test("a tour clicks to a view by its link only when the view has the query of th
   assert.equal(await first({ url: "https://www.acme.com/en/", kind: "home" }), "Open acme.com");
   assert.equal(await first({ ...at("/app/#/plants"), kind: "other" }), "Open /app/#/plants");
   assert.equal(await first({ ...at("/docs/start"), kind: "docs" }), "Open /docs/start");
+});
+
+// A tour short of time ended after its first page when less than 150 s
+// were left, and left out the address given and each --page without a
+// word. Here each step takes as long as a stand-in clock says, and the
+// run's time goes down with it: the tour keeps the reserve, leaves out the
+// scrolls and then the pages it picked itself so that the ones the user
+// named are shown, says which it left out, and fails when it cannot show
+// the address given.
+test("a tour short of time shows the pages the user named first, says which it left out, and fails without the address given", async () => {
+  const recorder = {
+    viewport: { width: 1600, height: 900 },
+    factor: 1,
+    eval: async (expression) => (expression === SECTIONS ? { max: 5000, tops: [{ top: 1000, heading: "Fast" }, { top: 2000, heading: "Simple" }] } : 0),
+    locate: async () => null,
+    scrollState: async () => ({ y: 0 }),
+  };
+  const at = (url, flags = {}) => ({ url: `https://acme.com${url}`, kind: "other", ...flags });
+  const pages = [at("/", { kind: "home" }), at("/features"), at("/app/#/plants", { asked: true, given: true }), at("/app/#/light", { asked: true })];
+  // What each step takes, in ms: a page opens in 5 s, a scroll takes 2 s.
+  const costs = { visit: 5_000, click: 5_000, scroll: 2_000 };
+  const tour = async (start, { reserve = 15_000 } = {}) => {
+    let now = 0;
+    let left = start;
+    const out = { steps: [], left: [], error: null };
+    try {
+      setTimeLimit(left);
+      for await (const step of tourSteps(recorder, pages, { reserve, left: out.left, clock: () => now })) {
+        out.steps.push(step.action === "wait" ? `wait ${step.seconds}` : `${step.action} ${step.url || (step.target && step.target.href) || step.to}`.replace("https://acme.com", ""));
+        const ms = costs[step.action] || step.seconds * 1000;
+        now += ms;
+        left -= ms;
+        setTimeLimit(left);
+      }
+    } catch (err) {
+      out.error = err.message;
+    } finally {
+      setTimeLimit(120_000);
+    }
+    return out;
+  };
+  // Time for all of it: every page with its scrolls, in the tour's order.
+  const plenty = await tour(300_000);
+  assert.equal(plenty.error, null);
+  assert.deepEqual(plenty.steps.filter((s) => /^(visit|scroll)/.test(s)), ["visit /", "scroll 992", "scroll 1992", "visit /features", "scroll 992", "scroll 1992", "visit /app/#/plants", "scroll 992", "scroll 1992", "visit /app/#/light", "scroll 992", "scroll 1992"]);
+  assert.deepEqual(plenty.left, []);
+  // 40 s with 15 kept: no scrolls where the pages named after them would
+  // not fit, the features page the tour picked itself left out, the address
+  // given and the --page shown.
+  const short = await tour(40_000);
+  assert.equal(short.error, null);
+  assert.deepEqual(short.steps.filter((s) => /^(visit|scroll)/.test(s)), ["visit /", "visit /app/#/plants", "visit /app/#/light", "scroll 992", "scroll 1992"]);
+  assert.deepEqual(short.left, [{ url: "https://acme.com/features", reason: "time ran out; give more with --timeout" }]);
+  // Each page it shows stays up for its wait.
+  assert.deepEqual(short.steps.slice(0, 4), ["visit /", "wait 1.6", "visit /app/#/plants", "wait 1.1"]);
+  // 22 s: no room for the address given after the home page. The demo
+  // fails, as it would show none of what was asked for.
+  const none = await tour(22_000);
+  assert.equal(none.error, "time ran out while recording; give more with --timeout");
+  assert.deepEqual(none.steps, ["visit /", "wait 1.6"]);
+  // With less than the reserve before it starts, nothing.
+  const late = await tour(10_000);
+  assert.equal(late.error, "time ran out while recording; give more with --timeout");
+  assert.deepEqual(late.steps, []);
+  // A tour that has shown the address given leaves out a --page it has no
+  // time for, and says so.
+  const tail = await tour(31_000);
+  assert.equal(tail.error, null);
+  assert.deepEqual(tail.steps.filter((s) => /^visit/.test(s)), ["visit /", "visit /app/#/plants"]);
+  assert.deepEqual(tail.left, [{ url: "https://acme.com/features", reason: "time ran out; give more with --timeout" }, { url: "https://acme.com/app/#/light", reason: "time ran out; give more with --timeout" }]);
 });
 
 // A home page the tour chose to open by itself is left out when it cannot

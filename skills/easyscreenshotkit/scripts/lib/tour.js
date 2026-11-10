@@ -108,18 +108,21 @@ async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = 
   const { nav, info, links } = opened;
   const homeKey = pageKey(nav.url);
   const kept = [];
+  // asked: a page the user named, the address given or a --page, which a
+  // tour short of time shows before the ones it picked itself; given: the
+  // address given, without which it has no video to make.
   if (homeLost) {
     const { keys, named } = identity(asked, nav.url, info.canonical);
-    kept.push({ url: nav.url, kind: (kindOf(new URL(asked), "") || { kind: "other" }).kind, why: "the address given", title: info.title, slug: slugOf(named, home), textHash: info.textHash, keys });
+    kept.push({ url: nav.url, kind: (kindOf(new URL(asked), "") || { kind: "other" }).kind, why: "the address given", title: info.title, slug: slugOf(named, home), textHash: info.textHash, keys, asked: true, given: true });
   } else {
     const homeKeys = identity(home, nav.url, info.canonical).keys;
-    kept.push({ url: nav.url, kind: "home", why: "the home page", title: info.title, slug: "home", textHash: info.textHash, keys: homeKeys.add(pageKey(home)) });
+    kept.push({ url: nav.url, kind: "home", why: "the home page", title: info.title, slug: "home", textHash: info.textHash, keys: homeKeys.add(pageKey(home)), asked: !given, given: !given });
   }
   // The links on the pages given and asked for, for their #routes.
   const namedLinks = [];
-  const keep = (url, kind, why, got) => {
+  const keep = (url, kind, why, got, flags = {}) => {
     const { keys, named } = identity(url, got.nav.url, got.info.canonical);
-    kept.push({ url: got.nav.url, kind, why, title: got.info.title, slug: slugOf(named, home), textHash: got.info.textHash, keys });
+    kept.push({ url: got.nav.url, kind, why, title: got.info.title, slug: slugOf(named, home), textHash: got.info.textHash, keys, asked: Boolean(flags.asked), given: Boolean(flags.given) });
     log(`  ${pathOf(got.nav.url)} (${why})`);
   };
   const check = { site: siteOf(home), homeKey, kept };
@@ -142,11 +145,14 @@ async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = 
     }
     if (got.rejected) skipped.push({ url, reason: got.rejected });
     else {
-      keep(url, (kindOf(new URL(url), "") || { kind: "other" }).kind, why, got);
+      keep(url, (kindOf(new URL(url), "") || { kind: "other" }).kind, why, got, { asked: true, given: why === "the address given" });
       namedLinks.push(...got.links);
     }
   }
   const index = await indexing;
+  // short: the tour looked for no more pages of its own as time ran short,
+  // with fewer than it was asked for.
+  let short = false;
   if (wanted > kept.length) {
     const ranked = rankLinks(links, index.urls || [], {
       home: nav.url,
@@ -173,6 +179,7 @@ async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = 
       if (got.rejected) skipped.push({ url: candidate.url, reason: got.rejected });
       else keep(candidate.url, candidate.kind, candidate.why, got);
     }
+    short = queue.length > 0 && kept.length < wanted && visits < wanted * 3;
   }
   // The views of an app that the home page, the address given and each
   // --page link to by #route, and those the sitemap lists, whether the
@@ -182,7 +189,7 @@ async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = 
   // A visitor's order: what the product is first, what it costs last.
   const [first, ...rest] = kept;
   const ordered = [first, ...rest.filter((page) => page.kind !== "pricing"), ...rest.filter((page) => page.kind === "pricing")];
-  return { pages: ordered.map(({ url, kind, why, title, slug }) => ({ url, kind, why, title, slug })), skipped, routes, site: siteName(info, nav.url) };
+  return { pages: ordered.map(({ url, kind, why, title, slug, asked, given }) => ({ url, kind, why, title, slug, asked, given })), skipped, routes, site: siteName(info, nav.url), short };
 }
 
 // Where a page is worth stopping on the way down: the tops of its first
@@ -252,27 +259,69 @@ function quote(text) {
   return `"${cut.slice(0, cut.lastIndexOf(" ") > 20 ? cut.lastIndexOf(" ") : 40).replace(/[\s,;:.-]+$/, "")}…"`;
 }
 
+// What a tour says when it cannot show the address given, and of each page
+// it leaves out as time runs short.
+const RAN_OUT = "time ran out while recording; give more with --timeout";
+const LEFT_FOR_TIME = "time ran out; give more with --timeout";
+
+// How long a scroll down to a stop and the second spent there take, in
+// seconds of the video, before the tour has seen what a page takes.
+const STOP_SECONDS = 2.5;
+
 // The tour as steps, made one page at a time: what a page shows is only
 // known once it is open. Its first step opens the site by its host's name
 // when it starts at the home page, and the page it starts at by its path
 // and route otherwise, as a tour whose home page was left out does.
-async function* tourSteps(recorder, pages) {
+//
+// It keeps reserve of the run's time for its end, as a demo's steps do,
+// and goes on to a page only while the time left over would take a page
+// as long as the longest one it showed so far, from the step that opened
+// it to its last. Short of time, it shows the pages the user named first:
+// a page's scrolls are left out when they would leave no room for the ones
+// still to come, and so is a page it picked itself. Each page it does not
+// show goes in left, with why, and a tour that cannot show the address
+// given fails. clock: what the time is, in ms.
+async function* tourSteps(recorder, pages, { reserve = 60_000, left = [], clock = Date.now } = {}) {
   const host = new URL(pages[0].url).hostname.replace(/^www\./, "");
   const placeOf = (url) => readable(`${new URL(url).pathname}${routeOf(url)}`);
+  const spare = () => timeLeft() - reserve;
+  // The pages from the one at index on that the user named.
+  const owed = (from) => pages.slice(from).filter((page) => page.asked).length;
+  const leave = (from, to = pages.length) => {
+    for (const page of pages.slice(from, to)) left.push({ url: page.url, reason: LEFT_FOR_TIME });
+    if (pages.slice(from, to).some((page) => page.given)) throw new Error(RAN_OUT);
+  };
+  if (spare() < 0) throw new Error(RAN_OUT);
+  let longest = 0;
+  let opened = clock();
+  yield { action: "visit", url: pages[0].url, label: `Open ${pages[0].kind === "home" ? host : placeOf(pages[0].url)}` };
   for (let i = 0; i < pages.length; i++) {
-    if (i === 0) yield { action: "visit", url: pages[0].url, label: `Open ${pages[0].kind === "home" ? host : placeOf(pages[0].url)}` };
     yield { action: "wait", seconds: i === 0 ? 1.6 : 1.1 };
     const cover = (await recorder.eval(TOP_COVER)) || 0;
-    const stops = chooseStops((await recorder.eval(SECTIONS)) || { max: 0, tops: [] }, recorder.viewport.height, cover);
+    let stops = chooseStops((await recorder.eval(SECTIONS)) || { max: 0, tops: [] }, recorder.viewport.height, cover);
+    // A page with its scrolls, as this one would take with them, or as
+    // long as the longest so far.
+    const scrolls = stops.length * STOP_SECONDS * 1000 * (recorder.factor || 1);
+    const whole = Math.max(longest, clock() - opened + scrolls);
+    if (stops.length && spare() < scrolls + whole * owed(i + 1)) stops = [];
     for (const stop of stops) {
       yield { action: "scroll", to: stop.y, label: stop.heading ? `Scroll to ${quote(stop.heading)}` : "Scroll down" };
       yield { action: "wait", seconds: 1 };
     }
-    const next = pages[i + 1];
-    if (!next || timeLeft() < 150_000) {
+    longest = Math.max(longest, clock() - opened);
+    // The next page: one the tour picked is left out while showing it
+    // would leave no room for the ones the user named after it.
+    let j = i + 1;
+    while (j < pages.length && !pages[j].asked && spare() < longest * (1 + owed(j + 1))) j++;
+    leave(i + 1, j);
+    const next = pages[j];
+    const room = spare();
+    if (next && room < longest) leave(j);
+    if (!next || room < longest) {
       yield { action: "wait", seconds: stops.length ? 0.6 : 1.2 };
       return;
     }
+    opened = clock();
     // A link to a #route goes by the query of the page it is on: a view
     // asked for with a query of its own is visited.
     const linkable = !routeOf(next.url) || new URL(next.url).search === new URL(pages[i].url).search;
@@ -284,7 +333,9 @@ async function* tourSteps(recorder, pages) {
     const where = placeOf(next.url);
     if (link) yield { action: "click", target: { href: next.url }, label: link.text ? `Click ${quote(link.text)}` : `Open ${where}`, text: link.text, attribute: link.attribute, expect: next.url };
     else yield { action: "visit", url: next.url, label: `Open ${where}` };
+    // The pages left out on the way are passed over.
+    i = j - 1;
   }
 }
 
-module.exports = { pickPages, tourSteps, chooseStops, SECTIONS };
+module.exports = { pickPages, tourSteps, chooseStops, SECTIONS, RAN_OUT, LEFT_FOR_TIME };

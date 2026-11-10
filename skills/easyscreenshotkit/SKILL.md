@@ -39,7 +39,7 @@ When the user wants a demo video of the product, a GIF for a README, or footage 
 node <skill>/scripts/easyscreenshotkit.js demo <url> --out demo/<name>
 ```
 
-It needs ffmpeg on the machine as well. Without steps it takes a tour of the pages the screenshots would take, clicking through the site's own menu; `--pages 3` makes it shorter. A run takes two to four minutes.
+It needs ffmpeg on the machine as well. Without steps it takes a tour of the pages the screenshots would take, clicking through the site's own menu; `--pages 3` makes it shorter. A run takes two to four minutes. A tour given less than four minutes with `--timeout` looks for no pages of its own and takes the home page, the address given and each `--page`; short of time as it records, it leaves out what it has no time for, the pages it picked itself first, names each in the notes of `steps.json`, and fails when it cannot show the address given.
 
 For a flow the user describes (signing up, a search, a feature in use), write the steps to a file and pass `--steps demo.yaml`:
 

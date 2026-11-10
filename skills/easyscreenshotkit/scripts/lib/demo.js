@@ -80,6 +80,12 @@ it, a tour whose home page answers an error or a bot check, or cannot be
 opened, leaves it out with a note and starts at the address given. An
 address given that is itself the home page still fails.
 
+A tour looks for pages of its own only while more than 4 minutes of
+--timeout are left, so a shorter one takes the home page, the address
+given and each --page. Short of time as it records, it leaves out the
+scrolls and then the pages it picked itself, names each page it left out
+in steps.json, and fails when it has no time to show the address given.
+
 A demo builds its files inside the folder it saves in and moves them into
 place once it has ended well, replacing an earlier demo's. One that fails or
 is stopped with Ctrl-C or a TERM signal leaves an earlier demo there as it
@@ -378,21 +384,25 @@ async function makeDemo(rawUrl, options = {}) {
         name = tour.site;
         for (const skip of tour.skipped) notes.push(`Left out ${skip.url}: ${skip.reason}.`);
         if (tour.routes.length) notes.push(routesNote(tour.routes));
+        if (tour.short) notes.push(`Time ran out after ${tour.pages.length === 1 ? "1 page" : `${tour.pages.length} pages`}: a tour looks for more only while 4 minutes of the run are left; give more with --timeout.`);
       }
       await recorder.open();
       log("Recording");
+      // A step starts while a minute of the run is left, or a quarter of
+      // the run for one given less than four minutes: with a minute in all,
+      // the least --timeout takes, no step could start. A tour keeps that
+      // time too, and leaves out the pages it has no time for (see
+      // tourSteps).
+      const reserve = Math.min(60_000, timeLimit / 4);
+      const outOfTime = [];
       // A steps file that does not start somewhere starts at the address
       // given; its own steps keep their numbers in what goes wrong.
       const added = script && script.steps[0].action !== "visit" ? 1 : 0;
-      const steps = script ? [...(added ? [{ action: "visit", url: asked }] : []), ...script.steps] : tourSteps(recorder, tour.pages);
-      // A step starts while a minute of the run is left, or a quarter of
-      // the run for one given less than four minutes: with a minute in all,
-      // the least --timeout takes, no step could start.
-      const reserve = Math.min(60_000, timeLimit / 4);
+      const steps = script ? [...(added ? [{ action: "visit", url: asked }] : []), ...script.steps] : tourSteps(recorder, tour.pages, { reserve, left: outOfTime });
       let n = 0;
       for await (const step of steps) {
         n++;
-        if (timeLeft() < reserve) throw new Error("time ran out while recording; give more with --timeout");
+        if (script && timeLeft() < reserve) throw new Error("time ran out while recording; give more with --timeout");
         log(`${added && n === 1 ? "  " : String(n - added).padStart(2, "0")} ${what(step)}`);
         let record;
         try {
@@ -405,6 +415,7 @@ async function makeDemo(rawUrl, options = {}) {
         records.push({ n: n - added, step, ...record });
         if (step.expect && record.opened && placeOf(record.opened) !== placeOf(step.expect)) notes.push(`The link for ${step.expect} led to ${record.opened}.`);
       }
+      for (const skip of outOfTime) notes.push(`Left out ${skip.url}: ${skip.reason}.`);
       take = await recorder.finish();
       alive();
       // A steps file's demo names the site by its first page, as a tour
