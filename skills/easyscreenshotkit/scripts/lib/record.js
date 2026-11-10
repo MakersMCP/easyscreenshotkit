@@ -23,7 +23,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { openTab, closeTab, navigate, currentUrl, BARRED } = require("./chrome");
+const { openTab, closeTab, navigate, currentUrl, BARRED, NOT_A_PAGE } = require("./chrome");
 const { metrics, walk, waitForContent, settle, watchRequests, networkQuiet, waitForDrawn, waitForFonts, resetPictureWait, waitForPictures } = require("./page");
 const { clean } = require("./clean");
 const { readInfo, siteName } = require("./shots");
@@ -290,7 +290,9 @@ class Recorder {
     // (the history API, a #hash) starts "loading" too, on some sites at
     // every frame of a scroll, so only a new document committing counts.
     tab.on("Page.frameRequestedNavigation", (p) => {
-      if (p.frameId !== this.frameId || (p.disposition && p.disposition !== "currentTab") || this.quiet || this.navAt) return;
+      if (p.frameId !== this.frameId || (p.disposition && p.disposition !== "currentTab")) return;
+      this.askedAt = Date.now();
+      if (this.quiet || this.navAt) return;
       this.navAt = Date.now();
       this.navUrl = p.url;
     });
@@ -299,20 +301,27 @@ class Recorder {
     });
     tab.on("Page.loadEventFired", () => (this.loadedAt = Date.now()));
     // A download the page started, by a click or by itself: the browser
-    // refuses it (see launch()), and the page stays where it is.
+    // refuses it (see launch()), and the page stays where it is. left: the
+    // page went to it itself, by a move that made it leave its own load
+    // when that had not ended, and not by a link with a download attribute.
     tab.on("Page.downloadWillBegin", (p) => {
       if (p.frameId !== this.frameId) return;
       this.refusedAt = Date.now();
+      this.refusal = { url: p.url, why: NOT_A_PAGE, left: this.askedAt >= (this.committedAt || 0) };
       if (!this.take.refused.includes(p.url)) this.take.refused.push(p.url);
     });
-    // A page the page itself tried to open (a link, a script) at an address
-    // the run does not open (see openTab): it is not loaded, and the page
-    // stays where it is, as for a download. A visit's own is told by its
-    // step.
+    // A document the page, a frame of it or a window it opened tried to open
+    // (a link, a script) at an address the run does not open (see openTab):
+    // it is not loaded, and the page stays where it is, as for a download.
+    // One a visit's own page went to before it had loaded fails the visit
+    // (see navigate()), and one after that is noted as any other.
     tab.on(BARRED, (b) => {
-      if (!b.main || this.quiet) return;
-      this.refusedAt = Date.now();
-      if (!this.take.barred.some((known) => known.url === b.url)) this.take.barred.push({ url: b.url, why: b.why });
+      if (b.main) {
+        this.refusedAt = Date.now();
+        this.refusal = { url: b.url, why: b.why, left: true };
+      }
+      const kind = b.main ? "page" : b.window ? "window" : "frame";
+      if (!this.take.barred.some((known) => known.url === b.url)) this.take.barred.push({ url: b.url, why: b.why, kind });
     });
     // An app that changes its address without loading a page (its own
     // router): the title bar follows. A new #route is another page; a new
@@ -479,10 +488,11 @@ class Recorder {
     resetPictureWait(tab);
     await waitForPictures(tab, { x: 0, y: 0, width: this.viewport.width, height: this.viewport.height });
     // A page that sent itself on to another one meanwhile (a script's
-    // redirect): the other one is made ready instead.
+    // redirect): the other one is made ready instead. One that went to an
+    // address the run does not open, or to a file, stays where it was.
     if (this.navAt >= began && depth < 2) {
       const at = this.navAt;
-      while (Date.now() - began < 40_000 && !(this.committedAt >= at)) await sleep(30);
+      while (Date.now() - began < 40_000 && !(this.committedAt >= at) && !(this.refusedAt >= at)) await sleep(30);
       if (this.committedAt >= at) {
         while (Date.now() - began < 45_000 && !(this.loadedAt > at)) await sleep(50);
         this.navAt = 0;
@@ -564,7 +574,13 @@ class Recorder {
     }
     if (live) this.v += NAV_HOLD;
     await this.pace(1);
-    while (Date.now() - started < 20_000 && !(this.loadedAt > at)) await sleep(50);
+    // A new page that moves on by itself before its load event, to an
+    // address the run does not open or to a file, has left its own load:
+    // the browser draws nothing more of it, so it is refused, as a visit
+    // to it is (see navigate()), and not waited for.
+    const left = () => this.refusedAt > this.committedAt && this.refusal && this.refusal.left;
+    while (Date.now() - started < 20_000 && !(this.loadedAt > at) && !left()) await sleep(50);
+    if (!(this.loadedAt > at) && left()) throw new Error(`Could not open ${this.navUrl}: it leads to ${this.refusal.url}, which is ${this.refusal.why}.`);
     // Free to note a redirect the new page makes while it is made ready.
     this.navAt = 0;
     const page = await this.ready();

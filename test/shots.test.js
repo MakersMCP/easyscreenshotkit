@@ -2815,6 +2815,58 @@ test("from a public site the browser opens no address on this machine: given, af
   }
 });
 
+// The same rule holds for a frame of another site, which runs in a process
+// of its own, when the page moves it later, by a script or a redirect, and
+// for a window a click opens: the tab's own requests were judged, and those
+// went through and were drawn into the screenshot. The frames and the window
+// are named to the tab.
+test("from a public site a frame of another site that is moved later, and a window a click opens, open no address on this machine", { skip: noBrowser, timeout: 120_000 }, async () => {
+  const seen = [];
+  const other = await serve((req, res) => {
+    seen.push(req.url);
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Inside", "<h1>Inside</h1>"));
+  });
+  const elsewhere = other.origin;
+  const html = { "Content-Type": "text/html; charset=utf-8" };
+  const { server, origin } = await serve((req, res) => {
+    if (req.url === "/frame") return res.writeHead(200, html).end(page("Frame", `<h2>Frame</h2><script>setTimeout(() => { location.href = "${elsewhere}/from-frame"; }, 300);</script>`));
+    if (req.url === "/later") return res.writeHead(200, html).end(page("Later", `<h2>Later</h2><script>setTimeout(() => { location.href = "/hop"; }, 300);</script>`));
+    if (req.url === "/hop") return res.writeHead(302, { Location: `${elsewhere}/from-redirect` }).end();
+    res.writeHead(200, html).end(page("Acme", `<a id="away" target="_blank" href="${elsewhere}/window" style="display:block;width:300px;height:100px">Away</a><iframe src="${framed}/frame"></iframe><iframe src="${framed}/later"></iframe>`));
+  });
+  const port = new URL(origin).port;
+  const site = `http://public.example:${port}`;
+  // Another site, so its frames run in a process of their own.
+  const framed = `http://framed.example:${port}`;
+  const chrome = await launch({ args: ["--host-resolver-rules=MAP public.example 127.0.0.1, MAP framed.example 127.0.0.1"] });
+  try {
+    chrome.guard = await guardFor(`${site}/`);
+    const tab = await openTab(chrome, DEVICES.desktop);
+    const barred = [];
+    tab.on(BARRED, (b) => barred.push(b));
+    try {
+      await navigate(tab, `${site}/`);
+      await sleep(1_500);
+      for (const type of ["mousePressed", "mouseReleased"]) await tab.send("Input.dispatchMouseEvent", { type, x: 100, y: 50, button: "left", clickCount: 1 });
+      const until = Date.now() + 5_000;
+      while (barred.length < 3 && Date.now() < until) await sleep(100);
+      const said = Object.fromEntries(barred.map((b) => [new URL(b.url).pathname, [b.why, b.main, b.window]]));
+      assert.deepEqual(said, {
+        "/from-frame": ["not on the public internet", false, false],
+        "/from-redirect": ["not on the public internet", false, false],
+        "/window": ["not on the public internet", false, true],
+      });
+      assert.deepEqual(seen, []);
+    } finally {
+      await closeTab(chrome, tab);
+    }
+  } finally {
+    await chrome.close();
+    server.close();
+    other.server.close();
+  }
+});
+
 // A run given an address on this machine, as a developer gives the site
 // they run there, opens that host and port and no other address of the
 // machine: not a page of its tour or a --page there, not one a redirect
@@ -2851,6 +2903,75 @@ test("a run opens no other address on this machine than the one given: not by it
     assert.equal(skipped[`${elsewhere}/pricing`], NOT_GIVEN);
     assert.equal(skipped[`${origin}/features`], `it leads to ${elsewhere}/features, which is ${NOT_GIVEN}`);
     assert.ok(manifest.notes.includes(`${elsewhere}/asked was asked for but not taken: ${NOT_GIVEN}.`), manifest.notes.join("\n"));
+    assert.deepEqual(seen, []);
+  } finally {
+    server.close();
+    other.server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A page that moves on by itself before its load event has left its own
+// load: the browser draws nothing more of it. When it moves to an address the
+// run does not open, as a local app sends a visitor who has not signed in to
+// its sign-in server, or to a file, the run refuses it at once, as a
+// redirect there: the address given fails the run with that, and a --page is
+// left out with it. Waited for, it held the run 20 s for a load that never
+// came, and each capture after it failed, 105 s in all. A page that moves on
+// once it has loaded, or starts a download by a link with a download
+// attribute, is taken, with a note when it tried to open such an address;
+// so is one with a frame there.
+test("a page that moves on by itself before it has loaded, to an address the run does not open or to a file, is refused at once; one that does so once it has loaded is taken, with a note", { skip: noBrowser, timeout: 240_000 }, async () => {
+  const seen = [];
+  const other = await serve((req, res) => {
+    seen.push(req.url);
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Sign in", "<h1>Sign in</h1>"));
+  });
+  const elsewhere = other.origin;
+  const html = { "Content-Type": "text/html; charset=utf-8" };
+  const body = (title) => `<h1>${title}</h1><div style="height:1400px;background:rgb(0,160,0)"></div>`;
+  const { server, origin } = await serve((req, res) => {
+    const at = req.url;
+    if (at === "/") return res.writeHead(200, html).end(page("Acme | Tools", body("Acme")));
+    if (at === "/early") return res.writeHead(200, html).end(page("Early | Acme", body("Early"), { head: `<script>if (!localStorage.token) location.href = "${elsewhere}/login";</script>` }));
+    if (at === "/module") return res.writeHead(200, html).end(page("Module | Acme", `${body("Module")}<script type="module">location.href = "${elsewhere}/module";</script>`));
+    if (at === "/to-file") return res.writeHead(200, html).end(page("To file | Acme", body("To file"), { head: '<script>location.href = "/file.bin";</script>' }));
+    if (at === "/file.bin") return res.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Disposition": 'attachment; filename="from-the-site.txt"' }).end("bytes");
+    if (at === "/download-link") return res.writeHead(200, html).end(page("Download link | Acme", body("Download link"), { head: '<script>const a = document.createElement("a"); a.href = "/file.bin"; a.download = "x.bin"; document.head.appendChild(a); a.click();</script>' }));
+    if (at === "/refresh") return res.writeHead(200, html).end(page("Refresh | Acme", body("Refresh"), { head: `<meta http-equiv="refresh" content="0; url=${elsewhere}/refresh">` }));
+    if (at === "/framed") return res.writeHead(200, html).end(page("Framed | Acme", `<h1>Framed</h1><iframe src="${elsewhere}/framed"></iframe><div style="height:1400px"></div>`));
+    res.writeHead(404).end("not found");
+  });
+  const root = tempDir();
+  const env = { ...process.env, HOME: path.join(root, "home") };
+  fs.mkdirSync(env.HOME);
+  try {
+    const out = path.join(root, "shots");
+    let started = Date.now();
+    const given = await runCli([`${origin}/early`, "--pages", "1", "--sizes", "desktop", "--out", out], { env });
+    const givenSecs = (Date.now() - started) / 1000;
+    assert.equal(given.status, 1, given.stderr);
+    assert.match(given.stderr, new RegExp(`^easyscreenshotkit: Could not open ${origin}/early: it leads to ${elsewhere}/login, which is ${NOT_GIVEN}\\.$`, "m"));
+    assert.ok(givenSecs < 60, `${givenSecs} s`);
+    assert.equal(fs.existsSync(out), false);
+
+    started = Date.now();
+    const asks = ["/module", "/to-file", "/download-link", "/refresh", "/framed"].flatMap((at) => ["--page", at]);
+    const run = await runCli([origin, "--pages", "1", "--sizes", "desktop", ...asks, "--out", out], { env });
+    const runSecs = (Date.now() - started) / 1000;
+    assert.equal(run.status, 0, run.stderr);
+    const manifest = JSON.parse(fs.readFileSync(path.join(out, "manifest.json"), "utf8"));
+    assert.deepEqual(manifest.pages.map((p) => p.slug), ["home", "download-link", "refresh", "framed"]);
+    const skipped = Object.fromEntries(manifest.skipped.map(({ url, reason }) => [url, reason]));
+    assert.deepEqual(skipped, {
+      [`${origin}/module`]: `it leads to ${elsewhere}/module, which is ${NOT_GIVEN}`,
+      [`${origin}/to-file`]: `it leads to ${origin}/file.bin, which is a file to download instead of a page`,
+    });
+    const notesOf = (slug) => manifest.pages.find((p) => p.slug === slug).notes;
+    assert.ok(notesOf("refresh").includes(`it tried to open ${elsewhere}/refresh, which is ${NOT_GIVEN}: it was not opened`), notesOf("refresh").join("\n"));
+    assert.ok(notesOf("framed").includes(`a frame of it tried to open ${elsewhere}/framed, which is ${NOT_GIVEN}: it was not opened`), notesOf("framed").join("\n"));
+    assert.deepEqual(notesOf("download-link"), []);
+    assert.ok(runSecs < 150, `${runSecs} s`);
     assert.deepEqual(seen, []);
   } finally {
     server.close();

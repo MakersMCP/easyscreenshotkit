@@ -638,6 +638,15 @@ function openNote(result) {
   return "";
 }
 
+// A page's note on what it tried to open that the run does not open: the
+// page itself, by moving on once it had loaded, a frame of it, or a window
+// it opened.
+function barredNote(b) {
+  if (b.main) return `it tried to open ${b.url}, which is ${b.why}: it was not opened`;
+  if (b.window) return `it tried to open a window at ${b.url}, which is ${b.why}: it was not opened`;
+  return `a frame of it tried to open ${b.url}, which is ${b.why}: it was not opened`;
+}
+
 // What the waits for a window of a page saw by the time it was taken, as
 // notes, and only what they waited for: a run short of time waits less.
 function waitNotes(result) {
@@ -659,13 +668,16 @@ async function visit(chrome, page, group, theme, ctx, { check = null, links = fa
   try {
     resetPictureWait(tab);
     await watchRequests(tab);
-    const nav = await navigate(tab, page.url);
-    // A page that tries to move on by itself to an address the run does not
-    // open stays where it is (see openTab), and its notes say so.
+    // What the page, a frame of it or a window it opens tried to open at an
+    // address the run does not open, which was not loaded (see openTab):
+    // its notes say so. Heard from before the page is opened, as a page can
+    // move on the moment it has loaded. One that moved on before it had
+    // loaded is not taken at all (see navigate()).
     const barred = [];
     tab.on(BARRED, (b) => {
-      if (b.main && !barred.some((known) => known.url === b.url)) barred.push(b);
+      if (!barred.some((known) => known.url === b.url)) barred.push(b);
     });
+    const nav = await navigate(tab, page.url);
     // A bot check, an error or a redirect to a sign-in page is known at once:
     // no need to wait for it to settle.
     const glance = await readInfo(tab);
@@ -1121,7 +1133,7 @@ async function takeShots(rawUrl, options = {}) {
       });
       page.notes.push(...waitNotes(result));
       if (movedOn(page.asked, result.nav.url)) page.notes.push(`opened ${page.asked} and landed on ${result.nav.url}`);
-      for (const b of (result.barred || []).slice(0, 3)) page.notes.push(`it tried to open ${b.url}, which is ${b.why}: it was not opened`);
+      for (const b of (result.barred || []).slice(0, 3)) page.notes.push(barredNote(b));
       kept.push(page);
       saveShots(page, result, firstTheme, run, written);
       log(`${String(page.n).padStart(2, "0")} ${page.slug}  ${pathOf(result.nav.url)}`);
@@ -1427,4 +1439,4 @@ function leftOut(rejected, routes, links) {
   return { skipped: all.slice(0, LEFT_OUT), routesPast: all.slice(LEFT_OUT).filter((skip) => skip.reason === ROUTE_LINK).length };
 }
 
-module.exports = { takeShots, parseSizes, addPwaShots, normalizeUrl, fragmentNotes, prepareDir, openShots, slugOf, identity, movedOn, pagesAsked, waitForView, leftOut, siteName, readInfo, readLinks, rejectAtOnce, rejectReason, notOpened, writeMarkdown, DEVICES, MAX_HEIGHT };
+module.exports = { takeShots, parseSizes, addPwaShots, normalizeUrl, fragmentNotes, prepareDir, openShots, slugOf, identity, movedOn, pagesAsked, waitForView, leftOut, siteName, readInfo, readLinks, rejectAtOnce, rejectReason, notOpened, barredNote, writeMarkdown, DEVICES, MAX_HEIGHT };

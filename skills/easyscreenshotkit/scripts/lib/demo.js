@@ -222,6 +222,15 @@ const BROWSER_GONE = "The browser ended in the middle of the demo (it crashed, o
 const BROWSER_STALLED = "The browser stopped answering in the middle of the demo, so no demo was saved. The machine may be too busy: try again.";
 const TAB_CRASHED = "The browser's tab crashed in the middle of the demo, so no demo was saved.";
 
+// steps.json's note on a document the page did not open, as the run does
+// not open its address: the page itself, a frame of it, or a window.
+function barredNote({ url, why, kind }) {
+  const where = String(url).slice(0, 200);
+  if (kind === "frame") return `A frame of the page tried to open ${where}, which is ${why}: it was not opened.`;
+  if (kind === "window") return `The page tried to open a window at ${where}, which is ${why}: it was not opened.`;
+  return `The page tried to open ${where}, which is ${why}: it was not opened, and the page stayed where it was.`;
+}
+
 const round = (value, places = 3) => Math.round(value * 10 ** places) / 10 ** places;
 
 // How long the page shown last stays on camera at least, in seconds of the
@@ -454,7 +463,7 @@ async function makeDemo(rawUrl, options = {}) {
     }
     if (!take.frames.length) throw new Error("No frame was recorded.");
     for (const url of take.refused.slice(0, 5)) notes.push(`The page started a download of ${String(url).slice(0, 200)}, which the browser refused: no file was saved.`);
-    for (const { url, why } of take.barred.slice(0, 5)) notes.push(`The page tried to open ${String(url).slice(0, 200)}, which is ${why}: it was not opened, and the page stayed where it was.`);
+    for (const barred of take.barred.slice(0, 5)) notes.push(barredNote(barred));
     if (take.slow) notes.push("A page drew slowly in this browser, so it was recorded in slow motion and played back at speed; its own animations look right, scripted ones may run fast.");
 
     // The video.
@@ -598,4 +607,4 @@ async function main(argv) {
   }
 }
 
-module.exports = { main, makeDemo, parseDemo, prepareDemoDir, openDemo, routesNote, what, frameAt, stepEntries, pageEntries, summary, USAGE };
+module.exports = { main, makeDemo, parseDemo, prepareDemoDir, openDemo, routesNote, barredNote, what, frameAt, stepEntries, pageEntries, summary, USAGE };

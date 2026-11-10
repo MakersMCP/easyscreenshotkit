@@ -1582,7 +1582,7 @@ test("a click on a download link saves no file", { skip: missing || (process.pla
 // ports, as at the DevTools of another job's browser. A click's page stays
 // where it was, as for a download, and the demo says so; a visit step to
 // one stops the demo, with the demo before it as it was.
-test("a demo opens no other address on this machine than the one it was given", { skip: missing, timeout: 240_000 }, async () => {
+test("a demo opens no other address on this machine than the one it was given", { skip: missing, timeout: 480_000 }, async () => {
   const seen = [];
   const other = await serve((req, res) => {
     seen.push(req.url);
@@ -1590,26 +1590,43 @@ test("a demo opens no other address on this machine than the one it was given", 
   });
   const elsewhere = other.origin;
   const NOT_GIVEN = "not on the public internet, and not on the host and port given";
+  const html = { "Content-Type": "text/html; charset=utf-8" };
   const { server, origin } = await serve((req, res) => {
-    if (req.url === "/") return res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Acme | Tools", `<header><nav><a href="${elsewhere}/pricing">Pricing</a></nav></header><h1>Acme</h1><p style="font-size:32px;padding:0 40px"><a href="${elsewhere}/inside">Go inside</a></p><div style="height:1400px;background:rgb(0,160,0)"></div>`));
+    if (req.url === "/robots.txt") return res.writeHead(200, { "Content-Type": "text/plain" }).end(`User-agent: *\nSitemap: ${elsewhere}/sitemap.xml\n`);
+    if (req.url === "/") {
+      return res.writeHead(200, html).end(
+        page("Acme | Tools", `<header><nav><a href="${elsewhere}/pricing">Pricing</a><a href="/features">Features</a></nav></header><h1>Acme</h1><p style="font-size:32px;padding:0 40px"><a href="${elsewhere}/inside">Go inside</a> <a href="/early">Early access</a></p><iframe src="${elsewhere}/framed" style="width:200px;height:100px"></iframe><div style="height:1400px;background:rgb(0,160,0)"></div>`).replace(
+          "</head>",
+          `<link rel="alternate" hreflang="de" href="${elsewhere}/de/"></head>`,
+        ),
+      );
+    }
+    // A local app sends a visitor who has not signed in to its sign-in
+    // server as the page loads.
+    if (req.url === "/early" || req.url === "/features") return res.writeHead(200, html).end(page("Early | Acme", "<h1>Early</h1>").replace("</head>", `<script>location.href = "${elsewhere}/login";</script></head>`));
     res.writeHead(404).end("not found");
   });
   const root = tempDir();
   const dir = path.join(root, "demo");
   const run = (args) =>
     new Promise((resolve) => {
+      const started = Date.now();
       const child = spawn(process.execPath, [CLI, "demo", ...args]);
       let err = "";
       child.stderr.on("data", (d) => (err += d));
-      child.on("close", (code) => resolve({ code, err }));
+      child.on("close", (code) => resolve({ code, err, secs: (Date.now() - started) / 1000 }));
     });
+  const early = `Could not open ${origin}/early: it leads to ${elsewhere}/login, which is ${NOT_GIVEN}\\.`;
   try {
     const click = path.join(root, "click.yaml");
     fs.writeFileSync(click, 'steps:\n  - visit: /\n  - click: "text=Go inside"\n    zoom: false\n  - wait: 1\n');
     const clicked = await run([origin, "--steps", click, "--out", dir, "--no-gif"]);
     assert.equal(clicked.code, 0, clicked.err);
     const { notes, pages } = JSON.parse(fs.readFileSync(path.join(dir, "steps.json"), "utf8"));
-    assert.deepEqual(notes.filter((note) => /tried to open/.test(note)), [`The page tried to open ${elsewhere}/inside, which is ${NOT_GIVEN}: it was not opened, and the page stayed where it was.`]);
+    assert.deepEqual(notes.filter((note) => /tried to open/.test(note)), [
+      `A frame of the page tried to open ${elsewhere}/framed, which is ${NOT_GIVEN}: it was not opened.`,
+      `The page tried to open ${elsewhere}/inside, which is ${NOT_GIVEN}: it was not opened, and the page stayed where it was.`,
+    ]);
     assert.deepEqual(pages.map((shown) => shown.url), [`${origin}/`]);
 
     const before = snapshot(dir);
@@ -1620,10 +1637,32 @@ test("a demo opens no other address on this machine than the one it was given", 
     assert.match(refused.err, new RegExp(`^easyscreenshotkit demo: step 2 \\(visit\\): Could not open ${elsewhere}/visited: it is ${NOT_GIVEN}\\.$`, "m"));
     assert.deepEqual(snapshot(dir), before);
 
+    // A page that moves on before it has loaded is refused at once, by a
+    // visit or by a click, where the demo waited for it and failed 80 s
+    // later in a bare protocol message.
+    const visitEarly = path.join(root, "visit-early.yaml");
+    fs.writeFileSync(visitEarly, "steps:\n  - visit: /\n  - visit: /early\n");
+    const visited = await run([origin, "--steps", visitEarly, "--out", dir, "--no-gif"]);
+    assert.equal(visited.code, 1, visited.err);
+    assert.match(visited.err, new RegExp(`^easyscreenshotkit demo: step 2 \\(visit\\): ${early}$`, "m"));
+    assert.ok(visited.secs < 75, `${visited.secs} s`);
+    const clickEarly = path.join(root, "click-early.yaml");
+    fs.writeFileSync(clickEarly, 'steps:\n  - visit: /\n  - click: "text=Early access"\n    zoom: false\n  - wait: 1\n');
+    const followed = await run([origin, "--steps", clickEarly, "--out", dir, "--no-gif"]);
+    assert.equal(followed.code, 1, followed.err);
+    assert.match(followed.err, new RegExp(`^easyscreenshotkit demo: step 2 \\(click\\): ${early}$`, "m"));
+    assert.ok(followed.secs < 75, `${followed.secs} s`);
+    assert.deepEqual(snapshot(dir), before);
+
     const tour = await run([origin, "--pages", "2", "--no-gif", "--out", path.join(root, "tour")]);
     assert.equal(tour.code, 0, tour.err);
     const toured = JSON.parse(fs.readFileSync(path.join(root, "tour", "steps.json"), "utf8"));
-    assert.ok(toured.notes.includes(`Left out ${elsewhere}/pricing: ${NOT_GIVEN}.`), toured.notes.join("\n"));
+    for (const note of [
+      `Left out ${elsewhere}/pricing: ${NOT_GIVEN}.`,
+      `Left out ${origin}/features: it leads to ${elsewhere}/login, which is ${NOT_GIVEN}.`,
+    ]) {
+      assert.ok(toured.notes.includes(note), `${note}\n${toured.notes.join("\n")}`);
+    }
     assert.deepEqual(seen, []);
   } finally {
     server.close();

@@ -566,8 +566,10 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
     kept = true;
     // gone(): whether the browser ended or stopped answering in the middle
     // of the run; stalled(): whether it stopped answering. guard: set by the
-    // run, the rule for the addresses its pages may open (see address.js).
-    return { chrome: { pid: child.pid, browser, userAgent: String(version.userAgent || ""), close, watch, gone: () => lost, stalled: () => stalled, guard: null } };
+    // run, the rule for the addresses its pages may open (see address.js
+    // and guardBrowser()). owners: by its id, the tab each tab, frame of a
+    // tab and window a page opened belongs to.
+    return { chrome: { pid: child.pid, browser, userAgent: String(version.userAgent || ""), close, watch, gone: () => lost, stalled: () => stalled, guard: null, owners: new Map(), guarding: null } };
   } catch {
     // No answer in the wait, an answer that refused, or a browser that
     // ended before it answered: its pipe closes a moment before it is
@@ -689,10 +691,64 @@ function userAgentFor(device, chromeAgent) {
   return { userAgent: chromeAgent.replace("HeadlessChrome", "Chrome") };
 }
 
-// The event a tab whose page tried to open an address the run's guard
-// refuses gets (see openTab): {url, why, main}, main when it was the page
-// itself and not a frame in it.
+// The event a tab gets when a document of its own was not loaded because
+// the run's guard refuses its address (see guardBrowser()): {url, why,
+// main, window}, main when it was the page itself, window when it was a
+// window the page opened, and neither for a frame in the page.
 const BARRED = "easyscreenshotkit.addressRefused";
+
+// The rule for the addresses a run's pages may open (chrome.guard, see
+// address.js), held for every document the browser loads for them: the
+// page, each frame in it, one that runs in a process of its own too, and
+// each window a page opens, with every redirect and every move of any of
+// them. The browser asks before it sends each such request, on its own
+// connection, which sees the requests of every tab, frame and window; a
+// request the guard refuses is not sent, and the tab it belongs to is told
+// (BARRED). The kit's own tabs open files the kit made, and a page that is
+// no tab's, nor a frame or a window of one, is Chrome's own and opens what
+// is not a web address as Chrome lets it. A frame inside a frame of another
+// site can belong to no tab the kit can tell: what it opens is judged all
+// the same, and then no tab is told. A page's pictures, scripts, styles and
+// the data it fetches are not documents: the browser's own rules hold for
+// them.
+// Turned on once for a browser, when its first tab opens with the guard
+// set; timeoutMs: how long the browser has to take it.
+const QUICK = { fixed: true, watched: false };
+
+function guardBrowser(chrome, timeoutMs) {
+  if (chrome.guarding) return chrome.guarding;
+  const { browser, owners } = chrome;
+  // A frame of a tab that runs in a process of its own, and a window a
+  // page of it opens, belong to that tab.
+  const adopt = ({ targetInfo: t = {} }) => {
+    if (!t.targetId || owners.has(t.targetId)) return;
+    const from = owners.get(t.type === "page" ? t.openerId || "" : t.parentFrameId || "");
+    if (from) owners.set(t.targetId, { tab: from.tab, own: from.own, window: t.type === "page" || from.window });
+  };
+  browser.on("Target.targetCreated", adopt);
+  browser.on("Target.targetInfoChanged", adopt);
+  browser.on("Target.targetDestroyed", ({ targetId }) => {
+    const known = owners.get(targetId);
+    if (known && known.tab.targetId !== targetId) owners.delete(targetId);
+  });
+  browser.on("Fetch.requestPaused", async (p) => {
+    const go = () => void browser.send("Fetch.continueRequest", { requestId: p.requestId }, 10_000, QUICK).catch(() => {});
+    const url = String((p.request && p.request.url) || "");
+    const owner = owners.get(p.frameId);
+    if ((owner && owner.own) || (!owner && !/^https?:/i.test(url))) return go();
+    const why = chrome.guard ? await chrome.guard.refuses(url).catch(() => NOT_WEB) : "";
+    if (!why) return go();
+    // Asked again: a frame can be known by the time its address is judged.
+    const known = owners.get(p.frameId) || owner;
+    if (known && known.tab) known.tab.emit(BARRED, { url, why, main: p.frameId === known.tab.targetId, window: Boolean(known.window) });
+    browser.send("Fetch.failRequest", { requestId: p.requestId, errorReason: "Aborted" }, 10_000, QUICK).catch(() => {});
+  });
+  chrome.guarding = (async () => {
+    await browser.send("Target.setDiscoverTargets", { discover: true }, timeoutMs);
+    await browser.send("Fetch.enable", { patterns: [{ urlPattern: "*", resourceType: "Document", requestStage: "Request" }] }, timeoutMs);
+  })();
+  return chrome.guarding;
+}
 
 // A new window holding one tab, set up as the device: its screen, touch,
 // user agent and language, light or dark, and reduced motion when asked.
@@ -702,35 +758,32 @@ const BARRED = "easyscreenshotkit.addressRefused";
 // has stopped answering altogether fails it with that (see start()). own:
 // a tab for the kit's own pages (the sheet, the demo's frames), which opens
 // files the kit made; any other opens web addresses only, and with the
-// run's guard set (chrome.guard), each page and frame it loads is judged by
-// it first, a redirect and a page that moves on by itself included: one it
-// refuses is not loaded, and the tab stays where it was, as for a download.
+// run's guard set (chrome.guard) every document it loads is judged by the
+// guard first (see guardBrowser()): one it refuses is not loaded, and the
+// page stays where it was, as for a download.
 async function openTab(chrome, device, { lang = "", theme = "light", reducedMotion = false, own = false } = {}) {
   const wait = waitOf(WINDOW_MS);
   const until = Date.now() + wait.ms;
   const left = () => Math.max(1, until - Date.now());
   let cdp = null;
   let targetId = "";
+  const owners = chrome.owners || (chrome.owners = new Map());
   try {
+    if (chrome.guard) await guardBrowser(chrome, left());
     ({ targetId } = await chrome.browser.send("Target.createTarget", { url: "about:blank", newWindow: true }, left()));
     const { sessionId } = await chrome.browser.send("Target.attachToTarget", { targetId, flatten: true }, left());
     cdp = chrome.browser.session(sessionId);
     cdp.targetId = targetId;
     cdp.own = own;
     cdp.guard = own ? null : chrome.guard || null;
-    if (cdp.guard) {
-      const guard = cdp.guard;
-      const tab = cdp;
-      // An answer that does not come is found by the calls the run makes.
-      const quick = { fixed: true, watched: false };
-      cdp.on("Fetch.requestPaused", async (p) => {
-        const why = await guard.refuses(p.request.url).catch(() => NOT_WEB);
-        if (!why) return void tab.send("Fetch.continueRequest", { requestId: p.requestId }, 10_000, quick).catch(() => {});
-        tab.emit(BARRED, { url: p.request.url, why, main: p.frameId === targetId });
-        tab.send("Fetch.failRequest", { requestId: p.requestId, errorReason: "Aborted" }, 10_000, quick).catch(() => {});
-      });
-      await cdp.send("Fetch.enable", { patterns: [{ urlPattern: "*", resourceType: "Document", requestStage: "Request" }] }, left());
-    }
+    const tab = cdp;
+    owners.set(targetId, { tab, own });
+    // The tab's frames, one that runs in a process of its own too, which
+    // keeps its id as it moves there.
+    cdp.on("Page.frameAttached", ({ frameId }) => owners.set(frameId, { tab, own }));
+    cdp.on("Page.frameDetached", ({ frameId, reason }) => {
+      if (reason !== "swap" && frameId !== targetId) owners.delete(frameId);
+    });
     // A tab whose page crashed, as one killed for its memory does, answers
     // nothing more while the browser goes on: its calls fail at once, with
     // why, where each waited out its whole time limit and was called too
@@ -787,6 +840,8 @@ async function openTab(chrome, device, { lang = "", theme = "light", reducedMoti
 async function closeTab(chrome, cdp) {
   cdp.close();
   await chrome.browser.send("Target.closeTarget", { targetId: cdp.targetId }, 5_000).catch(() => {});
+  if (!chrome.owners) return;
+  for (const [id, known] of chrome.owners) if (known.tab === cdp) chrome.owners.delete(id);
 }
 
 // Opens the address and waits for its load event, at most 20 s: a page that
@@ -802,6 +857,15 @@ async function closeTab(chrome, cdp) {
 // site (see openTab), an address that is no web address is never opened,
 // and neither is one the run's guard refuses, nor one a redirect leads to:
 // refused says what it is, for a page left out over it.
+//
+// A page that moves on by itself before its load event, as a local app
+// sends a visitor who has not signed in to its sign-in server, has left
+// its own load: the browser stops reading it and draws nothing more of it.
+// When the guard refuses where it moves to, or it moves to a file the
+// browser does not download, it is refused as a redirect there is, at
+// once: waited for, it held the run 20 s for a load that never came, and
+// every capture after it failed. A move after the load event leaves the
+// page as it was, drawn, and only the tab's BARRED says so.
 const NOT_A_PAGE = "a file to download instead of a page";
 
 async function navigate(cdp, url) {
@@ -809,14 +873,45 @@ async function navigate(cdp, url) {
     const why = cdp.guard ? await cdp.guard.refuses(url) : /^https?:$/i.test(protocolOf(url)) ? "" : NOT_WEB;
     if (why) throw Object.assign(new Error(`Could not open ${url}: it is ${why}.`), { refused: why });
   }
-  let onLoad;
-  let onMove;
-  let onBarred;
   let timer;
+  const off = [];
+  const listen = (method, listener) => {
+    cdp.on(method, listener);
+    off.push(() => cdp.off(method, listener));
+  };
+  // barred: the first refusal of a document of the page itself. left: where
+  // the page went, before its load event, that it may not go.
   let barred = null;
-  const loaded = new Promise((resolve) => cdp.on("Page.loadEventFired", (onLoad = resolve)));
-  const moved = new Promise((resolve) => cdp.on("Page.navigatedWithinDocument", (onMove = resolve)));
-  cdp.on(BARRED, (onBarred = (b) => (barred = barred || (b.main ? b : null))));
+  let left = null;
+  let loadedYet = false;
+  let asked = false;
+  let leave;
+  const leaving = new Promise((resolve) => (leave = resolve));
+  const loaded = new Promise((resolve) =>
+    listen("Page.loadEventFired", () => {
+      loadedYet = true;
+      resolve();
+    }),
+  );
+  const moved = new Promise((resolve) => listen("Page.navigatedWithinDocument", resolve));
+  const goes = (where) => {
+    if (loadedYet || left) return;
+    left = where;
+    leave();
+  };
+  listen(BARRED, (b) => {
+    if (!b.main) return;
+    barred = barred || b;
+    goes(b);
+  });
+  // A download the page itself went to as it loaded. One a link with a
+  // download attribute starts leaves the page to load on, and is no move.
+  listen("Page.frameRequestedNavigation", (p) => {
+    if (p.frameId === cdp.targetId && (!p.disposition || p.disposition === "currentTab")) asked = true;
+  });
+  listen("Page.downloadWillBegin", (p) => {
+    if (p.frameId === cdp.targetId && asked) goes({ url: p.url, why: NOT_A_PAGE });
+  });
   try {
     const wait = waitOf(ANSWER_MS);
     const { errorText, loaderId, isDownload } = await cdp.send("Page.navigate", { url }, wait.ms).catch((err) => {
@@ -836,12 +931,14 @@ async function navigate(cdp, url) {
     const limit = loaderId ? Math.max(1_000, Math.min(20_000, timeLeft() - 60_000)) : 2_000;
     // A tab that crashed, or a browser that ended, fires no such event: the
     // calls that come next say which.
-    await Promise.race([loaderId ? loaded : moved, cdp.over, new Promise((resolve) => (timer = setTimeout(resolve, limit)))]);
+    await Promise.race([loaderId ? loaded : moved, leaving, cdp.over, new Promise((resolve) => (timer = setTimeout(resolve, limit)))]);
+    if (left && !loadedYet) {
+      const why = `it leads to ${left.url}, which is ${left.why}`;
+      throw Object.assign(new Error(`Could not open ${url}: ${why}.`), { refused: why });
+    }
   } finally {
     clearTimeout(timer);
-    cdp.off("Page.loadEventFired", onLoad);
-    cdp.off("Page.navigatedWithinDocument", onMove);
-    cdp.off(BARRED, onBarred);
+    for (const stop of off) stop();
   }
   const finalUrl = await currentUrl(cdp, url);
   const { result } = await cdp
@@ -945,4 +1042,4 @@ function removeProfiles(browsers) {
   }
 }
 
-module.exports = { findChrome, onPath, launch, startWait, openTab, closeTab, navigate, currentUrl, killBrowsers, removeProfiles, removeStrayLocks, removeFetchFolders, fetchFolders, roomIn, lockFolderOf, userAgentFor, CRASHED, BARRED };
+module.exports = { findChrome, onPath, launch, startWait, openTab, closeTab, guardBrowser, navigate, currentUrl, killBrowsers, removeProfiles, removeStrayLocks, removeFetchFolders, fetchFolders, roomIn, lockFolderOf, userAgentFor, CRASHED, BARRED, NOT_A_PAGE };
