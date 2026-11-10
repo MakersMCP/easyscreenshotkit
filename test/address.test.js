@@ -89,6 +89,37 @@ test("from a public address a run opens web addresses on the public internet onl
   }
 });
 
+// A name is looked up once, and a request the kit makes itself goes to an
+// address of that answer: a DNS server of the site's that answers a public
+// address first and this machine's next cannot send the request here after
+// the name was judged. Here the lookup is mocked so: the request has to go
+// to the first answer, with no second lookup.
+test("a request the kit makes itself goes to the address the name was judged by, not to a later answer of the DNS", async () => {
+  const lookup = dns.lookup;
+  const asked = [];
+  dns.lookup = (host, options, callback) => {
+    asked.push(host);
+    const address = asked.filter((name) => name === host).length === 1 ? "93.184.215.14" : "127.0.0.1";
+    process.nextTick(callback, null, [{ address, family: 4 }]);
+  };
+  try {
+    const guard = await guardFor("https://rebinding.example/");
+    assert.equal(await guard.refuses("https://rebinding.example/sitemap.xml"), "");
+    const resolve = guard.lookupFor("https://rebinding.example/sitemap.xml");
+    assert.equal(typeof resolve, "function");
+    const one = await new Promise((done, fail) => resolve("rebinding.example", {}, (err, address, family) => (err ? fail(err) : done([address, family]))));
+    assert.deepEqual(one, ["93.184.215.14", 4]);
+    const all = await new Promise((done, fail) => resolve("rebinding.example", { all: true }, (err, list) => (err ? fail(err) : done(list))));
+    assert.deepEqual(all, [{ address: "93.184.215.14", family: 4 }]);
+    assert.deepEqual(asked, ["rebinding.example"]);
+    // The host and port given on this machine are the run's own: any
+    // address of them goes.
+    assert.equal((await guardFor("http://localhost:3000/")).lookupFor("http://localhost:3000/robots.txt"), undefined);
+  } finally {
+    dns.lookup = lookup;
+  }
+});
+
 test("a file the kit reads itself is not read from an address the run does not open, nor after a redirect to one", async () => {
   const seen = [];
   const other = http.createServer((req, res) => {
