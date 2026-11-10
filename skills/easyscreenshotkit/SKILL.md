@@ -65,7 +65,7 @@ What comes back:
 
 ## When it goes wrong
 
-- An address that answers with a bot check gives no screenshots: easyscreenshotkit stops and says so. Ask the user for screenshots instead. When you gave another page or a `#/` route and only the home page fails that way, or answers an error or cannot be opened, the home page is left out with a note and the run starts at your address.
+- The page a run starts at gives no screenshots when it answers with a bot check: easyscreenshotkit stops and says so. Ask the user for screenshots instead. A `--page`, or a deeper address given above one page, that answers with one is left out with a note, and the run goes on. When you gave another page or a `#/` route and only the home page fails that way, or answers an error or cannot be opened, the home page is left out with a note and the run starts at your address.
 - Screens behind a login are not reached. Ask the user for them, or for a public page that shows the same thing.
 - If something still covers a page, run again with `--hide '<css selector>'`. Slow sites can take `--timeout 600`.
 - A run that fails or is stopped leaves the screenshots or the demo an earlier run saved in that folder as they were, and adds nothing: a new run replaces them only once it has ended well. A run whose browser is lost in the middle of it, or with a file that cannot be saved or comes out cut short on a full disk, counts as one that failed.
