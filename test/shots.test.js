@@ -2045,20 +2045,60 @@ test("a browser too busy to open a window, a page with no answer, and a browser 
 });
 
 // A sheet that cannot be drawn is no reason to lose the pages: only one that
-// was drawn and could not be saved fails the run.
+// was drawn and could not be saved fails the run. Nor is a window after the
+// first that the browser did not open in time. Each is named in the notes,
+// by the short form of the reason when the error has one, as a browser too
+// busy to open a window gives: its whole sentence tells what to do about a
+// run that failed.
 test("a sheet that cannot be drawn, for a reason that is not the disk, is named in the notes", { skip: noBrowser, timeout: 120_000 }, async () => {
   const { server, origin } = await fixture();
   const root = tempDir();
-  const dir = path.join(root, "shots");
   const preload = path.join(root, "no-sheet.js");
-  fs.writeFileSync(preload, `require(${JSON.stringify(path.resolve(__dirname, "../skills/easyscreenshotkit/scripts/lib/sheet"))}).renderSheet = async () => { throw new Error("the browser gave no picture of it"); };\n`);
+  fs.writeFileSync(
+    preload,
+    `require(${JSON.stringify(path.resolve(__dirname, "../skills/easyscreenshotkit/scripts/lib/sheet"))}).renderSheet = async () => {
+  if (process.env.NO_SHEET === "busy") throw Object.assign(new Error("The browser did not open a window in 60 s. The machine may be too busy: try again."), { reason: "the browser did not open a window in 60 s" });
+  throw new Error("the browser gave no picture of it");
+};
+`,
+  );
   try {
-    const run = await runCli([origin, "--pages", "1", "--sizes", "desktop", "--json", "--out", dir], { preload });
+    for (const [why, note] of [["plain", "the browser gave no picture of it"], ["busy", "the browser did not open a window in 60 s"]]) {
+      const dir = path.join(root, why);
+      const run = await runCli([origin, "--pages", "1", "--sizes", "desktop", "--json", "--out", dir], { preload, env: { ...process.env, NO_SHEET: why } });
+      assert.equal(run.status, 0, run.stderr);
+      const manifest = JSON.parse(run.stdout);
+      assert.equal(manifest.sheet, null);
+      assert.deepEqual(manifest.notes, [`sheet.png could not be drawn: ${note}.`]);
+      assert.deepEqual(fs.readdirSync(dir).sort(), ["01-home-desktop.png", "SCREENSHOTS.md", "manifest.json"]);
+    }
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a window after the first that the browser did not open in time is named in its page's notes, and the run goes on", { skip: noBrowser, timeout: 120_000 }, async () => {
+  const { server, origin } = await fixture();
+  const root = tempDir();
+  const dir = path.join(root, "shots");
+  const preload = path.join(root, "no-phone-window.js");
+  fs.writeFileSync(
+    preload,
+    `const chrome = require(${JSON.stringify(path.resolve(__dirname, "../skills/easyscreenshotkit/scripts/lib/chrome"))});
+const openTab = chrome.openTab;
+chrome.openTab = async (browser, device, options) => {
+  if (device.width === 360) throw Object.assign(new Error("The browser did not open a window in 60 s. The machine may be too busy: try again."), { reason: "the browser did not open a window in 60 s" });
+  return openTab(browser, device, options);
+};
+`,
+  );
+  try {
+    const run = await runCli([origin, "--pages", "1", "--sizes", "desktop,mobile", "--json", "--out", dir], { preload });
     assert.equal(run.status, 0, run.stderr);
-    const manifest = JSON.parse(run.stdout);
-    assert.equal(manifest.sheet, null);
-    assert.deepEqual(manifest.notes, ["sheet.png could not be drawn: the browser gave no picture of it."]);
-    assert.deepEqual(fs.readdirSync(dir).sort(), ["01-home-desktop.png", "SCREENSHOTS.md", "manifest.json"]);
+    const [only] = JSON.parse(run.stdout).pages;
+    assert.deepEqual(only.shots.map((shot) => shot.size), ["desktop"]);
+    assert.deepEqual(only.notes, ["mobile could not be taken: the browser did not open a window in 60 s"]);
   } finally {
     server.close();
     fs.rmSync(root, { recursive: true, force: true });
