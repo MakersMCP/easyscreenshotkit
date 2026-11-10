@@ -26,7 +26,7 @@ const path = require("path");
 const { openTab, closeTab, navigate, currentUrl } = require("./chrome");
 const { metrics, walk, waitForContent, settle, watchRequests, networkQuiet, waitForDrawn, waitForFonts, resetPictureWait, waitForPictures } = require("./page");
 const { clean } = require("./clean");
-const { readInfo } = require("./shots");
+const { readInfo, siteName } = require("./shots");
 const { routeOf, viewOf } = require("./pick");
 const { ease, clamp, moveDuration, scrollDuration, curve, pointAt } = require("./motion");
 const { lightnessOf } = require("./compose");
@@ -485,7 +485,8 @@ class Recorder {
     await this.measure();
     this.navAt = 0;
     this.url = url;
-    const page = { url, title: info.title, heading: info.heading, siteName: info.siteName, description: info.description, loaded, hidden };
+    // site: the site's name, read as a tour and the screenshots read it.
+    const page = { url, title: info.title, heading: info.heading, site: siteName(info, url), description: info.description, loaded, hidden };
     this.pages.push(page);
     return page;
   }
@@ -928,7 +929,7 @@ class Recorder {
       Object.assign(record, { end: this.now(), opened: this.url });
       // Its title, for steps.json, as a page that was opened has one.
       const title = await this.eval("document.title");
-      this.pages.push({ url: this.url, title: typeof title === "string" ? title.trim() : "", heading: "", siteName: "", description: "", loaded: true, hidden: 0 });
+      this.pages.push({ url: this.url, title: typeof title === "string" ? title.trim() : "", heading: "", site: "", description: "", loaded: true, hidden: 0 });
     }
     return record;
   }

@@ -325,36 +325,49 @@ function movedOn(asked, landed) {
 // teams" are Acme and Payments for teams.
 const titleParts = (title) => String(title || "").split(/\s+[|·•:–—-]\s+|:\s+/);
 
-// The site's name: og:site_name, else the title up to its first separator
-// ("Acme | Payments for teams" is Acme), else the first part of og:title,
-// else the host name: its first label, or the whole of an address by
-// number, with its port. A part over 40 characters is no name. The title
-// of a #route view names the view too, mostly first, so of a view it is the
-// title's last part that does not name the view: "Plants · Brightmoss" and
-// "Brightmoss · Plants" on #/plants are both Brightmoss. A part names the
-// view when it says the route's last word, or its view's own heading, the
-// first h1 outside the bars around it, where an app can put its own name.
-// The route's other words count only once its last word is named: on
-// #/acme/board, "Projects · Acme" is Acme, and on #/plant/Fern, "Brightmoss
-// · Plant · Fern" is Brightmoss. When they leave no part, they do not
-// count ("Acme · Projects" on #/acme/projects is Acme), and when the last
-// word and the heading leave none either, it is the title's last part, as
-// an app can be called what its route is: "Your plants | Plants". Before
-// all that, a part that says the site's own name is the site (see
+// The site's name: og:site_name, else a part of the title, else the first
+// part of og:title, else the host name: its first label, or the whole of an
+// address by number, with its port. A part over 40 characters is no name.
+// A title names its page or view too, before the site or after it. So the
+// part that says the site's own name is the site, when one does (see
 // ownPart): "Brightmoss · Settings" on #/settings/profile has the shape of
 // "Projects · Acme" on #/acme/board, with the site on the other side, and
-// only such a name tells the two apart.
+// only such a name tells the two apart. Else, of a page below the home
+// page, it is the first part that does not name the page, by its own
+// heading, the first h1 outside the bars around it, where a site can put
+// its own name, or by the last word of its path: "Today · Brightmoss" on
+// /app/ whose heading is Today, and "Pricing · Brightmoss" on
+// /pricing.html, are both Brightmoss. Of a home page it is the first part,
+// as "Acme | Payments for teams" is Acme. Of a #route view, whose title
+// names the view mostly first, it is the last part that does not name the
+// view: "Plants · Brightmoss" and "Brightmoss · Plants" on #/plants are
+// both Brightmoss. A part names the view when it says the route's last
+// word, or the view's own heading. The route's other words count only once
+// its last word is named: on #/acme/board, "Projects · Acme" is Acme, and
+// on #/plant/Fern, "Brightmoss · Plant · Fern" is Brightmoss. When they
+// leave no part, they do not count ("Acme · Projects" on #/acme/projects is
+// Acme), and when the last word and the heading leave none either, it is
+// the title's last part, as an app can be called what its route is: "Your
+// plants | Plants".
 function siteName(info, url) {
   if (info.siteName) return info.siteName;
   const parts = titleParts(info.title);
   let part = parts[0];
   const route = routeOf(url);
-  const own = route ? ownPart(parts, url, info.appName) : "";
+  const named = (text) => wordsOf(text).join(" ");
+  // The words that name the page: its route's, for a view, or the last
+  // part of its path, without its extension or a language in front of it.
+  // A home page has none, and its heading does not name it: a site can
+  // have its own name as the heading of its home page.
+  const words = route ? route.replace(/^#(?:\/|!\/?)/, "").split("?")[0].split("/").filter(Boolean).map(decoded).map(named) : pathWords(url);
+  const heading = route || words.length ? named(info.viewHeading || "") : "";
+  const namesPage = (text) => Boolean(named(text)) && (named(text) === words.at(-1) || named(text) === heading);
+  const own = ownPart(parts, url, info.appName, namesPage);
   if (own) part = own;
-  else if (route) {
-    const named = (text) => wordsOf(text).join(" ");
-    const words = route.replace(/^#(?:\/|!\/?)/, "").split("?")[0].split("/").filter(Boolean).map(decoded).map(named);
-    const heading = named(info.viewHeading || "");
+  else if (!route) {
+    const fewer = parts.filter((text) => !namesPage(text));
+    part = (fewer.length ? fewer : parts)[0];
+  } else {
     const last = words.length > 0 && parts.some((text) => named(text) === words.at(-1));
     const without = (view) => parts.filter((text) => !view.has(named(text)));
     const fewer = without(new Set([...(last ? [words.at(-1)] : []), heading].filter(Boolean)));
@@ -375,17 +388,32 @@ function siteName(info, url) {
 // The part of a title that says a site's own name, or "": the page's
 // application-name, or a label of the host's name, the one nearest its
 // top-level label first (acme before app in app.acme.com), told by their
-// letters and digits.
-function ownPart(parts, url, appName = "") {
+// letters and digits. A label can be the page's own name too, as on
+// plants.example/#/plants or dashboard.acme.com/#/dashboard: a part that
+// names the page (namesPage) is not taken for a label's.
+function ownPart(parts, url, appName = "", namesPage = () => false) {
   const bare = (text) => wordsOf(text).join("");
+  const app = bare(appName);
+  const declared = app && parts.find((text) => bare(text) === app);
+  if (declared) return declared;
   const { hostname } = new URL(url);
   const byNumber = /^\d+(\.\d+){3}$/.test(hostname) || hostname.startsWith("[");
   const labels = byNumber ? [] : hostname.split(".").slice(0, -1).filter((label) => label !== "www").reverse();
-  for (const name of [appName, ...labels].map(bare).filter(Boolean)) {
-    const found = parts.find((text) => bare(text) === name);
+  for (const name of labels.map(bare).filter(Boolean)) {
+    const found = parts.find((text) => bare(text) === name && !namesPage(text));
     if (found) return found;
   }
   return "";
+}
+
+// The words of the last part of a page's path, as a title would say them:
+// /pricing.html is pricing, /plans-and-pricing/ is plans and pricing, and a
+// home page, at the site's root or its language's, has none.
+function pathWords(url) {
+  const segments = new URL(url).pathname.split("/").filter(Boolean);
+  const inner = localeOf(new URL(url).pathname) ? segments.slice(1) : segments;
+  if (!inner.length) return [];
+  return [wordsOf(decoded(inner.at(-1)).replace(/\.[a-z0-9]+$/i, "")).join(" ")].filter(Boolean);
 }
 
 // A bot check served instead of the page (a CAPTCHA, "Just a moment…"). A

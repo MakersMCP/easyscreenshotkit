@@ -188,7 +188,25 @@ test("addresses, page names and the site's name", () => {
   // The study's site, served from an address by number, was named 127.
   assert.equal(siteName({ siteName: "", title: "Brightmoss: plant care that remembers for you" }, "http://127.0.0.1:18961/"), "Brightmoss");
   assert.equal(siteName({ siteName: "", title: "Acme: Payments for teams" }, home), "Acme");
-  assert.equal(siteName({ siteName: "", title: "Meet at 10:30 | Acme" }, home), "Meet at 10:30");
+  assert.equal(siteName({ siteName: "", title: "Meet at 10:30 | Acme" }, "http://127.0.0.1:18961/"), "Meet at 10:30");
+  // A page's title names the page too: the site is its first part that does
+  // not, by the page's own heading or the last word of its path. The
+  // study's app and pricing page, started at, were named Today and Pricing.
+  assert.equal(siteName({ siteName: "", title: "Today · Brightmoss", heading: "Today", viewHeading: "Today" }, "http://127.0.0.1:18961/app/"), "Brightmoss");
+  assert.equal(siteName({ siteName: "", title: "Pricing · Brightmoss", heading: "Simple pricing", viewHeading: "Simple pricing" }, "http://127.0.0.1:18961/pricing.html"), "Brightmoss");
+  assert.equal(siteName({ siteName: "", title: "Long page · Brightmoss", heading: "Long page", viewHeading: "Long page" }, "http://127.0.0.1:18961/long"), "Brightmoss");
+  assert.equal(siteName({ siteName: "", title: "Plans and pricing | Acme" }, "http://127.0.0.1:18961/tr/plans-and-pricing/"), "Acme");
+  assert.equal(siteName({ siteName: "", title: "Pricing | Acme" }, "https://acme.com/plans"), "Acme");
+  // A home page can have the site's own name as its heading: its title is
+  // taken as it was, its first part.
+  assert.equal(siteName({ siteName: "", title: "Acme | Payments for teams", heading: "Acme", viewHeading: "Acme" }, "http://127.0.0.1:18961/"), "Acme");
+  assert.equal(siteName({ siteName: "", title: "Acme | Payments for teams", heading: "Acme", viewHeading: "Acme" }, "https://acme.com/"), "Acme");
+  assert.equal(siteName({ siteName: "", title: "Acme | Payments for teams", viewHeading: "Payments for teams" }, "http://127.0.0.1:18961/tr/"), "Acme");
+  // A heading in a bar along the top, where a site can put its own name, is
+  // not the page's: only one outside the bars tells what names the page.
+  assert.equal(siteName({ siteName: "", title: "Acme | Payments for teams", heading: "Acme", viewHeading: "" }, "http://127.0.0.1:18961/"), "Acme");
+  // When every part names the page, the first.
+  assert.equal(siteName({ siteName: "", title: "Pricing" }, "http://127.0.0.1:18961/pricing"), "Pricing");
   // A title too long to be a name: og:title when it is short, then the
   // host, the whole of an address by number, with its port.
   const long = "Brightmoss plant care that remembers for you and your home";
@@ -234,6 +252,13 @@ test("addresses, page names and the site's name", () => {
   assert.equal(siteName({ siteName: "", title: "Bright Moss · Settings", appName: "Bright Moss", viewHeading: "Profile" }, "http://127.0.0.1:18971/app/#/settings/profile"), "Bright Moss");
   assert.equal(siteName({ siteName: "", title: "App | Acme" }, "https://app.acme.com/#/today"), "Acme");
   assert.equal(siteName({ siteName: "", title: "Projects · Acme" }, "https://projects.example/#/acme/board"), "Projects");
+  // A label of the host's name that is the view's own name too, by its
+  // route's last word or its heading, is the view's: these were named
+  // Plants and Dashboard.
+  assert.equal(siteName({ siteName: "", title: "Plants · Leafy", heading: "Your plants", viewHeading: "Your plants" }, "http://plants.localhost:18961/t/hdr/#/plants"), "Leafy");
+  assert.equal(siteName({ siteName: "", title: "Dashboard · Acme" }, "https://dashboard.getacme.com/#/dashboard"), "Acme");
+  // The application-name is the site's whatever the view is called.
+  assert.equal(siteName({ siteName: "", title: "Plants · Leafy", appName: "Plants", viewHeading: "Your plants" }, "http://plants.localhost:18961/#/plants"), "Plants");
   // When every part names the view, the last one: an app can be called what
   // its route is.
   assert.equal(siteName({ siteName: "", title: "Plants · Plants" }, view), "Plants");

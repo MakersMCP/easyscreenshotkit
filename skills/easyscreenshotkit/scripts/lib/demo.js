@@ -17,7 +17,7 @@
 const fs = require("fs");
 const path = require("path");
 const { launch, CRASHED } = require("./chrome");
-const { normalizeUrl, fragmentNotes } = require("./shots");
+const { normalizeUrl, fragmentNotes, siteName } = require("./shots");
 const { homeOf, siteOf, routeOf, viewKey, viewOf, pathOf, readable, printable } = require("./pick");
 const { Recorder } = require("./record");
 const { loadSteps, toYaml, targetText } = require("./steps");
@@ -407,7 +407,9 @@ async function makeDemo(rawUrl, options = {}) {
       }
       take = await recorder.finish();
       alive();
-      if (!name && take.pages[0]) name = take.pages[0].siteName || new URL(asked).hostname.replace(/^www\./, "");
+      // A steps file's demo names the site by its first page, as a tour
+      // does by the page it starts at.
+      if (!name) name = (take.pages[0] && take.pages[0].site) || siteName({ title: "" }, asked);
     } finally {
       await recorder.close();
       await chrome.close();

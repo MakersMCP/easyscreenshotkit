@@ -813,6 +813,9 @@ test("a #route in the address and in a steps file: each view opened on its route
   try {
     const { manifest } = await makeDemo(`${origin}/app/#/plants`, { dir, steps, gif: false, timeLimit: 280_000 });
     assert.equal(manifest.url, `${origin}/app/#/plants`);
+    // The site is named by its first page as a tour names it, where a demo
+    // from a steps file took the host's name, 127.0.0.1.
+    assert.equal(manifest.site, "Plants");
     assert.deepEqual(
       manifest.pages.map((p) => [p.url.slice(origin.length), p.title]),
       [
