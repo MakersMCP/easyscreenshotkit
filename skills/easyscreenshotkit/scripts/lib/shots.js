@@ -615,6 +615,12 @@ async function waitForView(tab, nav, asked, busy, started = Date.now()) {
   return state;
 }
 
+// The note on a page's version in the language asked for that was not
+// taken (what: why, after its address), as the home page was taken instead.
+function alternateNote(alternate, lang, what) {
+  return `The home page names its ${alternate.lang} version at ${alternate.href}, ${what}, and the home page was taken with ${lang} as the browser's language.`;
+}
+
 // Why a page that could not be opened is left out.
 function notOpened(err) {
   if (err.refused) return err.refused;
@@ -1157,14 +1163,27 @@ async function takeShots(rawUrl, options = {}) {
     try {
       result = await visit(chrome, start, first, firstTheme, ctx, { links: wanted > 1 });
       // The site's own page in the language asked for, when it names one.
+      // One the run does not open, or that is left out as it is opened,
+      // leaves the home page as it was taken, with a note.
       if (lang && wanted > 1 && !(spare && failure(result))) {
         const alternate = alternateFor(result.info.alternates, lang);
         if (alternate && pageKey(alternate.href) !== pageKey(result.nav.url) && siteOf(alternate.href) === siteOf(home)) {
-          log(`Opening its ${alternate.lang} version, ${alternate.href}`);
-          home = homeOf(alternate.href);
-          start = newPage(alternate.href, "home", `the home page in ${alternate.lang}`);
-          begun = Date.now();
-          result = await visit(chrome, start, first, firstTheme, ctx, { links: true });
+          const barred = chrome.guard ? await chrome.guard.refuses(alternate.href) : "";
+          if (barred) notes.push(alternateNote(alternate, lang, `which is ${barred}: it was not opened`));
+          else {
+            log(`Opening its ${alternate.lang} version, ${alternate.href}`);
+            const before = { home, start, begun };
+            home = homeOf(alternate.href);
+            start = newPage(alternate.href, "home", `the home page in ${alternate.lang}`);
+            begun = Date.now();
+            try {
+              result = await visit(chrome, start, first, firstTheme, ctx, { links: true });
+            } catch (err) {
+              if (!err.refused || chrome.gone()) throw err;
+              ({ home, start, begun } = before);
+              notes.push(alternateNote(alternate, lang, `which was left out (${err.refused})`));
+            }
+          }
         } else if (!alternate) {
           notes.push(`The home page names no ${lang} version of itself, so it was opened with ${lang} as the browser's language.`);
         }
@@ -1439,4 +1458,4 @@ function leftOut(rejected, routes, links) {
   return { skipped: all.slice(0, LEFT_OUT), routesPast: all.slice(LEFT_OUT).filter((skip) => skip.reason === ROUTE_LINK).length };
 }
 
-module.exports = { takeShots, parseSizes, addPwaShots, normalizeUrl, fragmentNotes, prepareDir, openShots, slugOf, identity, movedOn, pagesAsked, waitForView, leftOut, siteName, readInfo, readLinks, rejectAtOnce, rejectReason, notOpened, barredNote, writeMarkdown, DEVICES, MAX_HEIGHT };
+module.exports = { takeShots, parseSizes, addPwaShots, normalizeUrl, fragmentNotes, prepareDir, openShots, slugOf, identity, movedOn, pagesAsked, waitForView, leftOut, siteName, readInfo, readLinks, rejectAtOnce, rejectReason, notOpened, alternateNote, barredNote, writeMarkdown, DEVICES, MAX_HEIGHT };

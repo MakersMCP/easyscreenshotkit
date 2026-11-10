@@ -12,7 +12,7 @@
 
 const { openTab, closeTab, navigate } = require("./chrome");
 const { waitForContent, settle, walk, watchRequests } = require("./page");
-const { readInfo, readLinks, rejectAtOnce, rejectReason, slugOf, siteName, identity, pagesAsked, waitForView, notOpened } = require("./shots");
+const { readInfo, readLinks, rejectAtOnce, rejectReason, slugOf, siteName, identity, pagesAsked, waitForView, notOpened, alternateNote } = require("./shots");
 const { homeOf, pageKey, routeOf, viewKey, pathOf, readable, siteOf, rankLinks, routeLinks, visitOrder, readSiteIndex, kindOf, alternateFor } = require("./pick");
 const { TOP_COVER } = require("./record");
 const { timeLeft } = require("./time");
@@ -43,9 +43,11 @@ async function probe(chrome, url, check, ctx, { links = false } = {}) {
 }
 
 // The pages of the tour, the home page first: [{url, kind, why, title}],
-// with the ones opened and left out and why (skipped), and the #route links
-// on the home page, the address given and each --page, and the #routes the
-// sitemap lists, which the tour does not follow (routes).
+// with the ones opened and left out and why (skipped), the #route links on
+// the home page, the address given and each --page, and the #routes the
+// sitemap lists, which the tour does not follow (routes), and what else the
+// demo's notes say (notes): a version of the home page in the language
+// asked for that was not taken.
 async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = "", theme = "light", reducedMotion = false, log = () => {} } = {}) {
   const ctx = { lang, theme, reducedMotion };
   let home = homeOf(asked);
@@ -55,10 +57,15 @@ async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = 
   const asks = pagesAsked(extra, asked, home);
   log(`Opening ${home}`);
   const indexing = wanted > 1 ? readSiteIndex(new URL(home).origin, { guard: chrome.guard }).catch(() => ({ robots: null, urls: [] })) : Promise.resolve({ robots: null, urls: [] });
+  const notes = [];
   // Opens the page the tour starts at. refused: why it cannot be, in the
   // words of the pages left out. alternates: look for its version in the
-  // language asked for.
+  // language asked for. One the run does not open, or that is left out as
+  // it is opened, leaves the home page as it was taken, with a note; the
+  // home page is opened again then, as the tab may hold a page that left
+  // its own load.
   const opening = async (url, { alternates = false } = {}) => {
+    let again = false;
     const tab = await openTab(chrome, PROBE, ctx);
     try {
       await watchRequests(tab);
@@ -72,22 +79,35 @@ async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = 
       // The site's own home page in the language asked for, when it names one.
       const alternate = alternates && alternateFor(info.alternates, lang);
       if (alternate && pageKey(alternate.href) !== pageKey(nav.url) && siteOf(alternate.href) === siteOf(home)) {
-        log(`Opening its ${alternate.lang} version, ${alternate.href}`);
-        home = homeOf(alternate.href);
-        nav = await navigate(tab, alternate.href);
-        await waitForContent(tab, 20_000);
-        await settle(tab, 6_000);
-        info = await readInfo(tab);
+        const barred = chrome.guard ? await chrome.guard.refuses(alternate.href) : "";
+        if (barred) notes.push(alternateNote(alternate, lang, `which is ${barred}: it was not opened`));
+        else {
+          log(`Opening its ${alternate.lang} version, ${alternate.href}`);
+          try {
+            nav = await navigate(tab, alternate.href);
+            home = homeOf(alternate.href);
+            await waitForContent(tab, 20_000);
+            await settle(tab, 6_000);
+            info = await readInfo(tab);
+          } catch (err) {
+            if (!err.refused || chrome.gone()) throw err;
+            notes.push(alternateNote(alternate, lang, `which was left out (${err.refused})`));
+            again = true;
+          }
+        }
       }
-      let links = [];
-      if (wanted > 1) {
-        await walk(tab, 12_000);
-        links = await readLinks(tab);
+      if (!again) {
+        let links = [];
+        if (wanted > 1) {
+          await walk(tab, 12_000);
+          links = await readLinks(tab);
+        }
+        return { nav, info, links };
       }
-      return { nav, info, links };
     } finally {
       await closeTab(chrome, tab);
     }
+    return opening(url);
   };
   const skipped = [];
   // A home page the tour chose to open by itself is left out when it cannot
@@ -189,7 +209,7 @@ async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = 
   // A visitor's order: what the product is first, what it costs last.
   const [first, ...rest] = kept;
   const ordered = [first, ...rest.filter((page) => page.kind !== "pricing"), ...rest.filter((page) => page.kind === "pricing")];
-  return { pages: ordered.map(({ url, kind, why, title, slug, asked, given }) => ({ url, kind, why, title, slug, asked, given })), skipped, routes, site: siteName(info, nav.url), short };
+  return { pages: ordered.map(({ url, kind, why, title, slug, asked, given }) => ({ url, kind, why, title, slug, asked, given })), skipped, routes, notes, site: siteName(info, nav.url), short };
 }
 
 // Where a page is worth stopping on the way down: the tops of its first

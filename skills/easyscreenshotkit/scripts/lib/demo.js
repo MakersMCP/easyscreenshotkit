@@ -416,6 +416,7 @@ async function makeDemo(rawUrl, options = {}) {
         alive();
         name = tour.site;
         for (const skip of tour.skipped) notes.push(`Left out ${skip.url}: ${skip.reason}.`);
+        notes.push(...tour.notes);
         if (tour.routes.length) notes.push(routesNote(tour.routes));
         if (tour.short) notes.push(`Time ran out after ${tour.pages.length === 1 ? "1 page" : `${tour.pages.length} pages`}: a tour looks for more only while 4 minutes of the run are left; give more with --timeout.`);
       }

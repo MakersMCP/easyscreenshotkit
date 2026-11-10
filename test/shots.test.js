@@ -3004,3 +3004,47 @@ test("a page's version in another language at an address that is no web address 
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// A page's version in another language that the home page names at an
+// address the run does not open, as a site on this machine names its other
+// port, is not opened, and neither is one that leads there: the home page,
+// which answered, is taken with the language asked for, and a note says
+// why. The run failed when the home page was the address given, and dropped
+// it with a note that called the other version the home page when it was not.
+test("a page's version in another language at an address the run does not open, or that leads to one, leaves the home page taken, with a note", { skip: noBrowser, timeout: 240_000 }, async () => {
+  const seen = [];
+  const other = await serve((req, res) => {
+    seen.push(req.url);
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Acme | Werkzeuge", "<h1>Werkzeuge</h1>", { lang: "de" }));
+  });
+  const elsewhere = other.origin;
+  let alternate = "";
+  const { server, origin } = await serve((req, res) => {
+    if (req.url === "/") return res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Acme | Tools for teams", '<header><nav><a href="/pricing">Pricing</a></nav></header><h1>Acme</h1><div style="height:1400px"></div>', { head: `<link rel="alternate" hreflang="de" href="${alternate}">` }));
+    if (req.url === "/pricing") return res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(simple("Pricing"));
+    if (req.url === "/de/") return res.writeHead(302, { Location: `${elsewhere}/de/` }).end();
+    res.writeHead(404).end("not found");
+  });
+  const root = tempDir();
+  try {
+    const cases = [
+      [`${elsewhere}/de/`, `which is ${NOT_GIVEN}: it was not opened`],
+      [`${origin}/de/`, `which was left out (it leads to ${elsewhere}/de/, which is ${NOT_GIVEN})`],
+    ];
+    for (const [i, [href, what]] of cases.entries()) {
+      alternate = href;
+      const out = path.join(root, `shots-${i}`);
+      const run = await runCli([origin, "--pages", "2", "--sizes", "desktop", "--lang", "de", "--out", out]);
+      assert.equal(run.status, 0, run.stderr);
+      const manifest = JSON.parse(fs.readFileSync(path.join(out, "manifest.json"), "utf8"));
+      assert.deepEqual(manifest.pages.map((p) => p.url), [`${origin}/`, `${origin}/pricing`]);
+      assert.ok(manifest.notes.includes(`The home page names its de version at ${href}, ${what}, and the home page was taken with de as the browser's language.`), manifest.notes.join("\n"));
+      assert.equal(manifest.notes.some((note) => /was left out \(.*\), and the run started at the address given/.test(note)), false, manifest.notes.join("\n"));
+    }
+    assert.deepEqual(seen, []);
+  } finally {
+    server.close();
+    other.server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

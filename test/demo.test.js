@@ -1654,12 +1654,13 @@ test("a demo opens no other address on this machine than the one it was given", 
     assert.ok(followed.secs < 75, `${followed.secs} s`);
     assert.deepEqual(snapshot(dir), before);
 
-    const tour = await run([origin, "--pages", "2", "--no-gif", "--out", path.join(root, "tour")]);
+    const tour = await run([origin, "--pages", "2", "--lang", "de", "--no-gif", "--out", path.join(root, "tour")]);
     assert.equal(tour.code, 0, tour.err);
     const toured = JSON.parse(fs.readFileSync(path.join(root, "tour", "steps.json"), "utf8"));
     for (const note of [
       `Left out ${elsewhere}/pricing: ${NOT_GIVEN}.`,
       `Left out ${origin}/features: it leads to ${elsewhere}/login, which is ${NOT_GIVEN}.`,
+      `The home page names its de version at ${elsewhere}/de/, which is ${NOT_GIVEN}: it was not opened, and the home page was taken with de as the browser's language.`,
     ]) {
       assert.ok(toured.notes.includes(note), `${note}\n${toured.notes.join("\n")}`);
     }
