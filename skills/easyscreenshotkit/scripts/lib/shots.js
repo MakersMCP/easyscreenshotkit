@@ -890,8 +890,12 @@ function writeMarkdown(manifest, run) {
 
 // A browser that ends in the middle of a run, as a crash or a kill from
 // outside ends it, takes with it every page and window the run had still to
-// take: the run fails, and its folder stays as it was.
+// take: the run fails, and its folder stays as it was. So does one that
+// stops answering, as one that hung or was stopped does: each page and
+// window still to take would wait out its time for nothing, and the run
+// would put the few it had in place of a whole earlier run.
 const BROWSER_GONE = "The browser ended in the middle of the run (it crashed, or was killed), so no screenshots were saved.";
+const BROWSER_STALLED = "The browser stopped answering in the middle of the run, so no screenshots were saved. The machine may be too busy: try again.";
 // A tab that crashes on the first page opened leaves the run with no page.
 // On any other it costs that page or window, named in the notes.
 const TAB_CRASHED = "The browser's tab crashed in the middle of the run, so no screenshots were saved.";
@@ -949,8 +953,9 @@ async function takeShots(rawUrl, options = {}) {
   // The other devices and themes of a page kept are taken in windows of
   // their own while the next pages are being found.
   const pool = makePool(2);
+  const lostWhy = () => (chrome && chrome.gone() ? (chrome.stalled() ? BROWSER_STALLED : BROWSER_GONE) : "");
   const alive = () => {
-    if (chrome && chrome.gone()) throw new Error(BROWSER_GONE);
+    if (lostWhy()) throw new Error(lostWhy());
     if (unsaved) throw unsaved;
   };
   try {
@@ -1272,8 +1277,8 @@ async function takeShots(rawUrl, options = {}) {
     const cut = saved.find((file) => file.endsWith(".png") && !pngFileIsWhole(run.file(file)));
     if (cut) throw new Error(`${cut} came out cut short (the disk, or your disk quota, may be full), so no screenshots were saved.`);
   } catch (err) {
-    // Whatever failed first, a browser that ended is why.
-    const why = chrome && chrome.gone() ? BROWSER_GONE : err.message === CRASHED ? TAB_CRASHED : "";
+    // Whatever failed first, a browser that ended or stopped answering is why.
+    const why = lostWhy() || (err.message === CRASHED ? TAB_CRASHED : "");
     await pool.drain();
     if (chrome) await chrome.close();
     run.abort();

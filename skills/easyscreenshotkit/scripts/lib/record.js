@@ -337,8 +337,9 @@ class Recorder {
     return seconds * 1000 * (this.live ? this.live.factor : 1);
   }
 
-  // Whether nothing more can be recorded: the browser ended, or the tab
-  // crashed. No frame comes then, and the steps would go on without any.
+  // Whether nothing more can be recorded: the browser ended or stopped
+  // answering, or the tab crashed. No frame comes then, and the steps would
+  // go on without any.
   lost() {
     return Boolean(this.crashed) || this.chrome.gone();
   }

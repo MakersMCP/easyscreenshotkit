@@ -1445,24 +1445,27 @@ function browserOf(pid) {
 // The CLI in a child process, stopped with signal (to it, or to its whole
 // process group as a supervisor sends it) once stopAt(stderr, pid) says so;
 // with browser, its browser is killed instead, as a crash or an
-// out-of-memory kill ends it. profiles: those of the browsers it had going
-// then; locks: their lock folders.
+// out-of-memory kill ends it, or with browser "stop" stopped, as a browser
+// that hangs stops answering. profiles: those of the browsers it had going
+// then; locks: their lock folders; target: what the signal went to; seconds:
+// from the signal to the end of the run.
 function stopCli(args, { stopAt, signal = "SIGTERM", group = false, browser = false, env = process.env }) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [CLI, ...args], { detached: group, env });
     let stdout = "";
     let stderr = "";
-    let sent = false;
+    let sent = 0;
+    let target = 0;
     let profiles = [];
     let locks = [];
     const check = () => {
       if (sent || !stopAt(stderr, child.pid)) return;
-      const target = browser ? browserOf(child.pid) : group ? -child.pid : child.pid;
+      target = browser ? browserOf(child.pid) : group ? -child.pid : child.pid;
       if (!target) return;
-      sent = true;
+      sent = Date.now();
       profiles = profilesOf(child.pid);
       locks = profiles.map(lockOf).filter(Boolean);
-      process.kill(target, browser ? "SIGKILL" : signal);
+      process.kill(target, browser === "stop" ? "SIGSTOP" : browser ? "SIGKILL" : signal);
     };
     const timer = setInterval(check, 100);
     child.stdout.on("data", (d) => (stdout += d));
@@ -1472,7 +1475,7 @@ function stopCli(args, { stopAt, signal = "SIGTERM", group = false, browser = fa
     });
     child.on("close", (status, how) => {
       clearInterval(timer);
-      resolve({ status, signal: how, stdout, stderr, sent, profiles, locks });
+      resolve({ status, signal: how, stdout, stderr, sent: Boolean(sent), target, profiles, locks, seconds: sent ? (Date.now() - sent) / 1000 : 0 });
     });
   });
 }
@@ -1565,6 +1568,45 @@ test("a run whose browser ends in the middle of it fails, and leaves the earlier
       assert.deepEqual(snapshot(dir), before, `killed at point ${i}`);
     }
   } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A browser that stops answering in the middle of a run, as one that hangs
+// does, stopped here after the first page: every window and page after it
+// waited out its minute, the sheet a minute more past --timeout, and the run
+// ended with 0 and put its one picture in place of the earlier run's. It
+// fails within half a minute or so of the stop, its browser killed and gone
+// from the temp folder, and the earlier files stay as they were.
+test("a run whose browser stops answering in the middle of it fails, and leaves the earlier run's files as they were", { skip: noBrowser || (process.platform !== "linux" && "the browser's process is read from /proc"), timeout: 240_000 }, async () => {
+  const { server, origin } = await fixture();
+  const root = tempDir();
+  const dir = path.join(root, "shots");
+  let frozen = null;
+  try {
+    await takeShots(origin, { dir, pages: 2, sizes: "desktop", timeLimit: 100_000 });
+    const before = snapshot(dir);
+    frozen = await stopCli([origin, "--out", dir, "--pages", "3", "--sizes", "desktop,mobile", "--timeout", "120"], { stopAt: (stderr) => /^01 home {2}\/$/m.test(stderr), browser: "stop" });
+    assert.ok(frozen.sent, frozen.stderr);
+    assert.equal(frozen.status, 1, `${frozen.stdout}\n${frozen.stderr}`);
+    assert.match(frozen.stderr, /^easyscreenshotkit: The browser stopped answering in the middle of the run, so no screenshots were saved\. The machine may be too busy: try again\.$/m);
+    assert.ok(frozen.seconds < 90, `${frozen.seconds} s after the stop`);
+    assert.deepEqual(snapshot(dir), before);
+    assert.throws(() => process.kill(frozen.target, 0), { code: "ESRCH" }, "the browser is still there");
+    assert.equal(frozen.profiles.length, 1);
+    for (const left of [...frozen.profiles, ...frozen.locks]) assert.equal(fs.existsSync(left), false, left);
+  } finally {
+    // A browser the run left stopped is ended here, told by its profile.
+    if (frozen && frozen.target && frozen.profiles.length && runningWith(frozen.profiles[0]).includes(String(frozen.target))) {
+      for (const signal of ["SIGCONT", "SIGKILL"]) {
+        try {
+          process.kill(frozen.target, signal);
+        } catch {
+          // Gone.
+        }
+      }
+    }
     server.close();
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -1897,7 +1939,13 @@ test("a browser's start: one that does not answer says so and leaves nothing run
   }
 });
 
-test("a browser too busy to open a window, and a page with no answer, are said so in the time the run has left", { skip: noBrowser || (process.platform !== "linux" && "the browser's process is read from /proc"), timeout: 120_000 }, async () => {
+// A window or a page that the browser cannot give in time is said so, of a
+// browser that still answers: a stand-in that never opens a window here.
+// One that answers nothing at all, stopped as a hung browser is, has
+// stopped answering: its window fails with that, it is killed, and the run
+// takes it for lost. A window it did not open was said to be too slow, and
+// the run went on waiting out every window and page after it.
+test("a browser too busy to open a window, a page with no answer, and a browser that stops answering, are said so in the time the run has left", { skip: noBrowser || (process.platform !== "linux" && "the browser's process is read from /proc"), timeout: 120_000 }, async () => {
   const { server, origin } = await serve((req, res) => {
     if (req.url === "/hang") return;
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Acme", "<h1>Acme</h1>"));
@@ -1906,16 +1954,17 @@ test("a browser too busy to open a window, and a page with no answer, are said s
   const chrome = await launch();
   let stopped = 0;
   try {
-    // A page that does not answer.
+    // A page that does not answer, in a browser that does.
     const tab = await openTab(chrome, DEVICES.desktop);
     setTimeLimit(6_000);
     const silent = await navigate(tab, `${origin}/hang`).then(() => assert.fail("the page answered"), (err) => err);
     assert.equal(silent.message, `Could not open ${origin}/hang: no answer in 6 s. The site may be down or slow, or the machine too busy: try again, or give the run more time with --timeout.`);
     assert.equal(silent.reason, "no answer in 6 s");
+    assert.deepEqual([chrome.gone(), chrome.stalled()], [false, false]);
     setTimeLimit(60_000);
     await closeTab(chrome, tab);
-    // A browser that answers nothing, stopped as a busy machine can hold it:
-    // its main process, told by the port its profile says it took.
+    // A browser that answers nothing, stopped as a hung one is: its main
+    // process, told by the port its profile says it took.
     const port = new URL(chrome.base).port;
     const main = descendants(process.pid).find((p) => {
       const profile = (/--user-data-dir=([^\s\0]+)/.exec(p.args) || [])[1];
@@ -1930,15 +1979,53 @@ test("a browser too busy to open a window, and a page with no answer, are said s
     stopped = main.pid;
     process.kill(stopped, "SIGSTOP");
     setTimeLimit(8_000);
-    const busy = await openTab(chrome, DEVICES.desktop).then(() => assert.fail("a window opened"), (err) => err);
-    assert.equal(busy.message, "The browser did not open a window in 8 s. The machine may be too busy: try again, or give the run more time with --timeout.");
-    assert.equal(busy.reason, "the browser did not open a window in 8 s");
+    const started = Date.now();
+    const lost = await openTab(chrome, DEVICES.desktop).then(() => assert.fail("a window opened"), (err) => err);
+    assert.equal(lost.message, "The browser stopped answering.");
+    assert.deepEqual([chrome.gone(), chrome.stalled()], [true, true]);
+    assert.ok(Date.now() - started < 30_000, `${Date.now() - started} ms`);
+    // Killed, and gone once this process has heard it ended.
+    const ended = async () => {
+      for (let i = 0; i < 50; i++) {
+        try {
+          process.kill(stopped, 0);
+        } catch {
+          return true;
+        }
+        await sleep(100);
+      }
+      return false;
+    };
+    assert.ok(await ended(), "the browser is still there");
+    stopped = 0;
   } finally {
     if (stopped) process.kill(stopped, "SIGCONT");
     setTimeLimit(60_000);
     await chrome.close();
     server.close();
     server.closeAllConnections();
+  }
+  // A browser that answers, and does not open a window.
+  const stands = tempDir();
+  const before = process.env.CHROME_PATH;
+  try {
+    process.env.CHROME_PATH = standIns(stands)("windowless");
+    const standIn = await launch();
+    try {
+      setTimeLimit(3_000);
+      const busy = await openTab(standIn, DEVICES.desktop).then(() => assert.fail("a window opened"), (err) => err);
+      assert.equal(busy.message, "The browser did not open a window in 3 s. The machine may be too busy: try again, or give the run more time with --timeout.");
+      assert.equal(busy.reason, "the browser did not open a window in 3 s");
+      assert.deepEqual([standIn.gone(), standIn.stalled()], [false, false]);
+    } finally {
+      setTimeLimit(60_000);
+      await standIn.close();
+    }
+  } finally {
+    endStandIns(stands, ["windowless"]);
+    if (before === undefined) delete process.env.CHROME_PATH;
+    else process.env.CHROME_PATH = before;
+    fs.rmSync(stands, { recursive: true, force: true });
   }
   // The address given, when it does not answer: the run fails with that
   // sentence, where it printed Page.navigate timed out.

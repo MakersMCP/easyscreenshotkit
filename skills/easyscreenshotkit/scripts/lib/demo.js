@@ -200,8 +200,10 @@ function prepareDemoDir(dir, { steps = "", tour = false } = {}) {
 
 // A browser or a tab lost in the middle of a demo leaves a video that shows
 // the page standing still from that moment on, or a tour that ended early:
-// the demo fails, and an earlier one stays as it was.
+// the demo fails, and an earlier one stays as it was. So does a browser that
+// stops answering.
 const BROWSER_GONE = "The browser ended in the middle of the demo (it crashed, or was killed), so no demo was saved.";
+const BROWSER_STALLED = "The browser stopped answering in the middle of the demo, so no demo was saved. The machine may be too busy: try again.";
 const TAB_CRASHED = "The browser's tab crashed in the middle of the demo, so no demo was saved.";
 
 const round = (value, places = 3) => Math.round(value * 10 ** places) / 10 ** places;
@@ -356,7 +358,11 @@ async function makeDemo(rawUrl, options = {}) {
   let chrome = null;
   let composer = null;
   let recorder = null;
-  const lostWhy = () => ((chrome && chrome.gone()) || (composer && composer.gone()) ? BROWSER_GONE : recorder && recorder.crashed ? TAB_CRASHED : "");
+  const lostWhy = () => {
+    const lost = [chrome, composer].find((browser) => browser && browser.gone());
+    if (lost) return lost.stalled() ? BROWSER_STALLED : BROWSER_GONE;
+    return recorder && recorder.crashed ? TAB_CRASHED : "";
+  };
   const alive = () => {
     if (lostWhy()) throw new Error(lostWhy());
   };
