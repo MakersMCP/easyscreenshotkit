@@ -1067,6 +1067,13 @@ async function closeTab(chrome, cdp) {
 // one whose head sends the browser on, has stopped before its body, and is
 // refused at once too. A move after the load event leaves the page as it
 // was, drawn, and only the tab's BARRED says so.
+//
+// The tab's stopped says where a page taken as it is drawn went before its
+// load event, { url, why }, or is null: the browser stops loading a page
+// that leaves its load, so what is drawn of it is all there will be, and
+// nothing is waited for to come (see waitForContent). A page that thanks for
+// a download and sends the browser to the file from the middle of its body
+// was waited for 20 s as a loading screen, and said to be one.
 const NOT_A_PAGE = "a file to download instead of a page";
 
 // Whether a page that stopped where it was has something drawn: words or a
@@ -1089,6 +1096,7 @@ async function drawnSoFar(cdp) {
 }
 
 async function navigate(cdp, url) {
+  cdp.stopped = null;
   if (!cdp.own) {
     const why = cdp.guard ? await cdp.guard.refuses(url) : /^https?:$/i.test(protocolOf(url)) ? "" : NOT_WEB;
     if (why) throw Object.assign(new Error(`Could not open ${url}: it is ${why}.`), { refused: why });
@@ -1153,9 +1161,12 @@ async function navigate(cdp, url) {
     // A tab that crashed, or a browser that ended, fires no such event: the
     // calls that come next say which.
     await Promise.race([loaderId ? loaded : moved, leaving, cdp.over, new Promise((resolve) => (timer = setTimeout(resolve, limit)))]);
-    if (left && !loadedYet && !(left.stays && (await drawnSoFar(cdp)))) {
-      const why = `it leads to ${left.url}, which is ${left.why}`;
-      throw Object.assign(new Error(`Could not open ${url}: ${why}.`), { refused: why });
+    if (left && !loadedYet) {
+      if (!(left.stays && (await drawnSoFar(cdp)))) {
+        const why = `it leads to ${left.url}, which is ${left.why}`;
+        throw Object.assign(new Error(`Could not open ${url}: ${why}.`), { refused: why });
+      }
+      cdp.stopped = { url: left.url, why: left.why };
     }
   } finally {
     clearTimeout(timer);

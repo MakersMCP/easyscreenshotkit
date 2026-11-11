@@ -83,7 +83,11 @@ async function showsContent(cdp) {
 // one site, in a fresh browser). Wait, up to 30 s, until it shows content.
 // True once it does; false when it is still a bare loader at the limit;
 // null when it still was one as the run's time ran short, before the limit.
+// A page whose load the browser stopped, as it went to a file or to mailto:
+// before its load event (the tab's stopped, see navigate()), is as drawn as
+// it will be: true at once.
 async function waitForContent(cdp, limitMs = 30_000) {
+  if (cdp.stopped) return true;
   const started = Date.now();
   for (;;) {
     if (await showsContent(cdp)) return true;

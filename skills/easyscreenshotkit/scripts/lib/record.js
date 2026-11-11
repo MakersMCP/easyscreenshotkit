@@ -500,6 +500,7 @@ class Recorder {
       if (this.committedAt >= at) {
         while (Date.now() - began < 45_000 && !(this.loadedAt > at)) await sleep(50);
         this.navAt = 0;
+        tab.stopped = null;
         return this.ready(depth + 1);
       }
     }
@@ -587,6 +588,8 @@ class Recorder {
     const left = () => this.refusedAt > this.committedAt && this.refusal && this.refusal.left;
     while (Date.now() - started < 20_000 && !(this.loadedAt > at) && !left()) await sleep(50);
     if (!(this.loadedAt > at) && left() && !(this.refusal.stays && (await drawnSoFar(this.tab)))) throw new Error(`Could not open ${this.navUrl}: it leads to ${this.refusal.url}, which is ${this.refusal.why}.`);
+    // One taken as it is drawn is all there will be of it (see navigate()).
+    this.tab.stopped = !(this.loadedAt > at) && left() ? { url: this.refusal.url, why: this.refusal.why } : null;
     // Free to note a redirect the new page makes while it is made ready.
     this.navAt = 0;
     const page = await this.ready();

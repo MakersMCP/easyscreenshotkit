@@ -3056,6 +3056,9 @@ test("a page that moves on by itself before it has loaded, to an address the run
     if (at === "/download-link") return res.writeHead(200, html).end(page("Download link | Acme", body("Download link"), { head: '<script>const a = document.createElement("a"); a.href = "/file.bin"; a.download = "x.bin"; document.head.appendChild(a); a.click();</script>' }));
     if (at === "/thanks") return res.writeHead(200, html).end(page("Thanks | Acme", `${body("Thanks for downloading")}<script>location.href = "/file.bin";</script>`));
     if (at === "/thanks-ready") return res.writeHead(200, html).end(page("Thanks ready | Acme", body("Thanks for downloading"), { head: '<script>addEventListener("DOMContentLoaded", () => { location.href = "/file.bin"; });</script>' }));
+    // Its script before the rest of its body: what follows it is never
+    // drawn, and what was fits the screen with no link and no picture.
+    if (at === "/thanks-early") return res.writeHead(200, html).end(page("Thanks early | Acme", '<h1>Thanks for downloading</h1><p>Your download starts now.</p><script>location.href = "/file.bin";</script><div style="height:1400px;background:rgb(0,160,0)"></div>'));
     if (at === "/refresh") return res.writeHead(200, html).end(page("Refresh | Acme", body("Refresh"), { head: `<meta http-equiv="refresh" content="0; url=${elsewhere}/refresh">` }));
     if (at === "/framed") return res.writeHead(200, html).end(page("Framed | Acme", `<h1>Framed</h1><iframe src="${elsewhere}/framed"></iframe><div style="height:1400px"></div>`));
     res.writeHead(404).end("not found");
@@ -3079,6 +3082,13 @@ test("a page that moves on by itself before it has loaded, to an address the run
     assert.deepEqual(thanked.pages.map((p) => [p.slug, p.heading, p.notes]), [["thanks", "Thanks for downloading", [dropped(`${origin}/file.bin`)]]]);
     const drawn = readPng(path.join(out, thanked.pages[0].shots[0].file));
     assert.ok(near(css(drawn, 2, 800, 400), GREEN), `the page drawn: ${css(drawn, 2, 800, 400)}`);
+
+    // A page whose load the browser stopped is as drawn as it will be: it
+    // is not waited for as a loading screen, which it was for 20 s, with a
+    // note that it still showed one.
+    const early = await runCli([`${origin}/thanks-early`, "--pages", "1", "--sizes", "desktop", "--out", out], { env });
+    assert.equal(early.status, 0, early.stderr);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(out, "manifest.json"), "utf8")).pages.map((p) => [p.slug, p.notes]), [["thanks-early", [dropped(`${origin}/file.bin`)]]]);
 
     started = Date.now();
     const asks = ["/module", "/to-file", "/download-link", "/refresh", "/framed", "/thanks-ready"].flatMap((at) => ["--page", at]);
@@ -3110,8 +3120,12 @@ test("a page that moves on by itself before it has loaded, to an address the run
 // the run does not open or to a file with nothing drawn, comes at once, by
 // a visit and by a demo's click on a link to it: timed itself, where the
 // time of a whole run left room for the 20 s it waited for a load that
-// never came.
-test("a page that moves on before it has loaded is refused at once, by a visit and by a click", { skip: noBrowser, timeout: 120_000 }, async () => {
+// never came. A page drawn before it sends the browser to a file, from the
+// middle of its body, so that what was drawn fits the screen with no link
+// and no picture, is shown at once too, by a demo's visit and click: the
+// browser stopped loading it, and it was waited for 20 s as a loading
+// screen.
+test("a page that moves on before it has loaded is refused at once, by a visit and by a click", { skip: noBrowser, timeout: 180_000 }, async () => {
   setTimeLimit(300_000);
   const seen = [];
   const html = { "Content-Type": "text/html; charset=utf-8" };
@@ -3121,8 +3135,9 @@ test("a page that moves on before it has loaded is refused at once, by a visit a
   });
   const elsewhere = other.origin;
   const { server, origin } = await serve((req, res) => {
-    if (req.url === "/") return res.writeHead(200, html).end(page("Acme | Tools", '<h1>Acme</h1><p style="font-size:32px;padding:0 40px"><a href="/early">Early access</a></p><div style="height:1400px"></div>'));
+    if (req.url === "/") return res.writeHead(200, html).end(page("Acme | Tools", '<h1>Acme</h1><p style="font-size:32px;padding:0 40px"><a href="/early">Early access</a> <a href="/thanks-early">Get it</a></p><div style="height:1400px"></div>'));
     if (req.url === "/early") return res.writeHead(200, html).end(page("Early | Acme", "<h1>Early</h1>", { head: `<script>location.href = "${elsewhere}/login";</script>` }));
+    if (req.url === "/thanks-early") return res.writeHead(200, html).end(page("Thanks early | Acme", '<h1>Thanks for downloading</h1><p>Your download starts now.</p><script>location.href = "/file.bin";</script><div style="height:1400px"></div>'));
     if (req.url === "/to-file") return res.writeHead(200, html).end(page("To file | Acme", "<h1>To file</h1>", { head: '<script>location.href = "/file.bin";</script>' }));
     if (req.url === "/file.bin") return res.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Disposition": 'attachment; filename="x.bin"' }).end("bytes");
     res.writeHead(404).end("not found");
@@ -3150,6 +3165,21 @@ test("a page that moves on before it has loaded is refused at once, by a visit a
       assert.ok(Date.now() - started < 10_000, `${Date.now() - started} ms`);
     } finally {
       await recorder.close();
+    }
+    // A demo stops at a step that failed: the page drawn before it went to a
+    // file is shown by a demo of its own.
+    const shower = new Recorder(chrome, { dir: root, base: `${origin}/` });
+    await shower.open();
+    try {
+      for (const step of [{ action: "visit", url: "/thanks-early" }, { action: "click", target: { text: "Get it" }, zoom: false }]) {
+        await shower.run({ action: "visit", url: "/" });
+        const shown = Date.now();
+        await shower.run(step);
+        assert.ok(Date.now() - shown < 16_000, `${step.action}: ${Date.now() - shown} ms`);
+        assert.equal(await currentUrl(shower.tab), `${origin}/thanks-early`, step.action);
+      }
+    } finally {
+      await shower.close();
     }
     assert.deepEqual(seen, []);
   } finally {
