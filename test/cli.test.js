@@ -1163,3 +1163,50 @@ test("a run names a program by its role in that run, whatever runs before it in 
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// An ffmpeg has two minutes to say its version and as long to list its
+// encoders, as the other kits give it: on a machine too busy or short of
+// memory even one that works can take long. One that gives no answer in
+// that time stops the demo with words of its own and the advice to run it
+// again, where it had a minute for its version and was then said to have
+// been stopped as it started (SIGKILL), and 20 s for its encoders and was
+// then said to have no H.264 encoder, each with the advice to get another.
+// The stand-ins never answer, answer too late, or leave a program of their
+// own holding the output, which is not waited for; the time is cut to half
+// a second for the test.
+test("an ffmpeg has two minutes to say its version and to list its encoders, and one that gives no answer in that time is said to have given none", { skip: process.platform === "win32" && "the stand-ins are shell scripts", timeout: 60_000 }, async () => {
+  const { ffmpegReady, pickEncoder, VERSION_MS } = require("../skills/easyscreenshotkit/scripts/lib/ffmpeg");
+  assert.equal(VERSION_MS, 120_000);
+  const readme = fs.readFileSync(path.join(__dirname, "..", "README.md"), "utf8");
+  const skill = fs.readFileSync(path.join(__dirname, "..", "skills", "easyscreenshotkit", "SKILL.md"), "utf8");
+  assert.match(readme, /One that gives no answer in two minutes when asked its version or its encoders, as even one that works can on a machine too busy or short of memory, stops the demo too/);
+  assert.match(skill, /When it says ffmpeg gave no answer in two minutes when asked its version or its encoders/);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-late-"));
+  const put = (name, body) => {
+    const file = path.join(root, name, "ffmpeg");
+    fs.mkdirSync(path.dirname(file));
+    fs.writeFileSync(file, body, { mode: 0o755 });
+    return file;
+  };
+  const saved = process.env.FFMPEG_PATH;
+  const words = (file, what) => `The demo needs ffmpeg, and FFMPEG_PATH is ${file}, a program that gave no answer in 0.5 s when asked ${what}, as even one that works can on a machine too busy or short of memory. Run the demo again.`;
+  try {
+    for (const file of [put("silent", "#!/bin/sh\nexec sleep 30\n"), put("late", '#!/bin/sh\nsleep 3\necho "ffmpeg version 4.4.2"\n'), put("holding", "#!/bin/sh\nsleep 4\n")]) {
+      process.env.FFMPEG_PATH = file;
+      const began = Date.now();
+      await assert.rejects(ffmpegReady(500), { message: words(file, "its version") });
+      assert.ok(Date.now() - began < 2_500, `${file}: ${Date.now() - began} ms`);
+    }
+    // One that says its version at once and gives no list of encoders.
+    const quiet = put("quiet", '#!/bin/sh\ncase "$*" in *-version*) echo "ffmpeg version 4.4.2";; *) exec sleep 30;; esac\n');
+    process.env.FFMPEG_PATH = quiet;
+    assert.equal(await ffmpegReady(500), quiet);
+    const began = Date.now();
+    await assert.rejects(pickEncoder(quiet, 500), { message: words(quiet, "its encoders") });
+    assert.ok(Date.now() - began < 2_500, `${Date.now() - began} ms`);
+  } finally {
+    if (saved === undefined) delete process.env.FFMPEG_PATH;
+    else process.env.FFMPEG_PATH = saved;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

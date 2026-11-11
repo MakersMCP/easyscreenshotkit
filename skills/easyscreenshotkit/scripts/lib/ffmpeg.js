@@ -58,19 +58,36 @@ function findFfmpeg() {
 // that this user may run, asked its version, so that one that cannot be
 // started, or is no ffmpeg, stops the demo with what is wrong with it, where
 // it ended in the system's words, as spawn /opt/ffmpeg EACCES, or said that
-// it had no H.264 encoder.
-async function ffmpegReady() {
+// it had no H.264 encoder. It has VERSION_MS to answer, two minutes, as the
+// other kits give it, and as long again to list its encoders (see
+// pickEncoder()): on a machine too busy or short of memory even one that
+// works can take long, and one that gives no answer in that time is said to
+// have given none, with the advice to run again. It had a minute to say its
+// version and was then said to have been stopped as it started (SIGKILL),
+// and 20 s to list its encoders and was then said to have no H.264 encoder,
+// each with the advice to get another. limit: for a test.
+const VERSION_MS = 120_000;
+
+// The error for an ffmpeg, found at `place`, that gave no answer in
+// `limit` ms when asked `what`.
+function late(place, what, limit) {
+  const time = limit === VERSION_MS ? "two minutes" : `${limit / 1000} s`;
+  return new Error(`${NEEDED}, and ${programs.told(place, `a program that gave no answer in ${time} when asked ${what}, as even one that works can on a machine too busy or short of memory`, { fix: false })} Run the demo again.`);
+}
+
+async function ffmpegReady(limit = VERSION_MS) {
   const place = ffmpegPlace();
   if (!place) throw new Error(MISSING);
   if (place.problem) throw new Error(`${NEEDED}, and ${programs.told(place, place.problem)}`);
   programs.remember(place);
   let result;
   try {
-    result = await run(place.file, ["-hide_banner", "-version"], { timeout: 60_000 });
+    result = await run(place.file, ["-hide_banner", "-version"], { timeout: limit });
   } catch (err) {
     if (programs.SHORT[err.code]) throw new Error(`${NEEDED}, and ${place.file} could not be started: ${programs.SHORT[err.code]}.`);
     throw new Error(`${NEEDED}, and ${programs.told(place, programs.explain(place.file, { error: err }))}`);
   }
+  if (result.late) throw late(place, "its version", limit);
   if (!result.signal && result.code === 0 && /^ffmpeg version \S/m.test(result.stdout)) return place.file;
   // A file that is no program of this system, as a text file with no #!
   // line the shell ran to its end, is said to be what it is.
@@ -103,23 +120,34 @@ function killChildren() {
   return count;
 }
 
+// Runs ffmpeg to its end: { code, signal, stdout, stderr }, and late when
+// it was still running after `timeout` ms and was killed. One killed so is
+// not waited on for a program a wrapper script started, which can hold the
+// output open after it.
 function run(binary, args, { timeout = 600_000 } = {}) {
   return new Promise((resolve, reject) => {
     const child = track(spawn(binary, args, { stdio: ["ignore", "pipe", "pipe"] }));
     let stdout = "";
     let stderr = "";
+    let late = false;
     // With no file descriptor left for them Node makes no pipes, and the
     // error that says why comes a moment later.
     if (child.stdout) child.stdout.on("data", (d) => (stdout += d));
     if (child.stderr) child.stderr.on("data", (d) => (stderr = (stderr + d).slice(-20_000)));
-    const timer = setTimeout(() => child.kill("SIGKILL"), timeout);
+    const timer = setTimeout(() => {
+      late = true;
+      child.kill("SIGKILL");
+    }, timeout);
     child.on("error", (err) => {
       clearTimeout(timer);
       reject(err);
     });
+    child.on("exit", (code, signal) => {
+      if (late) resolve({ code, signal, stdout, stderr, late });
+    });
     child.on("close", (code, signal) => {
       clearTimeout(timer);
-      resolve({ code, signal, stdout, stderr });
+      resolve({ code, signal, stdout, stderr, ...(late ? { late } : {}) });
     });
   });
 }
@@ -224,8 +252,9 @@ function mp4Frames(file) {
 // Windows' own. No B-frames: with them the file starts two frames late
 // behind an edit list, and a tool that reads frames without it would be
 // two frames off steps.json. Without them the file is about 6% bigger.
-async function pickEncoder(binary) {
-  const { stdout } = await run(binary, ["-hide_banner", "-encoders"], { timeout: 20_000 });
+async function pickEncoder(binary, limit = VERSION_MS) {
+  const { stdout, late: slow } = await run(binary, ["-hide_banner", "-encoders"], { timeout: limit });
+  if (slow) throw late(programs.places.get(binary) || { name: "ffmpeg", file: binary, where: "", fix: "" }, "its encoders", limit);
   const has = (name) => new RegExp(`^\\s*V\\S*\\s+${name}\\s`, "m").test(stdout);
   if (has("libx264")) return { name: "libx264", args: ["-c:v", "libx264", "-preset", "medium", "-crf", "18", "-profile:v", "high", "-bf", "0"] };
   if (has("h264_videotoolbox")) return { name: "h264_videotoolbox", args: ["-c:v", "h264_videotoolbox", "-b:v", "14M", "-profile:v", "high", "-bf", "0"] };
@@ -327,4 +356,4 @@ async function makeGif(binary, video, file, { budget = 8 * 1024 * 1024, dir }) {
   }
 }
 
-module.exports = { findFfmpeg, ffmpegReady, pickEncoder, startVideo, makeGif, gifIsWhole, mp4Frames, run, killChildren, MISSING, GIF_TRIES };
+module.exports = { findFfmpeg, ffmpegReady, pickEncoder, startVideo, makeGif, gifIsWhole, mp4Frames, run, killChildren, MISSING, GIF_TRIES, VERSION_MS };
