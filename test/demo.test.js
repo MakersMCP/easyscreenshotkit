@@ -19,7 +19,7 @@ const { readSteps } = require("../skills/easyscreenshotkit/scripts/lib/steps");
 const { findChrome, launch, openTab, closeTab, navigate } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
 const { findFfmpeg, makeGif, startVideo, gifIsWhole, mp4Frames } = require("../skills/easyscreenshotkit/scripts/lib/ffmpeg");
 const { checkBackdrop } = require("../skills/easyscreenshotkit/scripts/lib/compose");
-const { readPng, pngOf, serve, near, descendants } = require("./helpers");
+const { readPng, pngOf, serve, near, descendants, relayBrowser } = require("./helpers");
 const { noBus, privateBus, fakePortal } = require("./bus");
 
 const CLI = path.resolve(__dirname, "../skills/easyscreenshotkit/scripts/easyscreenshotkit.js");
@@ -1944,6 +1944,50 @@ test("a demo checks the tab after a click on a tel: link, and not after one on a
     assert.deepEqual(cut.opened, []);
   } finally {
     await cut.close();
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// An input event on its way as the page moves on can go unanswered: Chrome
+// drops such an event with the page at times. The demo waited 30 s for the
+// answer, and its step failed in the words "Input.dispatchMouseEvent timed
+// out": a turn of the wheel as a visit's page is walked, and a press of the
+// mouse whose page moves on from inside its mousedown. It lets such a call
+// go once the page has moved on, and shows the page that came. The browser
+// behind a relay that drops each such answer (see relayBrowser()) makes the
+// moments certain: each page moves on from inside the event, and holds its
+// main thread a moment after, so the move comes ahead of the answer.
+test("a demo goes on when an input event is left unanswered as the page moves on", { skip: missing || (process.platform === "win32" && "the relay is started by a shell script"), timeout: 200_000 }, async () => {
+  const html = { "Content-Type": "text/html; charset=utf-8" };
+  const hold = "const s = Date.now(); while (Date.now() - s < 300);";
+  const tall = '<div style="height:1400px;background:rgb(0,160,0)"></div>';
+  const { server, origin } = await serve((req, res) => {
+    if (req.url === "/") return res.writeHead(200, html).end(page("Acme | Tools", `<h1>Acme</h1><p style="font-size:32px;padding:0 40px"><button onmousedown='location.replace("/pricing"); ${hold}'>Pricing</button></p>${tall}`));
+    if (req.url === "/wheel") return res.writeHead(200, html).end(page("Wheel | Acme", `<h1>Wheel</h1>${tall}<script>addEventListener("wheel", () => { location.replace("/next"); ${hold} }, { passive: false, once: true });</script>`));
+    if (req.url === "/next") return res.writeHead(200, html).end(page("Next | Acme", `<h1>Next</h1>${tall}`));
+    if (req.url === "/pricing") return res.writeHead(200, html).end(page("Pricing | Acme", `<h1>Pricing</h1>${tall}`));
+    res.writeHead(404).end("not found");
+  });
+  const root = tempDir();
+  const relay = relayBrowser(root, findChrome());
+  const steps = path.join(root, "steps.yaml");
+  fs.writeFileSync(steps, 'steps:\n  - visit: /wheel\n  - visit: /\n  - click: "text=Pricing"\n    zoom: false\n  - wait: 1\n');
+  try {
+    const run = await new Promise((resolve) => {
+      const child = spawn(process.execPath, [CLI, "demo", origin, "--steps", steps, "--no-gif", "--json", "--out", path.join(root, "demo")], { env: { ...process.env, CHROME_PATH: relay.browser } });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (d) => (stdout += d));
+      child.stderr.on("data", (d) => (stderr += d));
+      child.on("close", (status) => resolve({ status, stdout, stderr }));
+    });
+    assert.equal(run.status, 0, run.stderr);
+    assert.deepEqual(relay.dropped(), [`Input.dispatchMouseEvent mouseWheel as the page moved on to ${origin}/next`, `Input.dispatchMouseEvent mousePressed as the page moved on to ${origin}/pricing`]);
+    const { pages, steps: done } = JSON.parse(run.stdout);
+    assert.deepEqual(pages.map((p) => new URL(p.url).pathname), ["/next", "/", "/pricing"]);
+    assert.equal(done[2].opened, `${origin}/pricing`);
+  } finally {
     server.close();
     fs.rmSync(root, { recursive: true, force: true });
   }

@@ -23,7 +23,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { openTab, closeTab, navigate, drawnSoFar, currentUrl, BARRED, NOT_A_PAGE } = require("./chrome");
+const { openTab, closeTab, sendInput, navigate, drawnSoFar, currentUrl, BARRED, NOT_A_PAGE } = require("./chrome");
 const { metrics, walk, waitForContent, settle, watchRequests, networkQuiet, waitForDrawn, waitForFonts, resetPictureWait, waitForPictures } = require("./page");
 const { clean } = require("./clean");
 const { readInfo, siteName } = require("./shots");
@@ -587,7 +587,7 @@ class Recorder {
 
   // Puts the real mouse where the pointer is drawn.
   async pointer(at) {
-    await this.tab.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: at.x, y: at.y }, 3_000).catch(() => {});
+    await sendInput(this.tab, "Input.dispatchMouseEvent", { type: "mouseMoved", x: at.x, y: at.y }, 3_000).catch(() => {});
   }
 
   // Whether the page still takes input. Some versions of Chrome, 155 among
@@ -781,7 +781,7 @@ class Recorder {
     for (let i = 1; i <= steps; i++) {
       const delta = distance * ease(i / steps) - done;
       done += delta;
-      await this.tab.send("Input.dispatchMouseEvent", { type: "mouseWheel", x: this.cursor.x, y: this.cursor.y, deltaX: 0, deltaY: delta });
+      await sendInput(this.tab, "Input.dispatchMouseEvent", { type: "mouseWheel", x: this.cursor.x, y: this.cursor.y, deltaX: 0, deltaY: delta });
       const wait = started + (i / steps) * this.real(seconds) - Date.now();
       if (wait > 0) await sleep(wait);
     }
@@ -864,9 +864,9 @@ class Recorder {
 
   async press(at) {
     const event = { x: at.x, y: at.y, button: "left", clickCount: 1 };
-    await this.tab.send("Input.dispatchMouseEvent", { type: "mousePressed", ...event });
+    await sendInput(this.tab, "Input.dispatchMouseEvent", { type: "mousePressed", ...event });
     await sleep(Math.min(120, this.real(0.06)));
-    await this.tab.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...event });
+    await sendInput(this.tab, "Input.dispatchMouseEvent", { type: "mouseReleased", ...event });
   }
 
   async click(step) {
@@ -911,8 +911,8 @@ class Recorder {
       if (this.navAt) break;
       if (ch === "\n") await this.keys("Enter", false);
       else {
-        await this.tab.send("Input.dispatchKeyEvent", { type: "keyDown", key: ch, text: ch, unmodifiedText: ch });
-        await this.tab.send("Input.dispatchKeyEvent", { type: "keyUp", key: ch });
+        await sendInput(this.tab, "Input.dispatchKeyEvent", { type: "keyDown", key: ch, text: ch, unmodifiedText: ch });
+        await sendInput(this.tab, "Input.dispatchKeyEvent", { type: "keyUp", key: ch });
       }
       // A person types unevenly: a little slower after a space.
       const gap = 0.055 + ((i * 37) % 11) / 200 + (ch === " " ? 0.05 : 0);
@@ -932,17 +932,17 @@ class Recorder {
     for (const mod of parts) {
       modifiers |= MODIFIER_BITS[mod];
       const event = keyEvent(mod);
-      await this.tab.send("Input.dispatchKeyEvent", { type: "rawKeyDown", modifiers, key: event.key, code: event.code, windowsVirtualKeyCode: event.windowsVirtualKeyCode });
+      await sendInput(this.tab, "Input.dispatchKeyEvent", { type: "rawKeyDown", modifiers, key: event.key, code: event.code, windowsVirtualKeyCode: event.windowsVirtualKeyCode });
     }
     const event = keyEvent(key);
     const typed = modifiers & (MODIFIER_BITS.Control | MODIFIER_BITS.Meta | MODIFIER_BITS.Alt) ? {} : event.text ? { text: event.text, unmodifiedText: event.text } : {};
     if (show) this.take.keys.push({ t: this.now(), label: [...parts, key].map((part) => KEY_LABELS[part] || (part.length === 1 ? part.toUpperCase() : part)).join(" ") });
-    await this.tab.send("Input.dispatchKeyEvent", { type: typed.text ? "keyDown" : "rawKeyDown", modifiers, key: event.key, code: event.code, windowsVirtualKeyCode: event.windowsVirtualKeyCode, ...typed });
-    await this.tab.send("Input.dispatchKeyEvent", { type: "keyUp", modifiers, key: event.key, code: event.code, windowsVirtualKeyCode: event.windowsVirtualKeyCode });
+    await sendInput(this.tab, "Input.dispatchKeyEvent", { type: typed.text ? "keyDown" : "rawKeyDown", modifiers, key: event.key, code: event.code, windowsVirtualKeyCode: event.windowsVirtualKeyCode, ...typed });
+    await sendInput(this.tab, "Input.dispatchKeyEvent", { type: "keyUp", modifiers, key: event.key, code: event.code, windowsVirtualKeyCode: event.windowsVirtualKeyCode });
     for (const mod of parts.reverse()) {
       modifiers &= ~MODIFIER_BITS[mod];
       const up = keyEvent(mod);
-      await this.tab.send("Input.dispatchKeyEvent", { type: "keyUp", modifiers, key: up.key, code: up.code, windowsVirtualKeyCode: up.windowsVirtualKeyCode });
+      await sendInput(this.tab, "Input.dispatchKeyEvent", { type: "keyUp", modifiers, key: up.key, code: up.code, windowsVirtualKeyCode: up.windowsVirtualKeyCode });
     }
   }
 

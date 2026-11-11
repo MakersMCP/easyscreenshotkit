@@ -1,9 +1,11 @@
 "use strict";
 
-// Test helpers: a minimal PNG reader and writer and a local web server.
+// Test helpers: a minimal PNG reader and writer, a local web server and a
+// browser behind a relay of its pipe.
 
 const fs = require("node:fs");
 const http = require("node:http");
+const path = require("node:path");
 const zlib = require("node:zlib");
 
 // Minimal PNG reader for 8-bit RGB/RGBA, non-interlaced (what Chrome
@@ -139,4 +141,74 @@ function descendants(pid) {
   });
 }
 
-module.exports = { readPng, pngOf, serve, near, descendants };
+// A browser for CHROME_PATH that is the real one, `browser`, behind a relay
+// of the DevTools pipe (file descriptors 3 and 4) that drops the answer to
+// an input event under way as the page's main frame starts to move on to
+// another document, as Chrome does at times: it can drop such an event with
+// the page it was for, and then the call that sent it never hears back. A
+// tab's main frame is the target it was attached by. Returns the wrapper
+// to set CHROME_PATH to, and dropped(): what it dropped, a line each.
+function relayBrowser(root, browser) {
+  const script = path.join(root, "relay.js");
+  const log = path.join(root, "dropped.log");
+  fs.writeFileSync(
+    script,
+    `"use strict";
+const fs = require("fs");
+const { spawn } = require("child_process");
+const child = spawn(${JSON.stringify(browser)}, process.argv.slice(2), { stdio: ["ignore", "inherit", "inherit", "pipe", "pipe"] });
+const fromKit = fs.createReadStream(null, { fd: 3 });
+const toKit = fs.createWriteStream(null, { fd: 4 });
+for (const stream of [fromKit, toKit, child.stdio[3], child.stdio[4]]) stream.on("error", () => {});
+const inputs = new Map();
+const attaching = new Map();
+const mainOf = new Map();
+const dropped = new Set();
+const split = (stream, take) => {
+  let held = Buffer.alloc(0);
+  stream.on("data", (chunk) => {
+    held = Buffer.concat([held, chunk]);
+    let at;
+    while ((at = held.indexOf(0)) >= 0) {
+      const text = held.subarray(0, at).toString();
+      held = held.subarray(at + 1);
+      take(text);
+    }
+  });
+};
+split(fromKit, (text) => {
+  const msg = JSON.parse(text);
+  if (/^Input\\./.test(msg.method)) inputs.set(msg.id, { session: msg.sessionId, what: msg.method + " " + msg.params.type });
+  if (msg.method === "Target.attachToTarget") attaching.set(msg.id, msg.params.targetId);
+  child.stdio[3].write(text + "\\0");
+});
+split(child.stdio[4], (text) => {
+  const msg = JSON.parse(text);
+  if (attaching.has(msg.id)) {
+    if (msg.result && msg.result.sessionId) mainOf.set(msg.result.sessionId, attaching.get(msg.id));
+    attaching.delete(msg.id);
+  }
+  const moving = msg.method === "Page.frameRequestedNavigation" || (msg.method === "Page.frameStartedNavigating" && !/sameDocument/i.test(msg.params.navigationType || ""));
+  if (moving && msg.sessionId && msg.params.frameId === mainOf.get(msg.sessionId)) {
+    for (const [id, call] of inputs) {
+      if (call.session !== msg.sessionId || dropped.has(id)) continue;
+      dropped.add(id);
+      fs.appendFileSync(${JSON.stringify(log)}, call.what + " as the page moved on to " + msg.params.url + "\\n");
+    }
+  }
+  if (inputs.has(msg.id)) {
+    inputs.delete(msg.id);
+    if (dropped.has(msg.id)) return;
+  }
+  toKit.write(text + "\\0");
+});
+fromKit.on("end", () => child.stdio[3].end());
+child.on("exit", (code) => process.exit(code === null ? 1 : code));
+`,
+  );
+  const wrapper = path.join(root, "relayed-chrome");
+  fs.writeFileSync(wrapper, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(script)} "$@"\n`, { mode: 0o755 });
+  return { browser: wrapper, dropped: () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8").split("\n").filter(Boolean) : []) };
+}
+
+module.exports = { readPng, pngOf, serve, near, descendants, relayBrowser };

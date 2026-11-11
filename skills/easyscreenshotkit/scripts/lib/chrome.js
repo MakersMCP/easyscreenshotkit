@@ -136,7 +136,10 @@ const MESSAGE_MAX = 256 * 1024 * 1024;
 // no answer for SLOW_MS, and again when a call's time runs out, and
 // resolves to the error a call fails with when it does not, or to null; the
 // call that asked fails with that error at once. A call sent with watched
-// false is not watched.
+// false is not watched. A call sent with until, a promise, is let go of
+// once that settles before its answer came: it resolves to { unanswered:
+// true }, and its answer, should it come later, finds no one waiting (see
+// sendInput()).
 function pipeTo(child, { onClose = () => {}, watch = null } = {}) {
   // A program that could not be started has no pipe: every call fails.
   const none = { on() {}, write() {}, end() {}, destroyed: true, writable: false };
@@ -259,7 +262,7 @@ function pipeTo(child, { onClose = () => {}, watch = null } = {}) {
   child.once("exit", () => setImmediate(closeAll));
   if (output === none) closeAll();
 
-  const call = (method, params, timeoutMs, { fixed = false, watched = true } = {}, state = null) => {
+  const call = (method, params, timeoutMs, { fixed = false, watched = true, until = null } = {}, state = null) => {
     // A call on a connection that is closed, or a session that ended, would
     // get no answer and wait out its whole time limit: it fails at once.
     if (failure) return Promise.reject(new Error(failure));
@@ -288,6 +291,15 @@ function pipeTo(child, { onClose = () => {}, watch = null } = {}) {
         rej(lost || Object.assign(new Error(`${method} timed out`), { timedOut: true, cut: !fixed && limit < timeoutMs }));
       }, limit);
       pending.set(id, { resolve: res, reject: rej, timer, slow, method, session: state });
+      if (until) {
+        until.then(() => {
+          const waiter = pending.get(id);
+          if (!waiter) return;
+          pending.delete(id);
+          settle(waiter);
+          res({ unanswered: true });
+        });
+      }
       input.write(`${JSON.stringify({ id, method, params, ...(state ? { sessionId: state.id } : {}) })}\0`);
     });
   };
@@ -1010,6 +1022,12 @@ async function openTab(chrome, device, { lang = "", theme = "light", reducedMoti
     cdp.on("Page.frameDetached", ({ frameId, reason }) => {
       if (reason !== "swap" && frameId !== targetId) owners.delete(frameId);
     });
+    // The input events under way, each told when the tab's page commits
+    // another document (see sendInput()).
+    cdp.inputs = new Set();
+    cdp.on("Page.frameNavigated", ({ frame }) => {
+      if (frame && !frame.parentId) for (const moved of [...cdp.inputs]) moved();
+    });
     // A tab whose page crashed, as one killed for its memory does, answers
     // nothing more while the browser goes on: its calls fail at once, with
     // why, where each waited out its whole time limit and was called too
@@ -1085,6 +1103,35 @@ async function closeTab(chrome, cdp) {
   await chrome.browser.send("Target.closeTarget", { targetId: cdp.targetId }, 5_000).catch(() => {});
   if (!chrome.owners) return;
   for (const [id, known] of chrome.owners) if (known.tab === cdp) chrome.owners.delete(id);
+}
+
+// An input event for a tab, a turn of the wheel, a move of the mouse, a
+// press of its button or of a key (Input.dispatchMouseEvent and
+// Input.dispatchKeyEvent), which the browser answers once the page has taken
+// it. A page that moves on to another document while one is on its way can
+// leave it with no answer at all: Chrome drops it with the page, at times,
+// as when a wheel turns the moment a page leaves for another and its
+// pagehide holds it a little. Such a call waited out its whole time, 30 s,
+// and then failed the run, or the demo's step, in the words
+// "Input.dispatchMouseEvent timed out". So once the tab's page has
+// committed another document, a call still under way is waited for
+// MOVED_MS more and then let go, resolving to { unanswered: true }: the
+// page it was for is gone, and the run goes on with the one that came, as
+// after any move. A tab that has not moved waits for the answer as long as
+// before.
+const MOVED_MS = 1_000;
+
+function sendInput(tab, method, params, timeoutMs = 30_000) {
+  if (!tab.inputs) return tab.send(method, params, timeoutMs);
+  let moved;
+  const until = new Promise((resolve) => {
+    moved = () => {
+      tab.inputs.delete(moved);
+      setTimeout(resolve, MOVED_MS).unref();
+    };
+  });
+  tab.inputs.add(moved);
+  return tab.send(method, params, timeoutMs, { until }).finally(() => tab.inputs.delete(moved));
 }
 
 // Opens the address and waits for its load event, at most 20 s: a page that
@@ -1327,4 +1374,4 @@ function removeProfiles(browsers) {
   }
 }
 
-module.exports = { findChrome, browserProblem, onPath, launch, startWait, openTab, closeTab, guardBrowser, navigate, drawnSoFar, currentUrl, killBrowsers, removeProfiles, removeStrayLocks, removeFetchFolders, fetchFolders, roomIn, lockFolderOf, userAgentFor, busy, CRASHED, BARRED, NOT_A_PAGE };
+module.exports = { findChrome, browserProblem, onPath, launch, startWait, openTab, closeTab, sendInput, guardBrowser, navigate, drawnSoFar, currentUrl, killBrowsers, removeProfiles, removeStrayLocks, removeFetchFolders, fetchFolders, roomIn, lockFolderOf, userAgentFor, busy, CRASHED, BARRED, NOT_A_PAGE };

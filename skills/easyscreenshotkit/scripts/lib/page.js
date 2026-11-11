@@ -7,6 +7,7 @@
 
 const { timeLeft, sleep } = require("./time");
 const { joinScreens } = require("./png");
+const { sendInput } = require("./chrome");
 
 const STEP_PAUSE_MS = 350;
 
@@ -28,7 +29,7 @@ async function metrics(cdp) {
 }
 
 function wheel(cdp, x, y, deltaY) {
-  return cdp.send("Input.dispatchMouseEvent", { type: "mouseWheel", x, y, deltaX: 0, deltaY });
+  return sendInput(cdp, "Input.dispatchMouseEvent", { type: "mouseWheel", x, y, deltaX: 0, deltaY });
 }
 
 function scrollTo(cdp, top) {
@@ -337,9 +338,10 @@ async function waitForFonts(cdp) {
 // The pointer goes to the screen's bottom-right corner first: left where a
 // wheel turned last, it can keep a hover tooltip or a dropdown in a capture.
 async function clearHover(cdp, width, height) {
-  const moved = await cdp
-    .send("Input.dispatchMouseEvent", { type: "mouseMoved", x: Math.max(0, width - 2), y: Math.max(0, height - 2) }, 1_500)
-    .then(() => true, () => false);
+  const moved = await sendInput(cdp, "Input.dispatchMouseEvent", { type: "mouseMoved", x: Math.max(0, width - 2), y: Math.max(0, height - 2) }, 1_500).then(
+    () => true,
+    () => false,
+  );
   if (moved) await sleep(250);
 }
 

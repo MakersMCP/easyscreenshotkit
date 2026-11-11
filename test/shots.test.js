@@ -20,7 +20,7 @@ const { watchRequests, networkQuiet, showsLoadingSign, looksEmpty, waitForConten
 const { LOCATE, Recorder } = require("../skills/easyscreenshotkit/scripts/lib/record");
 const { pngText } = require("../skills/easyscreenshotkit/scripts/lib/png");
 const programs = require("../skills/easyscreenshotkit/scripts/lib/programs");
-const { readPng, serve, near, descendants } = require("./helpers");
+const { readPng, serve, near, descendants, relayBrowser } = require("./helpers");
 const { noBus, privateBus, fakePortal } = require("./bus");
 
 const CLI = path.resolve(__dirname, "../skills/easyscreenshotkit/scripts/easyscreenshotkit.js");
@@ -3337,6 +3337,45 @@ test("a page that moves on before it has loaded is refused at once, by a visit a
     await chrome.close();
     server.close();
     other.server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A turn of the wheel on its way as the page moves on can go unanswered:
+// Chrome drops such an event with the page at times, as one turned the
+// moment a page leaves for another, whose pagehide holds it a little. The
+// run waited 30 s for that answer and failed in the words
+// "Input.dispatchMouseEvent timed out". It lets the call go once the page
+// has moved on, and goes on with the page that came. The browser behind a
+// relay that drops such an answer every time (see relayBrowser()) makes the
+// moment certain: the page moves on from inside its first wheel event, and
+// holds its main thread a moment after, so the move comes ahead of the
+// answer.
+test("an input event left unanswered as the page moves on does not hold the run", { skip: noBrowser || (process.platform === "win32" && "the relay is started by a shell script"), timeout: 150_000 }, async () => {
+  const html = { "Content-Type": "text/html; charset=utf-8" };
+  const tall = '<div style="height:3000px;background:rgb(0,160,0)"></div>';
+  const { server, origin } = await serve((req, res) => {
+    if (req.url === "/") return res.writeHead(200, html).end(page("Acme | Tools", `<h1>Acme</h1>${tall}<script>addEventListener("wheel", () => { location.replace("/next"); const s = Date.now(); while (Date.now() - s < 300); }, { passive: false, once: true });</script>`));
+    if (req.url === "/next") return res.writeHead(200, html).end(page("Next | Acme", `<h1>Next</h1>${tall}`));
+    res.writeHead(404).end();
+  });
+  const root = tempDir();
+  const relay = relayBrowser(root, findChrome());
+  try {
+    const run = await new Promise((resolve) => {
+      const child = spawn(process.execPath, [CLI, `${origin}/`, "--pages", "1", "--sizes", "desktop,full", "--json", "--out", path.join(root, "shots")], { env: { ...process.env, CHROME_PATH: relay.browser } });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (d) => (stdout += d));
+      child.stderr.on("data", (d) => (stderr += d));
+      child.on("close", (status) => resolve({ status, stdout, stderr }));
+    });
+    assert.equal(run.status, 0, run.stderr);
+    assert.deepEqual(relay.dropped(), [`Input.dispatchMouseEvent mouseWheel as the page moved on to ${origin}/next`]);
+    const report = JSON.parse(run.stdout);
+    assert.deepEqual(report.pages.map((p) => p.shots.map((shot) => shot.size)), [["desktop", "full"]]);
+  } finally {
+    server.close();
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
