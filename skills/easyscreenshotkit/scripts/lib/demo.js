@@ -16,7 +16,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { launch, busy, CRASHED } = require("./chrome");
+const { launch, browserProblem, busy, CRASHED } = require("./chrome");
 const { normalizeUrl, fragmentNotes, siteName } = require("./shots");
 const { homeOf, siteOf, routeOf, viewKey, viewOf, pathOf, readable, printable } = require("./pick");
 const { Recorder } = require("./record");
@@ -24,7 +24,7 @@ const { loadSteps, toYaml, targetText } = require("./steps");
 const { pickPages, tourSteps } = require("./tour");
 const { layoutOf, LOOKS, backdropOf, checkBackdrop, renderVideo, renderStill } = require("./compose");
 const { cameraAt } = require("./motion");
-const { findFfmpeg, pickEncoder, startVideo, makeGif, MISSING } = require("./ffmpeg");
+const { ffmpegReady, pickEncoder, startVideo, makeGif } = require("./ffmpeg");
 const { tagPng, pngSize, pngFileIsWhole } = require("./png");
 const { setTimeLimit, timeLeft } = require("./time");
 const { guardFor, unresolvedError } = require("./address");
@@ -118,8 +118,9 @@ is stopped with Ctrl-C or a TERM signal leaves an earlier demo there as it
 was and adds nothing.
 
 Needs Node 22 or newer, Chrome, Chromium, Edge or Brave, and ffmpeg. Set
-CHROME_PATH or FFMPEG_PATH to pick them. The demo drives the browser over a
-pipe, so it opens no port.`;
+CHROME_PATH or FFMPEG_PATH to pick them, as a path or a name on PATH; one
+that cannot be started stops the demo before any work, with what is wrong
+with it. The demo drives the browser over a pipe, so it opens no port.`;
 
 function parseDemo(argv) {
   const options = { pages: 4, extra: [], hide: [], zoom: 1.5, frame: true, background: "", fps: 30, theme: "light", lang: "", reducedMotion: false, clean: true, gif: true, json: false, timeout: 900 };
@@ -412,8 +413,9 @@ async function makeDemo(rawUrl, options = {}) {
   const script = stepsFile ? await loadSteps(stepsFile) : null;
   const asked = normalizeUrl(rawUrl || (script && script.url) || "");
   const backdrop = backdropOf(background);
-  const ffmpeg = findFfmpeg();
-  if (!ffmpeg) throw new Error(MISSING);
+  // ffmpeg and the browser before any work: one that is not there, or that
+  // cannot be started, is named with what is wrong with it.
+  const ffmpeg = await ffmpegReady();
   const encoder = await pickEncoder(ffmpeg);
   if (!encoder) throw new Error(`${ffmpeg} has no H.264 encoder (x264, VideoToolbox, OpenH264 or Media Foundation). Install a full build of ffmpeg.`);
   // The pages the demo opens, by a step, a click or the tour, are of the
@@ -422,6 +424,8 @@ async function makeDemo(rawUrl, options = {}) {
   // before any work.
   const guard = await guardFor(asked);
   if (guard.unresolved) throw unresolvedError(asked, guard);
+  const noBrowser = browserProblem();
+  if (noBrowser) throw new Error(noBrowser);
   const target = dir || `easyscreenshotkit-demo-${siteOf(asked)}`;
   // Every file is made in the run's part folder, the frames too, and put in
   // place once the run has ended well (see outdir.js).

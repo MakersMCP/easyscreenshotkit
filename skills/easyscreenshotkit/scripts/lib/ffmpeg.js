@@ -7,19 +7,67 @@
 const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
-const { onPath } = require("./chrome");
+const programs = require("./programs");
 
 // Where package managers put it, for an agent or app whose PATH is short.
 const PLACES = ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg", "/snap/bin/ffmpeg"];
 
-function findFfmpeg() {
-  if (process.env.FFMPEG_PATH) return fs.existsSync(process.env.FFMPEG_PATH) ? process.env.FFMPEG_PATH : "";
-  const found = onPath(process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg");
-  if (found) return found;
-  return process.platform === "win32" ? "" : PLACES.find((file) => fs.existsSync(file)) || "";
+const INSTALL = "brew install ffmpeg, sudo apt install ffmpeg, winget install ffmpeg";
+const NEEDED = "The demo needs ffmpeg";
+const MISSING = `${NEEDED}, and none was found. Install it (${INSTALL}) or point FFMPEG_PATH at it.`;
+
+// How to get an ffmpeg that runs, for one FFMPEG_PATH names and for one
+// found on the machine.
+const FIX = {
+  FFMPEG_PATH: "Point FFMPEG_PATH at an ffmpeg that runs, or unset it to use the one on PATH.",
+  found: `Install ffmpeg (${INSTALL}), or point FFMPEG_PATH at one that runs.`,
+};
+
+// Where this run's ffmpeg is: { name, file, variable, value, where, fix,
+// problem } (see programs.js), or null where there is none. FFMPEG_PATH is
+// a path, taken from the folder the run starts in, or a name looked up on
+// PATH. Else the first ffmpeg on PATH this user may run, or the first thing
+// by that name there, to say what is wrong with it, and only where PATH has
+// nothing by that name, the one where a package manager puts it.
+function ffmpegPlace() {
+  const named = programs.named("FFMPEG_PATH", { name: "ffmpeg", fix: FIX.FFMPEG_PATH });
+  if (named) return named;
+  const seen = programs.lookOnPath(programs.exe("ffmpeg"));
+  const where = { name: "ffmpeg", where: "on PATH", fix: FIX.found };
+  if (seen.file || seen.other) return programs.found(seen.file || seen.other, where);
+  if (process.platform === "win32") return null;
+  const file = PLACES.find((at) => programs.runnable(at));
+  return file ? programs.found(file, { ...where, where: `in ${path.dirname(file)}` }) : null;
 }
 
-const MISSING = "The demo needs ffmpeg, and none was found. Install it (brew install ffmpeg, sudo apt install ffmpeg, winget install ffmpeg) or point FFMPEG_PATH at it.";
+function findFfmpeg() {
+  const place = ffmpegPlace();
+  return place && !place.problem ? place.file : "";
+}
+
+// The ffmpeg a demo encodes with, before any work: one that is there and
+// that this user may run, asked its version, so that one that cannot be
+// started, or is no ffmpeg, stops the demo with what is wrong with it, where
+// it ended in the system's words, as spawn /opt/ffmpeg EACCES, or said that
+// it had no H.264 encoder.
+async function ffmpegReady() {
+  const place = ffmpegPlace();
+  if (!place) throw new Error(MISSING);
+  if (place.problem) throw new Error(`${NEEDED}, and ${programs.told(place, place.problem)}`);
+  programs.remember(place);
+  let result;
+  try {
+    result = await run(place.file, ["-hide_banner", "-version"], { timeout: 60_000 });
+  } catch (err) {
+    if (programs.SHORT[err.code]) throw new Error(`${NEEDED}, and ${place.file} could not be started: ${programs.SHORT[err.code]}.`);
+    throw new Error(`${NEEDED}, and ${programs.told(place, programs.explain(place.file, { error: err }))}`);
+  }
+  if (!result.signal && result.code === 0 && /^ffmpeg version \S/m.test(result.stdout)) return place.file;
+  // A file that is no program of this system, as a text file with no #!
+  // line the shell ran to its end, is said to be what it is.
+  const what = programs.whatItIs(programs.kindOf(place.file)) || programs.explain(place.file, result, { none: 'a program that printed no "ffmpeg version" line when asked its version, so it is not ffmpeg' });
+  throw new Error(`${NEEDED}, and ${programs.told(place, what)}`);
+}
 
 // The ffmpeg processes this process has going, for a stop to kill.
 const children = new Set();
@@ -51,16 +99,18 @@ function run(binary, args, { timeout = 600_000 } = {}) {
     const child = track(spawn(binary, args, { stdio: ["ignore", "pipe", "pipe"] }));
     let stdout = "";
     let stderr = "";
-    child.stdout.on("data", (d) => (stdout += d));
-    child.stderr.on("data", (d) => (stderr = (stderr + d).slice(-20_000)));
+    // With no file descriptor left for them Node makes no pipes, and the
+    // error that says why comes a moment later.
+    if (child.stdout) child.stdout.on("data", (d) => (stdout += d));
+    if (child.stderr) child.stderr.on("data", (d) => (stderr = (stderr + d).slice(-20_000)));
     const timer = setTimeout(() => child.kill("SIGKILL"), timeout);
     child.on("error", (err) => {
       clearTimeout(timer);
       reject(err);
     });
-    child.on("close", (code) => {
+    child.on("close", (code, signal) => {
       clearTimeout(timer);
-      resolve({ code, stdout, stderr });
+      resolve({ code, signal, stdout, stderr });
     });
   });
 }
@@ -268,4 +318,4 @@ async function makeGif(binary, video, file, { budget = 8 * 1024 * 1024, dir }) {
   }
 }
 
-module.exports = { findFfmpeg, pickEncoder, startVideo, makeGif, gifIsWhole, mp4Frames, run, killChildren, MISSING, GIF_TRIES };
+module.exports = { findFfmpeg, ffmpegReady, pickEncoder, startVideo, makeGif, gifIsWhole, mp4Frames, run, killChildren, MISSING, GIF_TRIES };

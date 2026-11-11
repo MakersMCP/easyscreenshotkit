@@ -14,6 +14,7 @@ const path = require("path");
 const { spawn } = require("child_process");
 const { timeLeft, sleep } = require("./time");
 const { NOT_WEB } = require("./address");
+const programs = require("./programs");
 
 const MAC = [
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -30,36 +31,67 @@ const WINDOWS = [
   ["PROGRAMFILES", "Microsoft\\Edge\\Application\\msedge.exe"],
 ];
 
-function onPath(name) {
-  for (const dir of String(process.env.PATH || "").split(path.delimiter)) {
-    if (!dir) continue;
-    const file = path.join(dir, name);
-    try {
-      fs.accessSync(file, fs.constants.X_OK);
-      return file;
-    } catch {
-      // Not in this directory.
-    }
-  }
-  return "";
-}
+// What a run says when it finds no browser at all, and the first words of
+// what it says of one it found that is no program this user may run.
+const NO_BROWSER = "No Chrome, Chromium, Edge or Brave found";
+const MISSING = `${NO_BROWSER}. Install one, or point CHROME_PATH at its binary.`;
 
-function findChrome() {
-  if (process.env.CHROME_PATH) return fs.existsSync(process.env.CHROME_PATH) ? process.env.CHROME_PATH : "";
-  if (process.platform === "darwin") return MAC.find((file) => fs.existsSync(file)) || "";
+// How to get a browser that runs, for one CHROME_PATH names and for one
+// found on the machine.
+const FIX = {
+  CHROME_PATH: "Point CHROME_PATH at the program of a browser that runs, or unset it to use one installed on this machine.",
+  found: "Install Chrome, Chromium, Edge or Brave, or point CHROME_PATH at one that runs.",
+};
+
+// Where this run's browser is: { name, file, variable, value, where, fix,
+// problem } (see programs.js), or null where there is none. CHROME_PATH is
+// a path, taken from the folder the run starts in, or a name looked up on
+// PATH, as a shell would. Else where macOS and Windows install a browser,
+// and on Linux each of its names on PATH: the first program this user may
+// run, or else the first thing by such a name, as a folder or a file that
+// may not be run, to say what is wrong with it.
+function browserPlace() {
+  const named = programs.named("CHROME_PATH", { name: "browser", fix: FIX.CHROME_PATH });
+  if (named) return named;
+  const listed = (file) => programs.found(file, { name: path.basename(file), where: "installed on this machine", fix: FIX.found });
+  if (process.platform === "darwin") {
+    const file = MAC.find((at) => fs.existsSync(at));
+    return file ? listed(file) : null;
+  }
   if (process.platform === "win32") {
     for (const [root, rest] of WINDOWS) {
       const file = process.env[root] ? path.join(process.env[root], rest) : "";
-      if (file && fs.existsSync(file)) return file;
+      if (file && fs.existsSync(file)) return listed(file);
     }
-    return "";
+    return null;
   }
+  let other = null;
   for (const name of LINUX) {
-    const file = onPath(name);
-    if (file) return file;
+    const seen = programs.lookOnPath(name);
+    if (seen.file) return programs.found(seen.file, { name, where: "on PATH", fix: FIX.found });
+    if (!other && seen.other) other = programs.found(seen.other, { name, where: "on PATH", fix: FIX.found });
   }
-  return "";
+  return other;
 }
+
+// The browser to start, or "" where there is none this user may run.
+function findChrome() {
+  const place = browserPlace();
+  return place && !place.problem ? place.file : "";
+}
+
+// Why there is no browser to start, as a run says it before any work, or
+// "": none at all, or what CHROME_PATH or the browser found names, and what
+// keeps that from being a program this user may run, as a folder, a link
+// to nothing or a file without the permission to run it. Whether one that
+// passes starts, only starting it shows (see launch()).
+function browserProblem() {
+  const place = browserPlace();
+  if (!place) return MISSING;
+  return place.problem ? `${NO_BROWSER}: ${programs.told(place, place.problem)}` : "";
+}
+
+const onPath = programs.onPath;
 
 // What a call to a tab whose page crashed fails with.
 const CRASHED = "the browser's tab crashed";
@@ -329,10 +361,10 @@ const open = new Set();
 // written in sRGB whatever the machine's display. args: more switches for
 // this run (a demo draws its pages at a higher pixel density).
 async function launch({ lang = "", args = [] } = {}) {
-  const binary = findChrome();
-  if (!binary) {
-    throw new Error("No Chrome, Chromium, Edge or Brave found. Install one, or point CHROME_PATH at its binary.");
-  }
+  const problem = browserProblem();
+  if (problem) throw new Error(problem);
+  const place = programs.remember(browserPlace());
+  const binary = place.file;
   const name = path.basename(binary);
   // A browser whose lock has a longer name than room was left for in its
   // profile (see roomIn) does not start there: it starts again with the
@@ -341,6 +373,9 @@ async function launch({ lang = "", args = [] } = {}) {
   let tried = await start(binary, { lang, args, own: true, wait: wait.ms });
   if (tried.tooDeep && tried.own) tried = await start(binary, { lang, args, own: false, wait: wait.ms });
   if (tried.chrome) return tried.chrome;
+  // A program that could not be started, as one whose loader or a library
+  // it needs is missing, or one for another system: what is wrong with it.
+  if (tried.unstarted) throw new Error(`${name} did not start: ${tried.unstarted}`);
   if (tried.unguarded) throw new Error(`${name} was not started: it hands addresses such as mailto: to programs of this machine, and none could be put in their place, as no program may run from the temp folder, ${os.tmpdir()}. Point TMPDIR at a folder where programs may run.`);
   if (tried.refused) throw new Error(`${name} cannot be told to refuse the downloads a page starts (${tried.refused}), so it was not used: a site could save files on this machine through it. Point CHROME_PATH at another browser.`);
   if (tried.tooDeep) throw new Error(`${name} did not start: the temp folder's path, ${os.tmpdir()}, is too long for the socket it opens there. Point TMPDIR at a folder with a shorter path.`);
@@ -445,7 +480,7 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
       ...(process.getuid && process.getuid() === 0 ? ["--no-sandbox"] : []),
       "about:blank",
     ],
-    { stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"], env: { ...process.env, ...configIn(profile), ...(inProfile ? { TMPDIR: profile } : {}), ...(handlers ? { PATH: `${handlers}${path.delimiter}${process.env.PATH ?? "/usr/bin:/bin"}` } : {}) } },
+    { stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"], env: { ...process.env, ...configIn(profile), ...(inProfile ? { TMPDIR: profile } : {}), ...(handlers ? { PATH: `${handlers}${path.delimiter}${process.env.PATH ?? "/usr/bin:/bin"}` } : {}) } },
   );
   let exited = false;
   // Whether the browser ended, or its connection closed, before close()
@@ -455,11 +490,20 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
   let lost = false;
   let stalled = false;
   let closing = false;
+  // What it said last, and the error a program that could not be started
+  // at all gave: what is wrong with one that did not start.
+  let failed = null;
+  let said = "";
   child.on("exit", () => {
     exited = true;
     if (!closing) lost = true;
   });
-  child.on("error", () => (exited = true));
+  child.on("error", (err) => {
+    exited = true;
+    failed = failed || err;
+  });
+  // Read on, so the browser is never held writing to it.
+  if (child.stderr) child.stderr.on("data", (d) => (said = (said + d).slice(-8_000)));
   // lock: its lock folder, read once it answers (see lockFolderOf).
   const started = { child, profile, lock: "", fetching };
   open.add(started);
@@ -588,6 +632,10 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
   }
   // Still running, with no answer: on a busy machine, or a browser that hangs.
   const silent = !exited && !refused;
+  // A program the system could not start, or one that ended before it
+  // answered as one the system cannot run does (see programs.js), and
+  // what is wrong with it.
+  const unstarted = failed ? whyUnstarted(binary, failed) : exited && !answered ? notRun(binary, said) : "";
   // A browser that ends before it answers, as Chrome does in a temp folder
   // whose path leaves no room for its lock's socket, leaves its lock folder
   // there, empty and with no link to it in the profile, and one of its
@@ -597,7 +645,27 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
   await close();
   await sleep(300);
   fs.rmSync(profile, { recursive: true, force: true });
-  return { own: inProfile, tooDeep: removeStrayLocks(locksBefore) || deep, silent, refused };
+  return { own: inProfile, tooDeep: removeStrayLocks(locksBefore) || deep, silent, refused, unstarted };
+}
+
+// What is wrong with a browser the system could not start, from the error
+// it gave, as a sentence that ends with how to get one that runs.
+function whyUnstarted(binary, err) {
+  if (programs.SHORT[err.code]) return `${programs.SHORT[err.code]}.`;
+  const place = programs.places.get(binary) || programs.found(binary, { name: path.basename(binary), where: "", fix: FIX.found });
+  return programs.told(place, programs.explain(binary, { error: err }));
+}
+
+// What is wrong with a browser that ended before it answered, when the
+// loader or the shell said so, or when its file is no program of this
+// system, as an empty or a text file with no #! line that the shell ran to
+// nothing, or one for another system: "" for any other, as a browser that
+// crashed as it started.
+function notRun(binary, stderr) {
+  const what = programs.unrun(binary, { stderr }) || programs.whatItIs(programs.kindOf(binary));
+  if (!what) return "";
+  const place = programs.places.get(binary) || programs.found(binary, { name: path.basename(binary), where: "", fix: FIX.found });
+  return programs.told(place, what);
 }
 
 // On Linux the browser hands an address of a kind it does not open itself,
@@ -1159,4 +1227,4 @@ function removeProfiles(browsers) {
   }
 }
 
-module.exports = { findChrome, onPath, launch, startWait, openTab, closeTab, guardBrowser, navigate, drawnSoFar, currentUrl, killBrowsers, removeProfiles, removeStrayLocks, removeFetchFolders, fetchFolders, roomIn, lockFolderOf, userAgentFor, busy, CRASHED, BARRED, NOT_A_PAGE };
+module.exports = { findChrome, browserProblem, onPath, launch, startWait, openTab, closeTab, guardBrowser, navigate, drawnSoFar, currentUrl, killBrowsers, removeProfiles, removeStrayLocks, removeFetchFolders, fetchFolders, roomIn, lockFolderOf, userAgentFor, busy, CRASHED, BARRED, NOT_A_PAGE };

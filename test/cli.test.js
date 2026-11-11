@@ -874,3 +874,184 @@ test("a run's folder: refused when it holds someone else's files, and an earlier
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// A browser or an ffmpeg that cannot be started, named by CHROME_PATH or
+// FFMPEG_PATH or found first on PATH, stops a run before any work with the
+// variable or the lookup that gave it, its path, what is wrong with it and
+// how to get one that runs, leaving no out folder and nothing in the temp
+// folder: the run said only that no browser was found, or that one "did not
+// start. Try again", or ended in the system's words, as spawn /opt/ffmpeg
+// EACCES, or said that an ffmpeg that is a text file had no H.264 encoder.
+// The cases are made of this machine's own true: copies with a letter of a
+// library or of the loader it needs changed, for another processor, and
+// files that are no program at all.
+test("a browser or an ffmpeg that cannot be started stops a run before any work with its path, what is wrong with it and how to get one that runs", { skip: process.platform !== "linux" && "the files that cannot be run are Linux's", timeout: 300_000 }, async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-unstarted-"));
+  const at = (...names) => path.join(root, ...names);
+  const asRoot = process.getuid() === 0;
+  const { CHROME_PATH, FFMPEG_PATH, ...base } = process.env;
+  // A shell's true is its own: the program is the file.
+  const truth = fs.realpathSync(["/usr/bin/true", "/bin/true"].find((file) => fs.existsSync(file)));
+  const bytes = fs.readFileSync(truth);
+  const NAMES = ["chrome", "ffmpeg"];
+  // A folder for a case, with a file in it for each program.
+  const put = (name, body, mode = 0o755) => {
+    fs.mkdirSync(at(name), { recursive: true });
+    for (const program of NAMES) {
+      fs.writeFileSync(at(name, program), body);
+      fs.chmodSync(at(name, program), mode);
+    }
+  };
+  const swap = (from, to) => {
+    const i = bytes.indexOf(from, 0, "latin1");
+    const copy = Buffer.from(bytes);
+    if (i >= 0) copy.write(to, i, "latin1");
+    return i >= 0 ? copy : null;
+  };
+  const loader = (/\/lib[\w/.-]*\/ld-[\w.-]+\.so\.\d+/.exec(bytes.subarray(0, 4096).toString("latin1")) || [""])[0];
+  const libmiss = swap("libc.so.6", "libq.so.6");
+  const noloader = loader ? swap(loader, `${loader.slice(0, -1)}${loader.endsWith("9") ? "8" : "9"}`) : null;
+  if (libmiss) put("libmiss", libmiss);
+  if (noloader) put("noloader", noloader);
+  const other = { x64: [183, "ARM64 (aarch64)", "x86-64"], arm64: [62, "x86-64", "ARM64 (aarch64)"] }[process.arch];
+  if (other) {
+    const copy = Buffer.from(bytes);
+    copy.writeUInt16LE(other[0], 18);
+    put("arm", copy);
+  }
+  put("pe", Buffer.concat([Buffer.from("4d5a90000300000004000000ffff0000b800000000000000400000000000000000", "hex"), Buffer.alloc(4096)]));
+  put("macho", Buffer.concat([Buffer.from("cffaedfe07000001030000000200000000", "hex"), Buffer.alloc(4096)]));
+  put("garbage", Buffer.from("8f3a9c1e77d20b5566aa01ff3c9e2b7d10203040506070809a0b0c0d0e0f1011", "hex"));
+  put("empty", "");
+  put("text", "not a program\n");
+  put("echoes", "echo hello\n");
+  put("missing-interpreter", "#!/nonexistent/sh\n");
+  put("folder-interpreter", `#!${root}\n`);
+  fs.writeFileSync(at("readme.txt"), "a file\n", { mode: 0o644 });
+  put("locked-interpreter", `#!${at("readme.txt")}\n`);
+  put("unmarked", bytes, 0o644);
+  put("others", bytes, 0o055);
+  put("locked", bytes);
+  for (const program of NAMES) fs.mkdirSync(at("folder", program), { recursive: true });
+  for (const name of ["linkdir", "dangling", "loop"]) fs.mkdirSync(at(name));
+  for (const program of NAMES) {
+    fs.symlinkSync(at("folder", program), at("linkdir", program));
+    fs.symlinkSync(at("nowhere", program), at("dangling", program));
+    fs.symlinkSync(at("loop", `${program}-b`), at("loop", program));
+    fs.symlinkSync(at("loop", program), at("loop", `${program}-b`));
+  }
+  fs.writeFileSync(at("afile"), "x");
+  const FIX = {
+    CHROME_PATH: "Point CHROME_PATH at the program of a browser that runs, or unset it to use one installed on this machine.",
+    FFMPEG_PATH: "Point FFMPEG_PATH at an ffmpeg that runs, or unset it to use the one on PATH.",
+  };
+  // A run in a folder of its own, with a temp folder of its own: it ends with
+  // code 1 and the message, and leaves no out folder and nothing in TMPDIR.
+  let n = 0;
+  const refused = (env, args, message, { spawn: start = (a, options) => spawnSync(process.execPath, [CLI, ...a], options) } = {}) => {
+    const folder = at("runs", String(n++));
+    const tmp = path.join(folder, "tmp");
+    fs.mkdirSync(tmp, { recursive: true });
+    const r = start([...args, "--out", path.join(folder, "out")], { env: { ...base, ...env, TMPDIR: tmp }, encoding: "utf8", timeout: 120_000 });
+    const what = `${JSON.stringify(env)} ${args.join(" ")}`;
+    assert.equal(r.stderr, `${message}\n`, what);
+    assert.equal(r.status, 1, what);
+    assert.deepEqual(fs.readdirSync(folder), ["tmp"], what);
+    assert.deepEqual(fs.readdirSync(tmp), [], what);
+  };
+  const SHOTS = ["http://127.0.0.1:9/", "--pages", "1"];
+  const DEMO = ["demo", "http://127.0.0.1:9/"];
+  // Each program named by its variable: a browser for the screenshots, the
+  // first words "No Chrome, Chromium, Edge or Brave found" for what is no
+  // program this user may run and "<name> did not start" for one that did
+  // not start, and an ffmpeg for a demo, which looks at it first.
+  const named = (file, what, { started = false } = {}) => {
+    const value = (program) => (typeof file === "function" ? file(program) : file);
+    const chrome = `CHROME_PATH is ${value("chrome")}, ${what(value("chrome"), "chrome")}. ${FIX.CHROME_PATH}`;
+    refused({ CHROME_PATH: value("chrome") }, SHOTS, `easyscreenshotkit: ${started ? `${path.basename(value("chrome"))} did not start` : "No Chrome, Chromium, Edge or Brave found"}: ${chrome}`);
+    refused({ FFMPEG_PATH: value("ffmpeg") }, DEMO, `easyscreenshotkit demo: The demo needs ffmpeg, and FFMPEG_PATH is ${value("ffmpeg")}, ${what(value("ffmpeg"), "ffmpeg")}. ${FIX.FFMPEG_PATH}`);
+  };
+  try {
+    const cases = [
+      ["a program that needs a shared library the machine lacks", "libmiss", () => "a program that needs the shared library libq.so.6, which is not on this machine", true, !libmiss && "true links no libc.so.6"],
+      ["a program whose loader the machine lacks", "noloader", () => `a program that needs the loader ${loader.slice(0, -1)}${loader.endsWith("9") ? "8" : "9"}, which is not on this machine`, true, !noloader && "true names no loader"],
+      ["a program for another processor", "arm", () => (other ? `a program for ${other[1]}, which this ${other[2]} machine cannot run` : ""), true, !other && "needs an x86-64 or ARM64 machine"],
+      ["a Windows program", "pe", () => "a Windows program, which does not run on Linux", true],
+      ["a macOS program", "macho", () => "a macOS program, which does not run on Linux", true],
+      ["a file of bytes that are no program", "garbage", () => "not a program this system can run", true],
+      ["a text file with no #! line", "text", () => "a text file with no #! line, not a program", true],
+      ["a text file with no #! line that /bin/sh runs to its end", "echoes", () => "a text file with no #! line, not a program", true],
+      ["a script whose interpreter is not there", "missing-interpreter", () => "a script whose first line names /nonexistent/sh, which is not on this machine", true],
+      ["a script whose interpreter is a folder", "folder-interpreter", () => `a script whose first line names ${root}, a folder, not a program`, true],
+      ["a script whose interpreter may not be run", "locked-interpreter", () => `a script whose first line names ${at("readme.txt")}, a file this user may not run`, true, asRoot && "root may run it"],
+      ["an empty file", "empty", () => "an empty file, not a program"],
+      ["a file without the permission to run it", "unmarked", () => "a file without the permission to run it, which chmod +x gives", false, asRoot && "root may run it"],
+      ["a file only other users may run", "others", () => "a file this user may not run, as only other users have the permission to run it", false, asRoot && "root may run it"],
+      ["a folder", "folder", () => "a folder, not a program"],
+      ["a link to a folder", "linkdir", (file) => `a link to the folder ${fs.realpathSync(file)}, not to a program`],
+      ["a link to nothing", "dangling", (file) => `a link to ${path.join(at("nowhere"), path.basename(file))}, where there is no file`],
+      ["a loop of links", "loop", () => "a link in a loop of links, which leads to no file"],
+    ];
+    for (const [title, folder, what, started, skip] of cases) await t.test(title, { skip }, () => named((program) => at(folder, program), what, { started }));
+    // An ffmpeg is asked its version: one that runs and is no ffmpeg says so.
+    put("silent", "#!/bin/sh\nexit 0\n");
+    put("failing", "#!/bin/sh\necho 'something went wrong' >&2\nexit 3\n");
+    await t.test("an ffmpeg that runs and gives no version", () => {
+      refused({ FFMPEG_PATH: at("silent", "ffmpeg") }, DEMO, `easyscreenshotkit demo: The demo needs ffmpeg, and FFMPEG_PATH is ${at("silent", "ffmpeg")}, a program that printed no "ffmpeg version" line when asked its version, so it is not ffmpeg. ${FIX.FFMPEG_PATH}`);
+      refused({ FFMPEG_PATH: at("failing", "ffmpeg") }, DEMO, `easyscreenshotkit demo: The demo needs ffmpeg, and FFMPEG_PATH is ${at("failing", "ffmpeg")}, a program that failed when asked its version, with code 3: something went wrong. ${FIX.FFMPEG_PATH}`);
+    });
+    await t.test("a path through a file", () => named((program) => at("afile", program), () => `and there is no file there, as ${at("afile")} is a file, not a folder`));
+    await t.test("a path where there is nothing", () => named((program) => at("nothing", program), () => "and there is no file there"));
+    await t.test("a name that is not on PATH", () => named("no-program-by-this-name", () => "and no program by that name is on PATH"));
+    await t.test("a file in a folder this user may not enter", { skip: asRoot && "root enters any folder" }, () => {
+      fs.chmodSync(at("locked"), 0o000);
+      try {
+        named((program) => at("locked", program), () => `in ${at("locked")}, a folder this user may not enter`);
+      } finally {
+        fs.chmodSync(at("locked"), 0o755);
+      }
+    });
+    // Found on PATH, with nothing named: the first match, as a shell takes
+    // it, a folder where nothing after it runs, or a file that does not
+    // start.
+    fs.mkdirSync(at("chromes", "google-chrome"), { recursive: true });
+    fs.mkdirSync(at("broken"), { recursive: true });
+    fs.copyFileSync(at("pe", "chrome"), at("broken", "google-chrome"));
+    fs.copyFileSync(at("pe", "ffmpeg"), at("broken", "ffmpeg"));
+    const install = { chrome: "Install Chrome, Chromium, Edge or Brave, or point CHROME_PATH at one that runs.", ffmpeg: "Install ffmpeg (brew install ffmpeg, sudo apt install ffmpeg, winget install ffmpeg), or point FFMPEG_PATH at one that runs." };
+    await t.test("a PATH whose first match is a folder, with nothing after it", () => {
+      refused({ PATH: at("chromes") }, SHOTS, `easyscreenshotkit: No Chrome, Chromium, Edge or Brave found: ${at("chromes", "google-chrome")}, the google-chrome on PATH, is a folder, not a program. ${install.chrome}`);
+      refused({ PATH: at("folder") }, DEMO, `easyscreenshotkit demo: The demo needs ffmpeg, and ${at("folder", "ffmpeg")}, the ffmpeg on PATH, is a folder, not a program. ${install.ffmpeg}`);
+    });
+    await t.test("a PATH whose first match is a file that does not start", () => {
+      const PATH = `${at("broken")}${path.delimiter}${base.PATH}`;
+      refused({ PATH }, SHOTS, `easyscreenshotkit: google-chrome did not start: ${at("broken", "google-chrome")}, the google-chrome on PATH, is a Windows program, which does not run on Linux. ${install.chrome}`);
+      refused({ PATH }, DEMO, `easyscreenshotkit demo: The demo needs ffmpeg, and ${at("broken", "ffmpeg")}, the ffmpeg on PATH, is a Windows program, which does not run on Linux. ${install.ffmpeg}`);
+    });
+    // A file system mounted noexec, in a mount namespace of its own, where
+    // the run is root of a user namespace.
+    const mount = at("noexec");
+    fs.mkdirSync(mount, { recursive: true });
+    const namespaced = spawnSync("unshare", ["-rm", "sh", "-c", 'mount -t tmpfs -o noexec,size=1m tmpfs "$1"', "sh", mount], { encoding: "utf8" }).status === 0;
+    await t.test("a file on a file system mounted noexec", { skip: !namespaced && "needs unshare to mount a file system of its own" }, () => {
+      const inside = (program) => (args, options) => spawnSync("unshare", ["-rm", "sh", "-c", 'mount -t tmpfs -o noexec,size=1m tmpfs "$1" && cp "$2" "$1/$3" && chmod 755 "$1/$3" && shift 3 && exec "$@"', "sh", mount, truth, program, process.execPath, CLI, ...args], options);
+      const what = `a file on ${mount}, which is mounted noexec, so no program on it may run`;
+      refused({ CHROME_PATH: path.join(mount, "chrome") }, SHOTS, `easyscreenshotkit: No Chrome, Chromium, Edge or Brave found: CHROME_PATH is ${path.join(mount, "chrome")}, ${what}. ${FIX.CHROME_PATH}`, { spawn: inside("chrome") });
+      refused({ FFMPEG_PATH: path.join(mount, "ffmpeg") }, DEMO, `easyscreenshotkit demo: The demo needs ffmpeg, and FFMPEG_PATH is ${path.join(mount, "ffmpeg")}, ${what}. ${FIX.FFMPEG_PATH}`, { spawn: inside("ffmpeg") });
+    });
+    // With no file descriptor left for the pipes of the program it starts:
+    // a node that holds all it may but three.
+    const { findChrome } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
+    const { findFfmpeg } = require("../skills/easyscreenshotkit/scripts/lib/ffmpeg");
+    await t.test("no file descriptor left to start a program with", { skip: !(findChrome() && findFfmpeg()) && "needs a browser and ffmpeg on this machine" }, () => {
+      const hold = at("hold-fds.js");
+      fs.writeFileSync(hold, 'const fs = require("node:fs");\nconst held = [];\ntry {\n  for (;;) held.push(fs.openSync(__filename, "r"));\n} catch {}\nfor (let i = 0; i < 3; i++) fs.closeSync(held.pop());\n');
+      const limited = (args, options) => spawnSync("sh", ["-c", 'ulimit -n 256 && exec "$@"', "sh", process.execPath, "-r", hold, CLI, ...args], options);
+      const short = "this process has as many files open as it may (too many open files). Raise that limit, as ulimit -n does, and run again.";
+      refused({ CHROME_PATH: findChrome() }, SHOTS, `easyscreenshotkit: ${path.basename(findChrome())} did not start: ${short}`, { spawn: limited });
+      refused({ FFMPEG_PATH: findFfmpeg() }, DEMO, `easyscreenshotkit demo: The demo needs ffmpeg, and ${findFfmpeg()} could not be started: ${short}`, { spawn: limited });
+    });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

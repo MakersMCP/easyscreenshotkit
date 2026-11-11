@@ -22,7 +22,7 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
-const { launch, openTab, closeTab, navigate, currentUrl, CRASHED, BARRED } = require("./chrome");
+const { launch, browserProblem, openTab, closeTab, navigate, currentUrl, CRASHED, BARRED } = require("./chrome");
 const { AROUND, metrics, scrollTo, walk, showsContent, waitForContent, settle, watchRequests, networkQuiet, waitForDrawn, showsLoadingSign, looksEmpty, waitForFonts, clearHover, resetPictureWait, capture, captureScreen, capturePage } = require("./page");
 const { clean } = require("./clean");
 const { homeOf, pageKey, routeOf, viewKey, pathOf, pageUrl, anchorOf, siteOf, fold, wordsOf, kindOf, rankLinks, routeLinks, visitOrder, readSiteIndex, indexNotes, localeOf, alternateFor, oneLine, ROUTE_LINK } = require("./pick");
@@ -1065,6 +1065,10 @@ async function takeShots(rawUrl, options = {}) {
   // work.
   const guard = await guardFor(asked);
   if (guard.unresolved) throw unresolvedError(asked, guard);
+  // The browser before any work: one that is not there, or that is no
+  // program this user may run, is named with what is wrong with it.
+  const noBrowser = browserProblem();
+  if (noBrowser) throw new Error(noBrowser);
   const target = dir || `easyscreenshotkit-${siteOf(asked)}`;
   // Every file is made in the run's part folder and put in place once the
   // run has ended well (see outdir.js).
