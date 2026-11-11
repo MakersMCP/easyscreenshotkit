@@ -382,7 +382,7 @@ async function launch({ lang = "", args = [] } = {}) {
   // A program that could not be started, as one whose loader or a library
   // it needs is missing, or one for another system: what is wrong with it.
   if (tried.unstarted) throw new Error(`${name} did not start: ${tried.unstarted}`);
-  if (tried.unguarded) throw new Error(`${name} was not started: it hands addresses such as mailto: to programs of this machine, and none could be put in their place, as no program may run from the temp folder, ${os.tmpdir()}. Point TMPDIR at a folder where programs may run.`);
+  if (tried.unguarded) throw new Error(`${name} was not started: it hands addresses such as mailto: to programs of this machine, and none could be put in their place, as ${tried.unguarded}.`);
   if (tried.refused) throw new Error(`${name} cannot be told to refuse the downloads a page starts (${tried.refused}), so it was not used: a site could save files on this machine through it. Point CHROME_PATH at another browser.`);
   if (tried.tooDeep) throw new Error(`${name} did not start: the temp folder's path, ${os.tmpdir()}, is too long for the socket it opens there. Point TMPDIR at a folder with a shorter path.`);
   const free = freeInTemp();
@@ -447,10 +447,10 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-chrome-"));
   // No program of the machine opens what the browser hands out (see
   // standIns): a browser that could not be kept from it is not started.
-  const handlers = process.platform === "linux" ? standIns(profile) : "";
-  if (handlers === null) {
+  const apart = process.platform === "linux" ? standIns(profile) : {};
+  if (apart.problem) {
     fs.rmSync(profile, { recursive: true, force: true });
-    return { unguarded: true };
+    return { unguarded: apart.problem };
   }
   const inProfile = own && process.platform === "linux" && roomIn(profile);
   const locksBefore = lockFolders();
@@ -486,7 +486,7 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
       ...(process.getuid && process.getuid() === 0 ? ["--no-sandbox"] : []),
       "about:blank",
     ],
-    { stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"], env: { ...process.env, ...configIn(profile), ...(inProfile ? { TMPDIR: profile } : {}), ...(handlers ? { PATH: `${handlers}${path.delimiter}${process.env.PATH ?? "/usr/bin:/bin"}` } : {}) } },
+    { stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"], env: browserEnv({ ...configIn(profile), ...(inProfile ? { TMPDIR: profile } : {}), ...apart }) },
   );
   let exited = false;
   // Whether the browser ended, or its connection closed, before close()
@@ -674,20 +674,41 @@ function notRun(binary, stderr) {
   return programs.told(place, what);
 }
 
+// The browser's environment: the run's, with more (see configIn and
+// standIns). On Linux it has no display either, as it draws headless: the
+// desktop's display, X11's or Wayland's, is a way to the desktop too.
+function browserEnv(more) {
+  const env = { ...process.env, ...more };
+  if (process.platform === "linux") {
+    delete env.DISPLAY;
+    delete env.WAYLAND_DISPLAY;
+  }
+  return env;
+}
+
 // On Linux the browser hands an address of a kind it does not open itself,
-// mailto:, news: or snews:, to a program of the machine without asking, by
-// starting xdg-email or xdg-open by its name through PATH: a page that went
-// to mailto: as it loaded opened the user's own mail program with the site's
-// message in it, and on a service that runs the kit for many people started
-// xdg-open there. Programs of those names that start nothing come first on
-// the browser's PATH, links to true in a folder of its profile, or scripts
-// that exit at once where there is no true; the rest of PATH stays as it
-// was. Returns that folder, or null when no program in it may run, as on a
-// temp folder mounted noexec with no true to link to.
+// mailto:, news: or snews:, to a program of the machine without asking. On
+// a desktop it asks the desktop's portal (org.freedesktop.portal.OpenURI)
+// over the session bus, and the portal starts the user's own mail program
+// with what the site wrote in the address; with no portal to ask, it starts
+// xdg-email or xdg-open by its name through PATH, which did the same, and
+// on a service that runs the kit for many people started xdg-open there.
+// So the browser starts with a session bus where nothing listens, a socket
+// in its profile that is never made (unset, a bus can be looked for in
+// XDG_RUNTIME_DIR, where the desktop's is, as libdbus does), with no
+// display (see browserEnv), and with programs of those names that start
+// nothing first on its PATH: links to true in a folder of its profile, or
+// scripts that exit at once where there is no true. The rest of PATH stays
+// as it was. Returns the browser's PATH and bus, once each of those names
+// on that PATH leads to its stand-in, or { problem }: why it cannot, as no
+// program may run from the temp folder (one mounted noexec, with no true
+// to link to), or the temp folder's path has in it the character that
+// parts the folders of PATH, which led the browser to the real programs.
 const HANDED_TO = ["xdg-open", "xdg-email", "x-www-browser", "www-browser", "sensible-browser"];
 
 function standIns(profile) {
-  const dir = path.join(profile, "easyscreenshotkit-handlers");
+  const dir = path.resolve(profile, "easyscreenshotkit-handlers");
+  const PATH = `${dir}${path.delimiter}${process.env.PATH ?? "/usr/bin:/bin"}`;
   const runs = (file) => {
     try {
       fs.accessSync(file, fs.constants.X_OK);
@@ -704,11 +725,20 @@ function standIns(profile) {
       if (truth) fs.symlinkSync(truth, at);
       else fs.writeFileSync(at, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
     }
-    return HANDED_TO.every((name) => runs(path.join(dir, name))) ? dir : null;
   } catch {
-    return null;
+    // Said below: the names do not lead to stand-ins.
   }
+  if (HANDED_TO.every((name) => programs.lookOnPath(name, { within: PATH }).file === path.join(dir, name))) {
+    return { PATH, DBUS_SESSION_BUS_ADDRESS: `unix:path=${busPath(path.resolve(profile, "easyscreenshotkit-no-bus"))}` };
+  }
+  const tmp = os.tmpdir();
+  if (dir.includes(path.delimiter)) return { problem: `the temp folder's path, ${tmp}, has a ${path.delimiter} in it, which parts the folders of PATH. Point TMPDIR at a folder whose path has none` };
+  return { problem: `no program may run from the temp folder, ${tmp}. Point TMPDIR at a folder where programs may run` };
 }
+
+// A path as a D-Bus address writes it: each byte but a letter, a digit and
+// -_/.\* as %xx.
+const busPath = (file) => Array.from(Buffer.from(file, "utf8"), (byte) => (/[-0-9A-Za-z_/.\\*]/.test(String.fromCharCode(byte)) ? String.fromCharCode(byte) : `%${byte.toString(16).padStart(2, "0")}`)).join("");
 
 // On Linux a browser keeps its crash reports in the folder of the user's own
 // browser of its kind (~/.config/google-chrome/Crash Reports), whatever

@@ -20,6 +20,7 @@ const { findChrome, launch, openTab, closeTab, navigate } = require("../skills/e
 const { findFfmpeg, makeGif, startVideo, gifIsWhole, mp4Frames } = require("../skills/easyscreenshotkit/scripts/lib/ffmpeg");
 const { checkBackdrop } = require("../skills/easyscreenshotkit/scripts/lib/compose");
 const { readPng, pngOf, serve, near, descendants } = require("./helpers");
+const { noBus, privateBus, fakePortal } = require("./bus");
 
 const CLI = path.resolve(__dirname, "../skills/easyscreenshotkit/scripts/easyscreenshotkit.js");
 const ffmpeg = findFfmpeg();
@@ -1686,9 +1687,13 @@ test("a click on a download link saves no file", { skip: missing || (process.pla
 
 // No click of a demo makes the browser start a program of this machine: a
 // click on a mailto: or a news: link, or on a button that opens a window at
-// mailto:, had the browser start the user's own mail program. The stand-ins
-// on PATH write down any start, so no test starts a real one.
-test("no click of a demo makes the browser start a program of this machine", { skip: missing || (process.platform !== "linux" && "the browser starts these programs through PATH on Linux only"), timeout: 200_000 }, async () => {
+// mailto:, had the browser start the user's own mail program, through the
+// desktop's portal on the session bus or through xdg-email on PATH. The
+// stand-ins on PATH, and the one for the portal on a bus of the test's own
+// (see bus.js), write down any start, so no test starts a real one; with no
+// such bus here, the browser's bus is one where nothing listens, never the
+// user's own, which a program given no bus can find in XDG_RUNTIME_DIR.
+test("no click of a demo makes the browser start a program of this machine", { skip: missing || (process.platform !== "linux" && "the browser starts these programs through PATH and the session bus on Linux only"), timeout: 200_000 }, async () => {
   const html = { "Content-Type": "text/html; charset=utf-8" };
   const { server, origin } = await serve((req, res) => {
     if (req.url !== "/") return res.writeHead(404).end("not found");
@@ -1700,7 +1705,10 @@ test("no click of a demo makes the browser start a program of this machine", { s
   const log = path.join(root, "started.log");
   for (const name of ["xdg-open", "xdg-email", "x-www-browser", "www-browser", "sensible-browser", "gio", "kde-open", "gnome-open", "exo-open"]) fs.writeFileSync(path.join(dir, name), `#!/bin/sh\necho "$0 $*" >> '${log}'\n`, { mode: 0o755 });
   const env = { ...process.env, PATH: `${dir}${path.delimiter}${process.env.PATH}` };
-  for (const name of ["DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "XDG_CURRENT_DESKTOP", "DESKTOP_SESSION", "BROWSER"]) delete env[name];
+  for (const name of ["DISPLAY", "WAYLAND_DISPLAY", "XDG_CURRENT_DESKTOP", "DESKTOP_SESSION", "BROWSER"]) delete env[name];
+  const bus = noBus(root) ? null : await privateBus(fs.mkdtempSync(path.join(root, "bus-")));
+  const portal = bus ? await fakePortal(bus.address) : null;
+  Object.assign(env, bus ? { DBUS_SESSION_BUS_ADDRESS: bus.address, XDG_RUNTIME_DIR: bus.dir, XDG_CURRENT_DESKTOP: "GNOME" } : { DBUS_SESSION_BUS_ADDRESS: `unix:path=${path.join(root, "no-bus")}`, XDG_RUNTIME_DIR: root });
   const steps = path.join(root, "steps.yaml");
   // The window first: once the browser has handed out an address, it opens
   // no window for the next one, and says nothing of it.
@@ -1725,7 +1733,10 @@ test("no click of a demo makes the browser start a program of this machine", { s
       assert.ok(notes.includes(note), `${note}\n${notes.join("\n")}`);
     }
     assert.equal(fs.existsSync(log) ? fs.readFileSync(log, "utf8") : "", "");
+    if (portal) assert.deepEqual(portal.opened, []);
   } finally {
+    if (portal) portal.close();
+    if (bus) await bus.close();
     server.close();
     fs.rmSync(root, { recursive: true, force: true });
   }

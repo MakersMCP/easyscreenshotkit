@@ -53,10 +53,11 @@ function there(file) {
 // over: { file, other }, each "" when there is none. A folder of PATH given
 // from the current folder is taken from the folder the run started in, so
 // the program is found when it runs in another folder. Folders `skip`
-// passes over are not looked in.
-function lookOnPath(name, { skip = () => false } = {}) {
+// passes over are not looked in. `within`: another PATH to look on, as the
+// one a program is started with.
+function lookOnPath(name, { skip = () => false, within = process.env.PATH } = {}) {
   let other = "";
-  for (const dir of String(process.env.PATH || "").split(path.delimiter)) {
+  for (const dir of String(within || "").split(path.delimiter)) {
     if (!dir || skip(dir)) continue;
     const file = path.resolve(dir, name);
     if (runnable(file)) return { file, other };

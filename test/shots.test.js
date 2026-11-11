@@ -7,6 +7,7 @@
 
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
+const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
@@ -18,7 +19,9 @@ const { setTimeLimit, sleep } = require("../skills/easyscreenshotkit/scripts/lib
 const { watchRequests, networkQuiet, showsLoadingSign, looksEmpty } = require("../skills/easyscreenshotkit/scripts/lib/page");
 const { LOCATE, Recorder } = require("../skills/easyscreenshotkit/scripts/lib/record");
 const { pngText } = require("../skills/easyscreenshotkit/scripts/lib/png");
+const programs = require("../skills/easyscreenshotkit/scripts/lib/programs");
 const { readPng, serve, near, descendants } = require("./helpers");
+const { noBus, privateBus, fakePortal } = require("./bus");
 
 const CLI = path.resolve(__dirname, "../skills/easyscreenshotkit/scripts/easyscreenshotkit.js");
 const noBrowser = !findChrome() && "no Chrome, Chromium, Edge or Brave installed";
@@ -1899,7 +1902,8 @@ function standIns(root) {
 const fs = require("fs"), path = require("path");
 const [mode, ...args] = process.argv.slice(2);
 const profile = args.find((arg) => arg.startsWith("--user-data-dir=")).slice("--user-data-dir=".length);
-fs.writeFileSync(path.join(${JSON.stringify(root)}, mode + ".json"), JSON.stringify({ pid: process.pid, profile }));
+const env = Object.fromEntries(["DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "PATH"].map((name) => [name, process.env[name] ?? null]));
+fs.writeFileSync(path.join(${JSON.stringify(root)}, mode + ".json"), JSON.stringify({ pid: process.pid, profile, env }));
 const output = fs.createWriteStream(null, { fd: 4 });
 output.on("error", () => {});
 const answer = (message) => output.write(JSON.stringify(message) + "\\0");
@@ -3159,9 +3163,12 @@ test("a page that moves on before it has loaded is refused at once, by a visit a
 // Stand-ins on PATH for the programs the browser hands an address of
 // another kind to (mailto:, news:), each writing down that it was started,
 // so that no test starts the user's own mail program, as a test of the code
-// before this change did on a desktop; nor does a test run with a display or
-// a session bus to reach.
-function recordingHandlers(root) {
+// before this change did on a desktop; nor does a test run with a display.
+// Its session bus is one of the test's own (see bus.js), with a stand-in
+// for the desktop's portal on it that writes down what it is asked to open,
+// or one where nothing listens: never the user's own, which a program given
+// no bus can find in XDG_RUNTIME_DIR.
+function recordingHandlers(root, bus = null) {
   const dir = path.join(root, "handlers");
   fs.mkdirSync(dir);
   const log = path.join(root, "started.log");
@@ -3169,32 +3176,165 @@ function recordingHandlers(root) {
     fs.writeFileSync(path.join(dir, name), `#!/bin/sh\necho "$0 $*" >> '${log}'\n`, { mode: 0o755 });
   }
   const env = { ...process.env, PATH: `${dir}${path.delimiter}${process.env.PATH}` };
-  for (const name of ["DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "XDG_CURRENT_DESKTOP", "DESKTOP_SESSION", "BROWSER"]) delete env[name];
+  for (const name of ["DISPLAY", "WAYLAND_DISPLAY", "XDG_CURRENT_DESKTOP", "DESKTOP_SESSION", "BROWSER"]) delete env[name];
+  Object.assign(env, bus ? { DBUS_SESSION_BUS_ADDRESS: bus.address, XDG_RUNTIME_DIR: bus.dir, XDG_CURRENT_DESKTOP: "GNOME" } : { DBUS_SESSION_BUS_ADDRESS: `unix:path=${path.join(root, "no-bus")}`, XDG_RUNTIME_DIR: root });
   return { env, started: () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8") : "") };
 }
 
 // No page makes the browser start a program of this machine: a page that
 // went to mailto: as it loaded had the browser start the user's own mail
-// program with the site's message in it, and its frames and windows could
-// as well. The page is taken as it is drawn, and its notes say what it
-// tried to open.
-test("no page makes the browser start a program of this machine, by moving to mailto: as it loads or by a frame at news:", { skip: noBrowser || (process.platform !== "linux" && "the browser starts these programs through PATH on Linux only"), timeout: 120_000 }, async () => {
+// program with the site's message in it, through the desktop's portal on
+// the session bus, or with no portal there through xdg-email on PATH, and
+// so did a refresh to mailto:, a frame at mailto: and a page that moved on
+// once it had loaded to an address that redirects to mailto:. Each page is
+// taken as it is drawn, and its notes say what it tried to open. Each runs
+// in a browser of its own: a browser hands out one such address that a
+// page goes to by itself, and none after it, so one case would hide the
+// next. A frame at news:, which the browser hands to no program, is named
+// in its page's notes.
+test("no page makes the browser start a program of this machine, by moving to mailto: as it loads, by a refresh or a frame at mailto:, or by a redirect to it", { skip: noBrowser || (process.platform !== "linux" && "the browser starts these programs through PATH and the session bus on Linux only"), timeout: 180_000 }, async () => {
   const html = { "Content-Type": "text/html; charset=utf-8" };
+  const tall = '<div style="height:1400px;background:rgb(0,160,0)"></div>';
   const { server, origin } = await serve((req, res) => {
-    if (req.url !== "/") return res.writeHead(404).end("not found");
-    res.writeHead(200, html).end(page("Acme | Tools", '<h1>Acme</h1><iframe src="news:comp.lang.c"></iframe><div style="height:1400px;background:rgb(0,160,0)"></div><script>location.href = "mailto:hello@example.com?subject=Hi";</script>'));
+    if (req.url === "/") return res.writeHead(200, html).end(page("Acme | Tools", `<h1>Acme</h1>${tall}<script>location.href = "mailto:hello@example.com?subject=Hi";</script>`));
+    if (req.url === "/refresh") return res.writeHead(200, html).end(page("Refresh | Acme", `<h1>Refresh</h1>${tall}`, { head: '<meta http-equiv="refresh" content="0; url=mailto:refresh@example.com">' }));
+    if (req.url === "/frame") return res.writeHead(200, html).end(page("Frame | Acme", `<h1>Frame</h1><iframe src="mailto:frame@example.com"></iframe>${tall}`));
+    if (req.url === "/later") return res.writeHead(200, html).end(page("Later | Acme", `<h1>Later</h1>${tall}<script>addEventListener("load", () => setTimeout(() => (location.href = "/bounce"), 200));</script>`));
+    if (req.url === "/bounce") return res.writeHead(302, { Location: "mailto:bounce@example.com" }).end();
+    if (req.url === "/news") return res.writeHead(200, html).end(page("News | Acme", `<h1>News</h1><iframe src="news:comp.lang.c"></iframe>${tall}`));
+    res.writeHead(404).end("not found");
   });
   const root = tempDir();
-  const { env, started } = recordingHandlers(root);
+  const bus = noBus(root) ? null : await privateBus(fs.mkdtempSync(path.join(root, "bus-")));
+  const portal = bus ? await fakePortal(bus.address) : null;
+  const { env, started } = recordingHandlers(root, bus);
   try {
-    const run = await runCli([origin, "--pages", "1", "--sizes", "desktop", "--json", "--out", path.join(root, "shots")], { env });
-    assert.equal(run.status, 0, run.stderr);
-    const { notes } = JSON.parse(run.stdout).pages[0];
-    assert.ok(notes.includes("it tried to open mailto:hello@example.com?subject=Hi, which is not a web address: it was not opened"), notes.join("\n"));
-    assert.ok(notes.includes("a frame of it tried to open news:comp.lang.c, which is not a web address: it was not opened"), notes.join("\n"));
-    assert.equal(started(), "");
+    const notOpened = (url) => `it tried to open ${url}, which is not a web address: it was not opened`;
+    for (const [at, notes] of [
+      ["/", [notOpened("mailto:hello@example.com?subject=Hi")]],
+      ["/refresh", [notOpened("mailto:refresh@example.com")]],
+      ["/frame", [`a frame of ${notOpened("mailto:frame@example.com")}`]],
+      ["/later", null],
+      ["/news", [`a frame of ${notOpened("news:comp.lang.c")}`]],
+    ]) {
+      const run = await runCli([`${origin}${at}`, "--pages", "1", "--sizes", "desktop", "--json", "--out", path.join(root, `shots${at.replace("/", "-")}`)], { env });
+      assert.equal(run.status, 0, `${at}: ${run.stderr}`);
+      if (notes) assert.deepEqual(JSON.parse(run.stdout).pages[0].notes, notes, at);
+      assert.equal(started(), "", at);
+      if (portal) assert.deepEqual(portal.opened, [], at);
+    }
   } finally {
+    if (portal) portal.close();
+    if (bus) await bus.close();
     server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A frame of another site, which the browser runs in a process of its own,
+// that goes to mailto: as it loads starts no program of this machine
+// either. The run's rule would not load a page of another port of this
+// machine, so the browser here has none.
+test("no frame of another site makes the browser start a program of this machine", { skip: noBrowser || (process.platform !== "linux" && "the browser starts these programs through PATH and the session bus on Linux only"), timeout: 60_000 }, async () => {
+  const html = { "Content-Type": "text/html; charset=utf-8" };
+  const other = await serve((req, res) => res.writeHead(200, html).end(page("Other", '<h1>Other</h1><script>location.href = "mailto:other@example.com";</script>')));
+  const { server, origin } = await serve((req, res) => res.writeHead(200, html).end(page("Acme | Tools", `<h1>Acme</h1><iframe src="${other.origin.replace("127.0.0.1", "localhost")}/"></iframe>`)));
+  const root = tempDir();
+  const bus = noBus(root) ? null : await privateBus(fs.mkdtempSync(path.join(root, "bus-")));
+  const portal = bus ? await fakePortal(bus.address) : null;
+  const { env, started } = recordingHandlers(root, bus);
+  const saved = { ...process.env };
+  let chrome = null;
+  try {
+    setTimeLimit(60_000);
+    for (const name of Object.keys(process.env)) if (!(name in env)) delete process.env[name];
+    Object.assign(process.env, env);
+    chrome = await launch();
+    for (const name of Object.keys(process.env)) if (!(name in saved)) delete process.env[name];
+    Object.assign(process.env, saved);
+    const tab = await openTab(chrome, DEVICES.desktop);
+    await navigate(tab, `${origin}/`);
+    // The frame's page loads after its own, and goes on at once.
+    for (let i = 0; i < 30 && !started() && !(portal && portal.opened.length); i++) await sleep(100);
+    await closeTab(chrome, tab);
+    assert.equal(started(), "");
+    if (portal) assert.deepEqual(portal.opened, []);
+  } finally {
+    for (const name of Object.keys(process.env)) if (!(name in saved)) delete process.env[name];
+    Object.assign(process.env, saved);
+    if (chrome) await chrome.close();
+    if (portal) portal.close();
+    if (bus) await bus.close();
+    server.close();
+    other.server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// The stand-ins are the programs of those names on the PATH the browser
+// starts with, or it is not started: in a temp folder whose path has a : in
+// it, the folder of stand-ins on that PATH was cut in two, and the browser
+// found the real xdg-email after it.
+test("a browser that could not be kept from the programs of the machine is not started", { skip: noBrowser || (process.platform !== "linux" && "the stand-ins are on Linux only"), timeout: 60_000 }, async () => {
+  const root = tempDir();
+  const tmp = path.join(root, "a:b");
+  fs.mkdirSync(tmp);
+  const saved = process.env.TMPDIR;
+  process.env.TMPDIR = tmp;
+  try {
+    // A browser that did start is closed again, for the test to fail on.
+    const refused = await launch().then((chrome) => chrome.close().then(() => null), (err) => err);
+    assert.equal(refused && refused.message, `${path.basename(findChrome())} was not started: it hands addresses such as mailto: to programs of this machine, and none could be put in their place, as the temp folder's path, ${tmp}, has a : in it, which parts the folders of PATH. Point TMPDIR at a folder whose path has none.`);
+    assert.deepEqual(fs.readdirSync(tmp), []);
+  } finally {
+    if (saved === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = saved;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// What the browser starts with, from a stand-in that writes it down, run
+// as on a desktop: a display, Wayland's too, and a session bus that is
+// there. The browser gets none of them, where it got the desktop's bus and
+// handed mailto: to the desktop's portal, which opened the user's mail
+// program: its bus is a socket in its profile where nothing listens, never
+// unset, as a program given none can look for the desktop's in
+// XDG_RUNTIME_DIR. Its PATH starts with the stand-ins, each of whose names
+// leads to one there.
+test("the browser starts with no display, a session bus where nothing listens, and stand-ins first on its PATH", { skip: process.platform !== "linux" && "the browser is kept from the desktop on Linux only", timeout: 60_000 }, async () => {
+  const root = tempDir();
+  const desktop = { DISPLAY: ":0", WAYLAND_DISPLAY: "wayland-0", DBUS_SESSION_BUS_ADDRESS: `unix:path=${path.join(root, "desktop-bus")}`, XDG_RUNTIME_DIR: root };
+  const saved = Object.fromEntries(["CHROME_PATH", ...Object.keys(desktop)].map((name) => [name, process.env[name]]));
+  // A bus that is there, as the desktop's is: a socket that listens.
+  const bus = net.createServer((socket) => socket.destroy()).listen(path.join(root, "desktop-bus"));
+  await new Promise((resolve) => bus.once("listening", resolve));
+  Object.assign(process.env, desktop, { CHROME_PATH: standIns(root)("plain") });
+  let chrome = null;
+  try {
+    setTimeLimit(60_000);
+    chrome = await launch();
+    const { profile, env } = JSON.parse(fs.readFileSync(path.join(root, "plain.json"), "utf8"));
+    const own = path.resolve(profile);
+    assert.equal(env.DISPLAY, null);
+    assert.equal(env.WAYLAND_DISPLAY, null);
+    // A D-Bus address writes each byte of a path but a letter, a digit and
+    // -_/.\* as %xx.
+    assert.match(env.DBUS_SESSION_BUS_ADDRESS, /^unix:path=[-0-9A-Za-z_/.\\*%]+$/);
+    assert.equal(decodeURIComponent(env.DBUS_SESSION_BUS_ADDRESS.slice("unix:path=".length)), path.join(own, "easyscreenshotkit-no-bus"));
+    assert.equal(fs.existsSync(path.join(own, "easyscreenshotkit-no-bus")), false);
+    const handlers = path.join(own, "easyscreenshotkit-handlers");
+    assert.equal(env.PATH.split(path.delimiter)[0], handlers);
+    for (const name of ["xdg-open", "xdg-email", "x-www-browser", "www-browser", "sensible-browser"]) {
+      assert.equal(programs.lookOnPath(name, { within: env.PATH }).file, path.join(handlers, name), name);
+    }
+  } finally {
+    if (chrome) await chrome.close();
+    endStandIns(root, ["plain"]);
+    bus.close();
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
