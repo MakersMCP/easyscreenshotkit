@@ -1076,19 +1076,11 @@ async function takeShots(rawUrl, options = {}) {
   const given = viewKey(asked) !== viewKey(home) ? asked : "";
   const asks = pagesAsked(extra, asked, home);
   const fragments = fragmentNotes(rawUrl, extra, asked, home);
-  // The pages the run opens, and the sitemaps it reads, are of the address
-  // given or on the public internet (see address.js). One whose host's name
-  // cannot be looked up here opens nothing, and the run stops before any
-  // work.
-  const guard = await guardFor(asked);
-  if (guard.unresolved) throw unresolvedError(asked, guard);
-  // The browser before any work: one that is not there, or that is no
-  // program this user may run, is named with what is wrong with it.
-  const noBrowser = browserProblem();
-  if (noBrowser) throw new Error(noBrowser);
   const target = dir || `easyscreenshotkit-${siteOf(asked)}`;
   // Every file is made in the run's part folder and put in place once the
-  // run has ended well (see outdir.js).
+  // run has ended well (see outdir.js). A folder the run may not save in is
+  // refused first, as it was before the browser and the name of the
+  // address's host were looked at.
   const run = openShots(target, { pwa });
   // The screenshots for a manifest are taken in the first theme only.
   const ctx = { lang, hide, reducedMotion, clean: tidy, pwaTheme: pwa ? themes[0] : "", captureMs: reserveOf(CAPTURE_MS, timeLimit) };
@@ -1119,6 +1111,16 @@ async function takeShots(rawUrl, options = {}) {
     if (unsaved) throw unsaved;
   };
   try {
+    // The browser before it opens anything: one that is not there, or that
+    // is no program this user may run, is named with what is wrong with it.
+    const noBrowser = browserProblem();
+    if (noBrowser) throw new Error(noBrowser);
+    // The pages the run opens, and the sitemaps it reads, are of the address
+    // given or on the public internet (see address.js). One whose host's name
+    // cannot be looked up here opens nothing, and the run stops before it
+    // starts the browser.
+    const guard = await guardFor(asked);
+    if (guard.unresolved) throw unresolvedError(asked, guard);
     chrome = await launch({ lang });
     chrome.guard = guard;
     const [first] = groups;

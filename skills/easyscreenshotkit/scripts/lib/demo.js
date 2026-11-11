@@ -416,22 +416,16 @@ async function makeDemo(rawUrl, options = {}) {
   const script = stepsFile ? await loadSteps(stepsFile) : null;
   const asked = normalizeUrl(rawUrl || (script && script.url) || "");
   const backdrop = backdropOf(background);
-  // ffmpeg and the browser before any work: one that is not there, or that
-  // cannot be started, is named with what is wrong with it.
+  // ffmpeg before any work: one that is not there, or that cannot be
+  // started, is named with what is wrong with it.
   const ffmpeg = await ffmpegReady();
   const encoder = await pickEncoder(ffmpeg);
   if (!encoder) throw new Error(`${ffmpeg} has no H.264 encoder (x264, VideoToolbox, OpenH264 or Media Foundation). Install a full build of ffmpeg.`);
-  // The pages the demo opens, by a step, a click or the tour, are of the
-  // address given or on the public internet (see address.js). One whose
-  // host's name cannot be looked up here opens nothing, and the demo stops
-  // before any work.
-  const guard = await guardFor(asked);
-  if (guard.unresolved) throw unresolvedError(asked, guard);
-  const noBrowser = browserProblem();
-  if (noBrowser) throw new Error(noBrowser);
   const target = dir || `easyscreenshotkit-demo-${siteOf(asked)}`;
   // Every file is made in the run's part folder, the frames too, and put in
-  // place once the run has ended well (see outdir.js).
+  // place once the run has ended well (see outdir.js). A folder the demo may
+  // not save in is refused before the browser and the name of the address's
+  // host are looked at, as it was before.
   const run = openDemo(target, { steps: stepsFile, tour: !script });
   const frames = run.file("frames");
   const viewport = { width: 1600, height: 900 };
@@ -462,6 +456,16 @@ async function makeDemo(rawUrl, options = {}) {
     if (lostWhy()) throw new Error(lostWhy());
   };
   try {
+    // The browser before it opens anything: one that is not there, or that
+    // is no program this user may run, is named with what is wrong with it.
+    const noBrowser = browserProblem();
+    if (noBrowser) throw new Error(noBrowser);
+    // The pages the demo opens, by a step, a click or the tour, are of the
+    // address given or on the public internet (see address.js). One whose
+    // host's name cannot be looked up here opens nothing, and the demo stops
+    // before it starts the browser.
+    const guard = await guardFor(asked);
+    if (guard.unresolved) throw unresolvedError(asked, guard);
     fs.mkdirSync(frames);
     chrome = await launch({ lang, args: [`--force-device-scale-factor=${density}`] });
     chrome.guard = guard;

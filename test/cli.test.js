@@ -34,6 +34,39 @@ test("the sentence for a demo with no ffmpeg is written out whole in the code", 
   assert.ok(fs.readFileSync(path.resolve(__dirname, "../skills/easyscreenshotkit/scripts/lib/ffmpeg.js"), "utf8").includes(JSON.stringify(sentence)));
 });
 
+// A run looks at the folder it saves in first, then at the browser, and
+// only then looks up the name of the address's host, as 0.1.1 looked at its
+// folder before it started the browser: a tool that tells a call refused
+// before the folder from one that failed after it, as makersmcp does, meets
+// the same refusals as before, on a host that does not resolve too. A demo
+// looks at ffmpeg before its folder, as 0.1.1 did.
+test("a run looks at its folder before the browser, and at the browser before the name of the address's host", { skip: process.platform === "win32" && "the stand-in ffmpeg is a shell script", timeout: 60_000 }, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-order-"));
+  const { CHROME_PATH, FFMPEG_PATH, ...base } = process.env;
+  try {
+    const ffmpeg = path.join(root, "ffmpeg");
+    fs.writeFileSync(ffmpeg, "#!/bin/sh\ncase \"$*\" in *-version*) echo 'ffmpeg version 4.4.2-stand-in';; *) printf '%s\\n' ' V....D libx264  libx264 H.264';; esac\n", { mode: 0o755 });
+    const env = { ...base, CHROME_PATH: path.join(root, "no-chrome"), FFMPEG_PATH: ffmpeg };
+    const mine = path.join(root, "mine");
+    fs.mkdirSync(mine);
+    fs.writeFileSync(path.join(mine, "notes.txt"), "mine");
+    const run = (...args) => spawnSync(process.execPath, [CLI, ...args], { env, encoding: "utf8", timeout: 30_000 });
+    const site = "https://nowhere.invalid/";
+    assert.equal(run(site, "--out", mine).stderr, `easyscreenshotkit: ${mine} is not empty and holds no earlier easyscreenshotkit run. Pick another folder with --out.\n`);
+    assert.equal(run("demo", site, "--out", mine).stderr, `easyscreenshotkit demo: ${mine} is not empty and holds no earlier easyscreenshotkit demo. Pick another folder with --out.\n`);
+    for (const args of [[site], ["demo", site, "--pages", "1"]]) {
+      const fresh = path.join(root, "fresh");
+      const none = run(...args, "--out", fresh);
+      assert.equal(none.status, 1, args.join(" "));
+      assert.match(none.stderr, /^easyscreenshotkit( demo)?: No Chrome, Chromium, Edge or Brave found: CHROME_PATH is /, args.join(" "));
+      assert.equal(fs.existsSync(fresh), false, args.join(" "));
+    }
+    assert.deepEqual(fs.readdirSync(mine), ["notes.txt"]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("the CLI explains itself and refuses a missing address or a bad option", () => {
   const help = spawnSync(process.execPath, [CLI, "--help"], { encoding: "utf8" });
   assert.equal(help.status, 0);
