@@ -1829,6 +1829,42 @@ test("a browser that did not start with a nearly full temp folder says so", { sk
 // Its start, its address and its connection ended in a browser that "did
 // not start"; a window, in "Target.createTarget timed out"; a page that did
 // not answer, in "Page.navigate timed out".
+// A browser too busy to take the order that holds its pages to the run's
+// addresses in time fails that window with a sentence of its own, and the
+// next window asks it again: the failure was kept for the browser's life,
+// and every window after it failed at once with "The browser did not open a
+// window in 60 s", which had not happened. Here the browser is a stand-in
+// whose first answer to that order never comes.
+test("a browser that did not take the order for the run's addresses in time says so, and the next window asks it again", async () => {
+  setTimeLimit(600_000);
+  let asked = 0;
+  const heard = {};
+  const browser = {
+    on(method) {
+      heard[method] = (heard[method] || 0) + 1;
+    },
+    off() {},
+    async send(method) {
+      if (method === "Fetch.enable" && ++asked === 1) throw Object.assign(new Error("Fetch.enable timed out"), { timedOut: true });
+      if (method === "Target.createTarget") return { targetId: `T${asked}` };
+      if (method === "Target.attachToTarget") return { sessionId: `S${asked}` };
+      return {};
+    },
+    session() {
+      return { on() {}, off() {}, send: async () => ({}), close() {}, closed: () => false, fail() {} };
+    },
+  };
+  const chrome = { browser, guard: { refuses: async () => "" }, owners: new Map(), guarding: null, watch: async () => null, stalled: () => false, userAgent: "" };
+  await assert.rejects(openTab(chrome, DEVICES.desktop), {
+    message: /^The browser did not take the order that holds its pages to the addresses the run opens in \d+ s\. The machine may be too busy: try again\.$/,
+    reason: /^the browser did not take the order that holds its pages to the addresses the run opens in \d+ s$/,
+  });
+  assert.ok(await openTab(chrome, DEVICES.desktop));
+  assert.ok(await openTab(chrome, DEVICES.desktop));
+  assert.equal(asked, 2);
+  assert.equal(heard["Fetch.requestPaused"], 1);
+});
+
 test("a browser that starts gets up to a minute to answer, as the run's time allows", () => {
   try {
     setTimeLimit(400_000);

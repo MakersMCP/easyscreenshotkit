@@ -714,42 +714,54 @@ const BARRED = "easyscreenshotkit.addressRefused";
 // the data it fetches are not documents: the browser's own rules hold for
 // them.
 // Turned on once for a browser, when its first tab opens with the guard
-// set; timeoutMs: how long the browser has to take it.
+// set; timeoutMs: how long the browser has to take it. A turn-on that
+// failed, as one that ran out of time on a busy machine, is not kept: the
+// next window asks the browser again, where every window after it failed
+// at once with the first one's error and the browser was never asked again.
+// The listeners go on once for the browser, so a request is not continued
+// or failed twice.
 const QUICK = { fixed: true, watched: false };
 
 function guardBrowser(chrome, timeoutMs) {
   if (chrome.guarding) return chrome.guarding;
   const { browser, owners } = chrome;
-  // A frame of a tab that runs in a process of its own, and a window a
-  // page of it opens, belong to that tab.
-  const adopt = ({ targetInfo: t = {} }) => {
-    if (!t.targetId || owners.has(t.targetId)) return;
-    const from = owners.get(t.type === "page" ? t.openerId || "" : t.parentFrameId || "");
-    if (from) owners.set(t.targetId, { tab: from.tab, own: from.own, window: t.type === "page" || from.window });
-  };
-  browser.on("Target.targetCreated", adopt);
-  browser.on("Target.targetInfoChanged", adopt);
-  browser.on("Target.targetDestroyed", ({ targetId }) => {
-    const known = owners.get(targetId);
-    if (known && known.tab.targetId !== targetId) owners.delete(targetId);
-  });
-  browser.on("Fetch.requestPaused", async (p) => {
-    const go = () => void browser.send("Fetch.continueRequest", { requestId: p.requestId }, 10_000, QUICK).catch(() => {});
-    const url = String((p.request && p.request.url) || "");
-    const owner = owners.get(p.frameId);
-    if ((owner && owner.own) || (!owner && !/^https?:/i.test(url))) return go();
-    const why = chrome.guard ? await chrome.guard.refuses(url).catch(() => NOT_WEB) : "";
-    if (!why) return go();
-    // Asked again: a frame can be known by the time its address is judged.
-    const known = owners.get(p.frameId) || owner;
-    if (known && known.tab) known.tab.emit(BARRED, { url, why, main: p.frameId === known.tab.targetId, window: Boolean(known.window) });
-    browser.send("Fetch.failRequest", { requestId: p.requestId, errorReason: "Aborted" }, 10_000, QUICK).catch(() => {});
-  });
-  chrome.guarding = (async () => {
+  if (!chrome.guardHeard) {
+    chrome.guardHeard = true;
+    // A frame of a tab that runs in a process of its own, and a window a
+    // page of it opens, belong to that tab.
+    const adopt = ({ targetInfo: t = {} }) => {
+      if (!t.targetId || owners.has(t.targetId)) return;
+      const from = owners.get(t.type === "page" ? t.openerId || "" : t.parentFrameId || "");
+      if (from) owners.set(t.targetId, { tab: from.tab, own: from.own, window: t.type === "page" || from.window });
+    };
+    browser.on("Target.targetCreated", adopt);
+    browser.on("Target.targetInfoChanged", adopt);
+    browser.on("Target.targetDestroyed", ({ targetId }) => {
+      const known = owners.get(targetId);
+      if (known && known.tab.targetId !== targetId) owners.delete(targetId);
+    });
+    browser.on("Fetch.requestPaused", async (p) => {
+      const go = () => void browser.send("Fetch.continueRequest", { requestId: p.requestId }, 10_000, QUICK).catch(() => {});
+      const url = String((p.request && p.request.url) || "");
+      const owner = owners.get(p.frameId);
+      if ((owner && owner.own) || (!owner && !/^https?:/i.test(url))) return go();
+      const why = chrome.guard ? await chrome.guard.refuses(url).catch(() => NOT_WEB) : "";
+      if (!why) return go();
+      // Asked again: a frame can be known by the time its address is judged.
+      const known = owners.get(p.frameId) || owner;
+      if (known && known.tab) known.tab.emit(BARRED, { url, why, main: p.frameId === known.tab.targetId, window: Boolean(known.window) });
+      browser.send("Fetch.failRequest", { requestId: p.requestId, errorReason: "Aborted" }, 10_000, QUICK).catch(() => {});
+    });
+  }
+  const turning = (async () => {
     await browser.send("Target.setDiscoverTargets", { discover: true }, timeoutMs);
     await browser.send("Fetch.enable", { patterns: [{ urlPattern: "*", resourceType: "Document", requestStage: "Request" }] }, timeoutMs);
   })();
-  return chrome.guarding;
+  chrome.guarding = turning;
+  turning.catch(() => {
+    if (chrome.guarding === turning) chrome.guarding = null;
+  });
+  return turning;
 }
 
 // A new window holding one tab, set up as the device: its screen, touch,
@@ -771,7 +783,21 @@ async function openTab(chrome, device, { lang = "", theme = "light", reducedMoti
   let targetId = "";
   const owners = chrome.owners || (chrome.owners = new Map());
   try {
-    if (chrome.guard) await guardBrowser(chrome, left());
+    if (chrome.guard) {
+      // A browser that did not take the order in its time is said so, by
+      // the time it had: it opened no window, and had not had 60 s.
+      const had = left();
+      try {
+        await guardBrowser(chrome, had);
+      } catch (err) {
+        if (!err.timedOut || (chrome.stalled && chrome.stalled())) throw err;
+        const stopped = chrome.watch ? await chrome.watch() : null;
+        if (stopped) throw stopped;
+        const s = Math.max(1, Math.round(Math.max(1_000, Math.min(had, timeLeft())) / 1000));
+        const said = `the browser did not take the order that holds its pages to the addresses the run opens in ${s} s`;
+        throw Object.assign(new Error(`${said.charAt(0).toUpperCase()}${said.slice(1)}. ${busy(wait.cut)}`), { reason: said });
+      }
+    }
     ({ targetId } = await chrome.browser.send("Target.createTarget", { url: "about:blank", newWindow: true }, left()));
     const { sessionId } = await chrome.browser.send("Target.attachToTarget", { targetId, flatten: true }, left());
     cdp = chrome.browser.session(sessionId);
