@@ -486,7 +486,7 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
       ...(process.getuid && process.getuid() === 0 ? ["--no-sandbox"] : []),
       "about:blank",
     ],
-    { stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"], env: browserEnv({ ...configIn(profile), ...(inProfile ? { TMPDIR: profile } : {}), ...apart }) },
+    { stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"], env: browserEnv(profile, { ...configIn(profile), ...(inProfile ? { TMPDIR: profile } : {}), ...apart }) },
   );
   let exited = false;
   // Whether the browser ended, or its connection closed, before close()
@@ -676,12 +676,19 @@ function notRun(binary, stderr) {
 
 // The browser's environment: the run's, with more (see configIn and
 // standIns). On Linux it has no display either, as it draws headless: the
-// desktop's display, X11's or Wayland's, is a way to the desktop too.
-function browserEnv(more) {
+// desktop's display, X11's or Wayland's, is a way to the desktop too, for
+// the browser and for what it starts. DISPLAY is unset, and so is
+// WAYLAND_SOCKET, a connection handed down open. WAYLAND_DISPLAY is a path
+// in the browser's profile that is never made, which libwayland takes for
+// the socket itself: unset, it looks for wayland-0 in XDG_RUNTIME_DIR,
+// where a Wayland desktop's display is, and the browser sets it to that
+// for the programs it starts.
+function browserEnv(profile, more) {
   const env = { ...process.env, ...more };
   if (process.platform === "linux") {
     delete env.DISPLAY;
-    delete env.WAYLAND_DISPLAY;
+    delete env.WAYLAND_SOCKET;
+    env.WAYLAND_DISPLAY = path.resolve(profile, "easyscreenshotkit-no-display");
   }
   return env;
 }

@@ -1988,18 +1988,22 @@ test("a browser that starts gets up to a minute to answer, as the run's time all
 // (slow), one that answers every call but never opens a window
 // (windowless), and one that stops answering once it has opened a window,
 // as a browser stopped right then does (hushed). Each writes <mode>.json in
-// root, with its pid and its profile. Returns the wrapper that starts a
-// mode, for CHROME_PATH.
+// root, with its pid, its profile and what of its environment leads to the
+// desktop, and when root holds wayland-client.py, what that Wayland client
+// said when the stand-in started it, as the browser starts a program.
+// Returns the wrapper that starts a mode, for CHROME_PATH.
 function standIns(root) {
   const script = path.join(root, "browser.js");
   fs.writeFileSync(
     script,
     `"use strict";
-const fs = require("fs"), path = require("path");
+const fs = require("fs"), path = require("path"), { spawnSync } = require("child_process");
 const [mode, ...args] = process.argv.slice(2);
 const profile = args.find((arg) => arg.startsWith("--user-data-dir=")).slice("--user-data-dir=".length);
-const env = Object.fromEntries(["DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "PATH"].map((name) => [name, process.env[name] ?? null]));
-fs.writeFileSync(path.join(${JSON.stringify(root)}, mode + ".json"), JSON.stringify({ pid: process.pid, profile, env }));
+const env = Object.fromEntries(["DISPLAY", "WAYLAND_DISPLAY", "WAYLAND_SOCKET", "DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR", "PATH"].map((name) => [name, process.env[name] ?? null]));
+const client = path.join(${JSON.stringify(root)}, "wayland-client.py");
+const wayland = fs.existsSync(client) ? String(spawnSync("python3", ["-I", client], { encoding: "utf8", timeout: 10000 }).stdout).trim() : null;
+fs.writeFileSync(path.join(${JSON.stringify(root)}, mode + ".json"), JSON.stringify({ pid: process.pid, profile, env, wayland }));
 const output = fs.createWriteStream(null, { fd: 4 });
 output.on("error", () => {});
 const answer = (message) => output.write(JSON.stringify(message) + "\\0");
@@ -3420,34 +3424,57 @@ test("a browser that could not be kept from the programs of the machine is not s
 });
 
 // What the browser starts with, from a stand-in that writes it down, run
-// as on a desktop: a display, Wayland's too, and a session bus that is
-// there. The browser gets none of them, where it got the desktop's bus and
-// handed mailto: to the desktop's portal, which opened the user's mail
-// program: its bus is a socket in its profile where nothing listens, never
-// unset, as a program given none can look for the desktop's in
-// XDG_RUNTIME_DIR. Its PATH starts with the stand-ins, each of whose names
-// leads to one there.
+// as on a desktop: a display, X11's and Wayland's, with a connection to
+// Wayland's handed down, and a session bus that is there. The browser gets
+// none of them, where it got the desktop's bus and handed mailto: to the
+// desktop's portal, which opened the user's mail program: its bus is a
+// socket in its profile where nothing listens, and its Wayland display a
+// path in its profile that is never made, never unset, as a program given
+// none looks for the desktop's in XDG_RUNTIME_DIR: libwayland for
+// wayland-0, where a Wayland desktop's display is, and libdbus for bus.
+// Where python3 and libwayland-client are there, a Wayland client the
+// stand-in starts finds no display, though a wayland-0 listens in its
+// XDG_RUNTIME_DIR, where it connected to it. Its PATH starts with the
+// stand-ins, each of whose names leads to one there.
 test("the browser starts with no display, a session bus where nothing listens, and stand-ins first on its PATH", { skip: process.platform !== "linux" && "the browser is kept from the desktop on Linux only", timeout: 60_000 }, async () => {
   const root = tempDir();
-  const desktop = { DISPLAY: ":0", WAYLAND_DISPLAY: "wayland-0", DBUS_SESSION_BUS_ADDRESS: `unix:path=${path.join(root, "desktop-bus")}`, XDG_RUNTIME_DIR: root };
+  const desktop = { DISPLAY: ":0", WAYLAND_DISPLAY: "wayland-0", WAYLAND_SOCKET: "9", DBUS_SESSION_BUS_ADDRESS: `unix:path=${path.join(root, "desktop-bus")}`, XDG_RUNTIME_DIR: root };
   const saved = Object.fromEntries(["CHROME_PATH", ...Object.keys(desktop)].map((name) => [name, process.env[name]]));
-  // A bus that is there, as the desktop's is: a socket that listens.
+  // A bus and a Wayland display that are there, as the desktop's are:
+  // sockets that listen, the display's counting who comes.
   const bus = net.createServer((socket) => socket.destroy()).listen(path.join(root, "desktop-bus"));
-  await new Promise((resolve) => bus.once("listening", resolve));
+  let reached = 0;
+  const display = net.createServer((socket) => {
+    reached++;
+    socket.destroy();
+  }).listen(path.join(root, "wayland-0"));
+  await Promise.all([bus, display].map((server) => new Promise((resolve) => server.once("listening", resolve))));
+  const client = spawnSync("python3", ["-I", "-c", 'import ctypes.util; print(ctypes.util.find_library("wayland-client") or "")'], { encoding: "utf8" });
+  const wayland = !client.error && client.status === 0 && client.stdout.trim();
+  if (wayland) fs.writeFileSync(path.join(root, "wayland-client.py"), `import ctypes\nlib = ctypes.CDLL(${JSON.stringify(wayland)})\nlib.wl_display_connect.restype = ctypes.c_void_p\nlib.wl_display_connect.argtypes = [ctypes.c_char_p]\nprint("connected" if lib.wl_display_connect(None) else "none")\n`);
   Object.assign(process.env, desktop, { CHROME_PATH: standIns(root)("plain") });
   let chrome = null;
   try {
     setTimeLimit(60_000);
     chrome = await launch();
-    const { profile, env } = JSON.parse(fs.readFileSync(path.join(root, "plain.json"), "utf8"));
+    const started = JSON.parse(fs.readFileSync(path.join(root, "plain.json"), "utf8"));
+    const { profile, env } = started;
     const own = path.resolve(profile);
     assert.equal(env.DISPLAY, null);
-    assert.equal(env.WAYLAND_DISPLAY, null);
+    assert.equal(env.WAYLAND_SOCKET, null);
+    // An absolute path is the socket itself to libwayland.
+    assert.equal(env.WAYLAND_DISPLAY, path.join(own, "easyscreenshotkit-no-display"));
+    assert.ok(path.isAbsolute(env.WAYLAND_DISPLAY));
+    assert.equal(fs.existsSync(env.WAYLAND_DISPLAY), false);
     // A D-Bus address writes each byte of a path but a letter, a digit and
     // -_/.\* as %xx.
     assert.match(env.DBUS_SESSION_BUS_ADDRESS, /^unix:path=[-0-9A-Za-z_/.\\*%]+$/);
     assert.equal(decodeURIComponent(env.DBUS_SESSION_BUS_ADDRESS.slice("unix:path=".length)), path.join(own, "easyscreenshotkit-no-bus"));
     assert.equal(fs.existsSync(path.join(own, "easyscreenshotkit-no-bus")), false);
+    if (wayland) {
+      assert.equal(started.wayland, "none");
+      assert.equal(reached, 0);
+    }
     const handlers = path.join(own, "easyscreenshotkit-handlers");
     assert.equal(env.PATH.split(path.delimiter)[0], handlers);
     for (const name of ["xdg-open", "xdg-email", "x-www-browser", "www-browser", "sensible-browser"]) {
@@ -3457,6 +3484,7 @@ test("the browser starts with no display, a session bus where nothing listens, a
     if (chrome) await chrome.close();
     endStandIns(root, ["plain"]);
     bus.close();
+    display.close();
     for (const [name, value] of Object.entries(saved)) {
       if (value === undefined) delete process.env[name];
       else process.env[name] = value;
