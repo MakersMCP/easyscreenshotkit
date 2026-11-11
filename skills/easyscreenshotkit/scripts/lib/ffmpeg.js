@@ -14,7 +14,9 @@ const PLACES = ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/f
 
 const INSTALL = "brew install ffmpeg, sudo apt install ffmpeg, winget install ffmpeg";
 const NEEDED = "The demo needs ffmpeg";
-const MISSING = `${NEEDED}, and none was found. Install it (${INSTALL}) or point FFMPEG_PATH at it.`;
+// Written out whole: a tool that runs the kit holds what it says it refuses
+// with to the words of its code, as makersmcp does.
+const MISSING = "The demo needs ffmpeg, and none was found. Install it (brew install ffmpeg, sudo apt install ffmpeg, winget install ffmpeg) or point FFMPEG_PATH at it.";
 
 // How to get an ffmpeg that runs, for one FFMPEG_PATH names and for one
 // found on the machine.

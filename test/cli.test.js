@@ -23,6 +23,17 @@ test("the skill folder carries its own version, the same as the package's and ev
   assert.equal(version, require("../plugin.json").version);
 });
 
+// A tool that runs the kit, as makersmcp does, holds what it says the kit
+// refuses with to the words of the kit's code, read as text: the sentence
+// for a demo with no ffmpeg is there whole, where it was put together from
+// parts and its words were in no file.
+test("the sentence for a demo with no ffmpeg is written out whole in the code", () => {
+  const { MISSING } = require("../skills/easyscreenshotkit/scripts/lib/ffmpeg");
+  const sentence = "The demo needs ffmpeg, and none was found. Install it (brew install ffmpeg, sudo apt install ffmpeg, winget install ffmpeg) or point FFMPEG_PATH at it.";
+  assert.equal(MISSING, sentence);
+  assert.ok(fs.readFileSync(path.resolve(__dirname, "../skills/easyscreenshotkit/scripts/lib/ffmpeg.js"), "utf8").includes(JSON.stringify(sentence)));
+});
+
 test("the CLI explains itself and refuses a missing address or a bad option", () => {
   const help = spawnSync(process.execPath, [CLI, "--help"], { encoding: "utf8" });
   assert.equal(help.status, 0);
