@@ -1844,6 +1844,49 @@ test("a demo's click after one on a tel: link opens its page, or the demo says t
   }
 });
 
+// The check that a tab still takes clicks and keys after a page of it tried
+// to open an address of another kind moves the real mouse where the page
+// itself hears it. A frame, as a map or a video is, takes the moves over it
+// in a document of its own: with one under the pointer, as a scroll can
+// put it there, the page heard nothing, and a demo whose next click was
+// fine stopped after a click on a mailto: link, which leaves the tab as it
+// was, with a sentence that blamed the browser. The mouse goes to the
+// nearest spot no frame covers, and a screen that frames cover all over
+// counts as one that takes input.
+test("a demo's click after one on a mailto: link opens its page with a frame under the pointer, and with frames all over the screen", { skip: missing || (process.platform !== "linux" && "the browser starts these programs through PATH and the session bus on Linux only"), timeout: 200_000 }, async () => {
+  const html = { "Content-Type": "text/html; charset=utf-8" };
+  const contact = (height) => page("Contact | Acme", `<h1>Contact</h1><p style="font-size:32px;padding:0 40px"><a href="mailto:hello@example.com">Write to us</a></p><iframe src="/map" style="display:block;width:100%;height:${height}px;border:0"></iframe><p style="font-size:32px;padding:0 40px"><a href="/pricing">See pricing</a></p><div style="height:1400px;background:rgb(0,160,0)"></div>`);
+  const { server, origin } = await serve((req, res) => {
+    if (req.url === "/") return res.writeHead(200, html).end(contact(900));
+    if (req.url === "/wall") return res.writeHead(200, html).end(contact(2400));
+    if (req.url === "/map") return res.writeHead(200, html).end(page("Map", '<div style="height:2400px;background:rgb(200,200,255)"></div>'));
+    if (req.url === "/pricing") return res.writeHead(200, html).end(page("Pricing | Acme", '<h1>Pricing</h1><div style="height:1400px;background:rgb(0,0,220)"></div>'));
+    res.writeHead(404).end("not found");
+  });
+  const root = tempDir();
+  const cut = await cutOff(root);
+  try {
+    // The scroll puts the frame under the pointer, which the click on the
+    // mailto: link left at the top; on /wall the frame then fills the screen.
+    for (const [at, by] of [["/", 300], ["/wall", 500]]) {
+      const steps = path.join(root, `steps-${by}.yaml`);
+      fs.writeFileSync(steps, `steps:\n  - visit: ${at}\n  - click: "text=Write to us"\n    zoom: false\n  - scroll: ${by}\n  - click: "text=See pricing"\n    zoom: false\n  - wait: 1\n`);
+      const run = await cut.demo([origin, "--steps", steps, "--no-gif", "--json", "--out", path.join(root, `demo-${by}`)]);
+      assert.equal(run.status, 0, `${at}: ${run.stderr}`);
+      const { steps: done, pages, notes } = JSON.parse(run.stdout);
+      assert.equal(done[3].opened, `${origin}/pricing`, `${at}: ${run.stdout}`);
+      assert.deepEqual(pages.map((p) => p.url), [`${origin}${at}`, `${origin}/pricing`], at);
+      assert.ok(notes.includes("The page tried to open mailto:hello@example.com, which is not a web address: it was not opened, and the page stayed where it was."), notes.join("\n"));
+    }
+    assert.equal(cut.started(), "");
+    assert.deepEqual(cut.opened, []);
+  } finally {
+    await cut.close();
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // A redirect to an address of another kind is not followed (see
 // guardBrowser() in chrome.js): the browser never sees the address, and the
 // tab takes clicks and keys after it as before. So the demo checks that the
