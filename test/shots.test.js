@@ -3319,19 +3319,26 @@ function recordingHandlers(root, bus = null) {
 // the session bus, or with no portal there through xdg-email on PATH, and
 // so did a refresh to mailto:, a frame at mailto: and a page that moved on
 // once it had loaded to an address that redirects to mailto:. Each page is
-// taken as it is drawn, and its notes say what it tried to open. Each runs
-// in a browser of its own: a browser hands out one such address that a
-// page goes to by itself, and none after it, so one case would hide the
-// next. A frame at news:, which the browser hands to no program, is named
-// in its page's notes.
-test("no page makes the browser start a program of this machine, by moving to mailto: as it loads, by a refresh or a frame at mailto:, or by a redirect to it", { skip: noBrowser || (process.platform !== "linux" && "the browser starts these programs through PATH and the session bus on Linux only"), timeout: 180_000 }, async () => {
+// taken as it is drawn, and its notes say what it tried to open, a redirect
+// to mailto: included, where a page that moved to one, or a frame at one,
+// went without a note. Each runs in a browser of its own: a browser hands
+// out one such address that a page goes to by itself, and none after it,
+// so one case would hide the next. A frame at news:, which the browser
+// hands to no program, is named in its page's notes. An address that
+// redirects to mailto: is no page, and the run says where it leads, given
+// and as a --page, where it failed, or was left out, in the browser's bare
+// words, net::ERR_ABORTED. A redirect there is not followed at all, so the
+// browser does not look up which program would open it either.
+test("no page makes the browser start a program of this machine, by moving to mailto: as it loads, by a refresh or a frame at mailto:, or by a redirect to it", { skip: noBrowser || (process.platform !== "linux" && "the browser starts these programs through PATH and the session bus on Linux only"), timeout: 240_000 }, async () => {
   const html = { "Content-Type": "text/html; charset=utf-8" };
   const tall = '<div style="height:1400px;background:rgb(0,160,0)"></div>';
   const { server, origin } = await serve((req, res) => {
     if (req.url === "/") return res.writeHead(200, html).end(page("Acme | Tools", `<h1>Acme</h1>${tall}<script>location.href = "mailto:hello@example.com?subject=Hi";</script>`));
+    if (req.url === "/home") return res.writeHead(200, html).end(page("Acme | Tools", `<h1>Acme</h1>${tall}`));
     if (req.url === "/refresh") return res.writeHead(200, html).end(page("Refresh | Acme", `<h1>Refresh</h1>${tall}`, { head: '<meta http-equiv="refresh" content="0; url=mailto:refresh@example.com">' }));
     if (req.url === "/frame") return res.writeHead(200, html).end(page("Frame | Acme", `<h1>Frame</h1><iframe src="mailto:frame@example.com"></iframe>${tall}`));
     if (req.url === "/later") return res.writeHead(200, html).end(page("Later | Acme", `<h1>Later</h1>${tall}<script>addEventListener("load", () => setTimeout(() => (location.href = "/bounce"), 200));</script>`));
+    if (req.url === "/framed-bounce") return res.writeHead(200, html).end(page("Framed bounce | Acme", `<h1>Framed bounce</h1><iframe src="/bounce"></iframe>${tall}`));
     if (req.url === "/bounce") return res.writeHead(302, { Location: "mailto:bounce@example.com" }).end();
     if (req.url === "/news") return res.writeHead(200, html).end(page("News | Acme", `<h1>News</h1><iframe src="news:comp.lang.c"></iframe>${tall}`));
     res.writeHead(404).end("not found");
@@ -3346,15 +3353,27 @@ test("no page makes the browser start a program of this machine, by moving to ma
       ["/", [notOpened("mailto:hello@example.com?subject=Hi")]],
       ["/refresh", [notOpened("mailto:refresh@example.com")]],
       ["/frame", [`a frame of ${notOpened("mailto:frame@example.com")}`]],
-      ["/later", null],
+      ["/later", [notOpened("mailto:bounce@example.com")]],
+      ["/framed-bounce", [`a frame of ${notOpened("mailto:bounce@example.com")}`]],
       ["/news", [`a frame of ${notOpened("news:comp.lang.c")}`]],
     ]) {
       const run = await runCli([`${origin}${at}`, "--pages", "1", "--sizes", "desktop", "--json", "--out", path.join(root, `shots${at.replace("/", "-")}`)], { env });
       assert.equal(run.status, 0, `${at}: ${run.stderr}`);
-      if (notes) assert.deepEqual(JSON.parse(run.stdout).pages[0].notes, notes, at);
+      assert.deepEqual(JSON.parse(run.stdout).pages[0].notes, notes, at);
       assert.equal(started(), "", at);
       if (portal) assert.deepEqual(portal.opened, [], at);
     }
+    const leads = `it leads to mailto:bounce@example.com, which is not a web address`;
+    const given = await runCli([`${origin}/bounce`, "--pages", "1", "--sizes", "desktop", "--out", path.join(root, "shots-bounce")], { env });
+    assert.equal(given.status, 1, given.stderr);
+    assert.match(given.stderr, new RegExp(`^easyscreenshotkit: Could not open ${origin}/bounce: ${leads}\\.$`, "m"));
+    const asked = await runCli([`${origin}/home`, "--pages", "1", "--page", "/bounce", "--sizes", "desktop", "--json", "--out", path.join(root, "shots-asked")], { env });
+    assert.equal(asked.status, 0, asked.stderr);
+    const manifest = JSON.parse(asked.stdout);
+    assert.deepEqual(manifest.skipped, [{ url: `${origin}/bounce`, reason: leads }]);
+    assert.ok(manifest.notes.includes(`${origin}/bounce was asked for but not taken: ${leads}.`), manifest.notes.join("\n"));
+    assert.equal(started(), "");
+    if (portal) assert.deepEqual(portal.opened, []);
   } finally {
     if (portal) portal.close();
     if (bus) await bus.close();

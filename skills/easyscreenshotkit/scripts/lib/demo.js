@@ -97,13 +97,14 @@ demo opens: a page's own pictures, styles, scripts and the data it fetches
 are left to the browser's own rules, and on a site you run on your machine
 they can come from other ports of it.
 
-A click on a link to an address of another kind, such as mailto:, or a
-page that goes to one, leaves the page where it is, with a note in
-steps.json: on Linux the browser hands it to no program of the machine,
-and on macOS and Windows it can hand it to the mail program there. A visit
-or a click to a page that goes to one before anything of it is drawn stops
-the demo, as one that goes to a file then does, and a tour leaves such a
-page out and says so.
+A click on a link to an address of another kind, such as mailto:, or to
+a page that redirects to one, or a page that goes to one, leaves the page
+where it is, with a note in steps.json: on Linux the browser hands it to
+no program of the machine, and on macOS and Windows it can hand it to the
+mail program there; a redirect to one is not followed. A visit to an
+address that redirects to one, or a visit or a click to a page that goes
+to one before anything of it is drawn, stops the demo, as one that goes
+to a file then does, and a tour leaves such a page out and says so.
 
 When the address given is another page than the home page, or a #route of
 it, a tour whose home page answers an error or a bot check, or cannot be

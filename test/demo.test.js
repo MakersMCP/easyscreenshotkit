@@ -1694,58 +1694,85 @@ test("a click on a download link saves no file", { skip: missing || (process.pla
   }
 });
 
-// No click of a demo makes the browser start a program of this machine: a
-// click on a mailto: or a news: link, or on a button that opens a window at
-// mailto:, had the browser start the user's own mail program, through the
-// desktop's portal on the session bus or through xdg-email on PATH. The
-// stand-ins on PATH, and the one for the portal on a bus of the test's own
-// (see bus.js), write down any start, so no test starts a real one; with no
-// such bus here, the browser's bus is one where nothing listens, never the
-// user's own, which a program given no bus can find in XDG_RUNTIME_DIR.
-test("no click of a demo makes the browser start a program of this machine", { skip: missing || (process.platform !== "linux" && "the browser starts these programs through PATH and the session bus on Linux only"), timeout: 200_000 }, async () => {
-  const html = { "Content-Type": "text/html; charset=utf-8" };
-  const { server, origin } = await serve((req, res) => {
-    if (req.url !== "/") return res.writeHead(404).end("not found");
-    res.writeHead(200, html).end(page("Contact | Acme", '<h1>Contact</h1><p style="font-size:32px;padding:0 40px"><a href="mailto:sales@example.com?subject=Hello">Write to us</a> <a href="news:comp.lang.c">News</a> <button onclick="window.open(\'mailto:open@example.com\')">Open a window</button></p><div style="height:1400px;background:rgb(0,160,0)"></div>'));
-  });
-  const root = tempDir();
+// A demo's command line run with the machine's programs and the desktop cut
+// off: stand-ins on PATH for the programs the browser hands an address of
+// another kind to, and for xdg-settings and xdg-mime, which it asks first
+// which program opens one, each writing down that it was started; a session
+// bus of the test's own with a stand-in for the desktop's portal that
+// writes down what it is asked to open (see bus.js), or one where nothing
+// listens, never the user's own, which a program given no bus can find in
+// XDG_RUNTIME_DIR; and no display. Resolves to { demo(args): the run's
+// status, stdout and stderr; started(): what the stand-ins wrote; opened:
+// what the portal was asked; close() }.
+async function cutOff(root) {
   const dir = path.join(root, "handlers");
   fs.mkdirSync(dir);
   const log = path.join(root, "started.log");
   for (const name of ["xdg-open", "xdg-email", "x-www-browser", "www-browser", "sensible-browser", "xdg-settings", "xdg-mime", "gio", "kde-open", "gnome-open", "exo-open"]) fs.writeFileSync(path.join(dir, name), `#!/bin/sh\necho "$0 $*" >> '${log}'\n`, { mode: 0o755 });
   const env = { ...process.env, PATH: `${dir}${path.delimiter}${process.env.PATH}` };
-  for (const name of ["DISPLAY", "WAYLAND_DISPLAY", "XDG_CURRENT_DESKTOP", "DESKTOP_SESSION", "BROWSER"]) delete env[name];
+  for (const name of ["DISPLAY", "WAYLAND_DISPLAY", "WAYLAND_SOCKET", "XDG_CURRENT_DESKTOP", "DESKTOP_SESSION", "BROWSER"]) delete env[name];
   const bus = noBus(root) ? null : await privateBus(fs.mkdtempSync(path.join(root, "bus-")));
   const portal = bus ? await fakePortal(bus.address) : null;
   Object.assign(env, bus ? { DBUS_SESSION_BUS_ADDRESS: bus.address, XDG_RUNTIME_DIR: bus.dir, XDG_CURRENT_DESKTOP: "GNOME" } : { DBUS_SESSION_BUS_ADDRESS: `unix:path=${path.join(root, "no-bus")}`, XDG_RUNTIME_DIR: root });
+  return {
+    // Not spawnSync: this process's server answers the demo's browser.
+    demo: (args) =>
+      new Promise((resolve) => {
+        const child = spawn(process.execPath, [CLI, "demo", ...args], { env });
+        let stdout = "";
+        let stderr = "";
+        child.stdout.on("data", (d) => (stdout += d));
+        child.stderr.on("data", (d) => (stderr += d));
+        child.on("close", (status) => resolve({ status, stdout, stderr }));
+      }),
+    started: () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8") : ""),
+    opened: portal ? portal.opened : [],
+    close: async () => {
+      if (portal) portal.close();
+      if (bus) await bus.close();
+    },
+  };
+}
+
+// No click of a demo makes the browser start a program of this machine: a
+// click on a mailto: or a news: link, or on a button that opens a window at
+// mailto:, had the browser start the user's own mail program, through the
+// desktop's portal on the session bus or through xdg-email on PATH, and so
+// did a click on a link to a page that redirects to mailto:, which went
+// without a note too. The stand-ins on PATH, and the one for the portal on
+// a bus of the test's own, write down any start, so no test starts a real
+// one (see cutOff).
+test("no click of a demo makes the browser start a program of this machine", { skip: missing || (process.platform !== "linux" && "the browser starts these programs through PATH and the session bus on Linux only"), timeout: 200_000 }, async () => {
+  const html = { "Content-Type": "text/html; charset=utf-8" };
+  const { server, origin } = await serve((req, res) => {
+    if (req.url === "/bounce") return res.writeHead(302, { Location: "mailto:bounce@example.com" }).end();
+    if (req.url !== "/") return res.writeHead(404).end("not found");
+    res.writeHead(200, html).end(page("Contact | Acme", '<h1>Contact</h1><p style="font-size:32px;padding:0 40px"><a href="mailto:sales@example.com?subject=Hello">Write to us</a> <a href="news:comp.lang.c">News</a> <a href="/bounce">Bounce</a> <button onclick="window.open(\'mailto:open@example.com\')">Open a window</button></p><div style="height:1400px;background:rgb(0,160,0)"></div>'));
+  });
+  const root = tempDir();
+  const cut = await cutOff(root);
   const steps = path.join(root, "steps.yaml");
   // The window first: once the browser has handed out an address, it opens
-  // no window for the next one, and says nothing of it.
-  fs.writeFileSync(steps, 'steps:\n  - visit: /\n  - click: "text=Open a window"\n    zoom: false\n  - click: "text=Write to us"\n    zoom: false\n  - click: "text=News"\n    zoom: false\n  - wait: 1\n');
+  // no window for the next one, and says nothing of it. A redirect to
+  // mailto: is not followed, so it hands out nothing.
+  fs.writeFileSync(steps, 'steps:\n  - visit: /\n  - click: "text=Open a window"\n    zoom: false\n  - click: "text=Bounce"\n    zoom: false\n  - click: "text=Write to us"\n    zoom: false\n  - click: "text=News"\n    zoom: false\n  - wait: 1\n');
   try {
-    // Not spawnSync: this process's server answers the demo's browser.
-    const run = await new Promise((resolve) => {
-      const child = spawn(process.execPath, [CLI, "demo", origin, "--steps", steps, "--no-gif", "--json", "--out", path.join(root, "demo")], { env });
-      let stdout = "";
-      let stderr = "";
-      child.stdout.on("data", (d) => (stdout += d));
-      child.stderr.on("data", (d) => (stderr += d));
-      child.on("close", (status) => resolve({ status, stdout, stderr }));
-    });
+    const run = await cut.demo([origin, "--steps", steps, "--no-gif", "--json", "--out", path.join(root, "demo")]);
     assert.equal(run.status, 0, run.stderr);
-    const { notes } = JSON.parse(run.stdout);
+    const { notes, pages } = JSON.parse(run.stdout);
     for (const note of [
+      "The page tried to open mailto:bounce@example.com, which is not a web address: it was not opened, and the page stayed where it was.",
       "The page tried to open mailto:sales@example.com?subject=Hello, which is not a web address: it was not opened, and the page stayed where it was.",
       "The page tried to open news:comp.lang.c, which is not a web address: it was not opened, and the page stayed where it was.",
       "The page tried to open a window at mailto:open@example.com, which is not a web address: it was not opened.",
     ]) {
       assert.ok(notes.includes(note), `${note}\n${notes.join("\n")}`);
     }
-    assert.equal(fs.existsSync(log) ? fs.readFileSync(log, "utf8") : "", "");
-    if (portal) assert.deepEqual(portal.opened, []);
+    assert.deepEqual(pages.map((p) => p.url), [`${origin}/`]);
+    assert.equal(cut.started(), "");
+    assert.deepEqual(cut.opened, []);
   } finally {
-    if (portal) portal.close();
-    if (bus) await bus.close();
+    await cut.close();
     server.close();
     fs.rmSync(root, { recursive: true, force: true });
   }

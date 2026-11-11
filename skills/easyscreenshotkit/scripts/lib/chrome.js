@@ -861,6 +861,21 @@ function userAgentFor(device, chromeAgent) {
 // is no web address and none of the browser's own.
 const outside = (url) => /^[a-z][a-z0-9+.-]*:/i.test(String(url || "")) && !/^(https?|about|data|blob|javascript|file|filesystem|chrome|chrome-error|devtools):/i.test(String(url));
 
+// Where a document's answer, paused before the browser read it, redirects
+// to: the address its Location names, read against the request's, or ""
+// for an answer that is no redirect.
+const REDIRECTS = new Set([301, 302, 303, 307, 308]);
+
+function redirectOf(p) {
+  if (!REDIRECTS.has(p.responseStatusCode)) return "";
+  const location = (p.responseHeaders || []).find((header) => String(header.name).toLowerCase() === "location");
+  try {
+    return location ? new URL(String(location.value), String((p.request && p.request.url) || "")).href : "";
+  } catch {
+    return "";
+  }
+}
+
 // The event a tab gets when a document of its own was not loaded because
 // the run's guard refuses its address (see guardBrowser()): {url, why,
 // main, window}, main when it was the page itself, window when it was a
@@ -881,6 +896,13 @@ const BARRED = "easyscreenshotkit.addressRefused";
 // the same, and then no tab is told. A page's pictures, scripts, styles and
 // the data it fetches are not documents: the browser's own rules hold for
 // them.
+// The answer to each such request is held a moment too, before the browser
+// reads it: one that redirects to an address of another kind, as a 302 to
+// mailto:, is not followed, on any system, and the tab is told of it as of
+// a move there. Followed, it had the browser hand the address to a program
+// of the machine, and a page that redirected there was said to fail in the
+// browser's bare words (net::ERR_ABORTED), or, for a frame or a page that
+// moved there once it had loaded, went without a note.
 // Turned on once for a browser, when its first tab opens with the guard
 // set; timeoutMs: how long the browser has to take it. A turn-on that
 // failed, as one that ran out of time on a busy machine, is not kept: the
@@ -912,6 +934,12 @@ function guardBrowser(chrome, timeoutMs) {
       const go = () => void browser.send("Fetch.continueRequest", { requestId: p.requestId }, 10_000, QUICK).catch(() => {});
       const url = String((p.request && p.request.url) || "");
       const owner = owners.get(p.frameId);
+      if (p.responseStatusCode !== undefined || p.responseErrorReason !== undefined) {
+        const to = redirectOf(p);
+        if (!to || !outside(to) || (owner && owner.own)) return go();
+        if (owner && owner.tab) owner.tab.emit(BARRED, { url: to, why: NOT_WEB, main: p.frameId === owner.tab.targetId, window: Boolean(owner.window), stays: true });
+        return void browser.send("Fetch.failRequest", { requestId: p.requestId, errorReason: "Aborted" }, 10_000, QUICK).catch(() => {});
+      }
       if ((owner && owner.own) || (!owner && !/^https?:/i.test(url))) return go();
       const why = chrome.guard ? await chrome.guard.refuses(url).catch(() => NOT_WEB) : "";
       if (!why) return go();
@@ -923,7 +951,8 @@ function guardBrowser(chrome, timeoutMs) {
   }
   const turning = (async () => {
     await browser.send("Target.setDiscoverTargets", { discover: true }, timeoutMs);
-    await browser.send("Fetch.enable", { patterns: [{ urlPattern: "*", resourceType: "Document", requestStage: "Request" }] }, timeoutMs);
+    const documents = (requestStage) => ({ urlPattern: "*", resourceType: "Document", requestStage });
+    await browser.send("Fetch.enable", { patterns: [documents("Request"), documents("Response")] }, timeoutMs);
   })();
   chrome.guarding = turning;
   turning.catch(() => {
@@ -1122,10 +1151,14 @@ async function navigate(cdp, url) {
     cdp.on(method, listener);
     off.push(() => cdp.off(method, listener));
   };
-  // barred: the first refusal of a document of the page itself. left: where
-  // the page went, before its load event, that it may not go; stays, when
-  // that left the page where it was (a file, an address of another kind).
+  // barred: the first refusal of a document of the page itself; stayed:
+  // the first of a move that leaves the page where it was, as one to an
+  // address of another kind, which is why an address that redirects there
+  // fails. left: where the page went, before its load event, that it may
+  // not go; stays, when that left the page where it was (a file, an address
+  // of another kind).
   let barred = null;
+  let stayed = null;
   let left = null;
   let loadedYet = false;
   let asked = false;
@@ -1146,6 +1179,7 @@ async function navigate(cdp, url) {
   listen(BARRED, (b) => {
     if (!b.main) return;
     if (!b.stays) barred = barred || b;
+    else stayed = stayed || b;
     goes(b);
   });
   // A download the page itself went to as it loaded. One a link with a
@@ -1164,8 +1198,9 @@ async function navigate(cdp, url) {
       throw Object.assign(new Error(`Could not open ${url}: no answer in ${s} s. The site may be down or slow, or the machine too busy: try again${wait.cut ? ", or give the run more time with --timeout" : ""}.`), { reason: `no answer in ${s} s` });
     });
     if (isDownload) throw Object.assign(new Error(`Could not open ${url}: it answers with ${NOT_A_PAGE}.`), { refused: NOT_A_PAGE });
-    if (errorText && barred) {
-      const why = `it leads to ${barred.url}, which is ${barred.why}`;
+    const refusal = barred || stayed;
+    if (errorText && refusal) {
+      const why = `it leads to ${refusal.url}, which is ${refusal.why}`;
       throw Object.assign(new Error(`Could not open ${url}: ${why}.`), { refused: why });
     }
     // reason: the browser's own words, for a page left out over it.

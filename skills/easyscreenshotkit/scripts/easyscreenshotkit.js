@@ -80,8 +80,9 @@ your machine they can come from other ports of it.
 An address of another kind that a page goes to, such as mailto:, is no
 page to open, and its notes say so: on Linux the browser hands it to no
 program of the machine, and on macOS and Windows it can hand it to the
-mail program there. A page that goes to one before anything of it is
-drawn is refused, as one that goes to a file then is: a --page, a page of
+mail program there. A redirect to one is not followed. A page that goes
+to one before anything of it is drawn, or an address that redirects to
+one, is refused, as one that goes to a file then is: a --page, a page of
 the tour and, above one page, the address given are left out, and with
 one page the address given stops the run.
 
