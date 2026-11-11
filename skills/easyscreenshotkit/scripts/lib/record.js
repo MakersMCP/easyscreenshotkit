@@ -124,16 +124,18 @@ const SCROLLER = `(() => {
   return { inner: true, y: best.scrollTop, max: best.scrollHeight - best.clientHeight };
 })()`;
 
-// Where the real mouse can move for the page itself to hear it (see
+// Readies the page to hear the real mouse at the pointer (see
 // inputReaches()): a frame, as a map or a video is, takes the moves over it
-// in a document of its own, which the page does not hear. The pointer's
-// spot when no frame lies under it, or under the pixel to its right, else
-// the nearest spot of the screen, on a grid of 40 px, that no frame covers,
-// one with no link, button or field first, as those can change when the
-// mouse is over them; or null when frames cover all of it. An element in a
-// shadow root is looked for through its host. Once a spot is found, the
-// page listens for the next move.
-const PROBE_SPOT = `((at, width, height) => {
+// in a document of its own, which the page does not hear, and frames can
+// cover the whole screen. So each frame under the pointer, or under the
+// pixel to its right, takes no pointer events until PROBE_END: the move
+// goes to the page below it. An element in a shadow root is looked for
+// through its host, and its own style is set, which a page's
+// Content-Security-Policy does not stop as it stops a style sheet. Then the
+// page listens for the next move, and the promise settles once the page
+// has drawn twice, by when the browser routes a move by the page as it is
+// now, or after 300 ms.
+const PROBE_START = `((at) => {
   const hit = (x, y) => {
     let el = document.elementFromPoint(x, y);
     for (let depth = 0; el && el.shadowRoot && depth < 32; depth++) {
@@ -143,34 +145,33 @@ const PROBE_SPOT = `((at, width, height) => {
     }
     return el;
   };
-  const framed = (el) => !el || /^(IFRAME|FRAME|OBJECT|EMBED|FENCEDFRAME|PORTAL)$/.test(el.tagName);
-  // The element at a spot no frame covers, or null.
-  const free = (x, y) => {
-    const el = hit(x, y);
-    return framed(el) || framed(hit(x + 1, y)) ? null : el;
-  };
-  let spot = free(at.x, at.y) ? { x: at.x, y: at.y } : null;
-  if (!spot) {
-    const spots = [];
-    for (let y = 20; y < height - 2; y += 40) for (let x = 20; x < width - 2; x += 40) spots.push({ x, y });
-    spots.sort((a, b) => Math.hypot(a.x - at.x, a.y - at.y) - Math.hypot(b.x - at.x, b.y - at.y));
-    let any = null;
-    for (const s of spots) {
-      const el = free(s.x, s.y);
-      if (!el) continue;
-      if (!el.closest("a, button, input, select, textarea, label, summary, [role=button], [role=link], [onclick]")) {
-        spot = s;
-        break;
-      }
-      any = any || s;
+  const framed = (el) => el && /^(IFRAME|FRAME|OBJECT|EMBED|FENCEDFRAME|PORTAL)$/.test(el.tagName);
+  const set = (window.__easyscreenshotkitProbe = []);
+  for (const x of [at.x, at.x + 1]) {
+    for (let el = hit(x, at.y), n = 0; framed(el) && n < 32; el = hit(x, at.y), n++) {
+      set.push([el, el.style.getPropertyValue("pointer-events"), el.style.getPropertyPriority("pointer-events"), el.hasAttribute("style")]);
+      el.style.setProperty("pointer-events", "none", "important");
     }
-    spot = spot || any;
   }
-  if (!spot) return null;
   window.__easyscreenshotkitMoved = false;
   addEventListener("mousemove", () => { window.__easyscreenshotkitMoved = true; }, { capture: true, once: true });
-  return spot;
+  return new Promise((done) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => done(true)));
+    setTimeout(() => done(true), 300);
+  });
 })`;
+
+// Gives the frames PROBE_START set aside their pointer events back, as they
+// were.
+const PROBE_END = `(() => {
+  for (const [el, value, priority, had] of window.__easyscreenshotkitProbe || []) {
+    if (value) el.style.setProperty("pointer-events", value, priority);
+    else el.style.removeProperty("pointer-events");
+    if (!had && !el.getAttribute("style")) el.removeAttribute("style");
+  }
+  window.__easyscreenshotkitProbe = null;
+  return true;
+})()`;
 
 // A glide: the page moves itself to the next position on each animation
 // frame (every skip-th one), and notes where it really went and when.
@@ -595,25 +596,28 @@ class Recorder {
   // news: (mailto: leaves it as it was): every later click, key and move
   // did nothing, on a page a visit opened after it too, while the steps
   // went on as if each had landed. The real mouse is moved a pixel off and
-  // back, and the page listens for it, at the pointer's spot or, with a
-  // frame under the pointer, at the nearest spot no frame covers, and then
-  // goes back to the pointer (see PROBE_SPOT): at the pointer's spot over a
-  // frame the page heard nothing, and a demo that went on well stopped. A
-  // page that could not be asked, as one going away, or that frames cover
-  // all over, counts as one that takes it.
+  // back at the pointer, and the page listens for it, with the frames under
+  // the pointer set aside for the moment (see PROBE_START): a frame there
+  // took the move in a document of its own, and the page heard nothing.
+  // Where frames covered the whole screen the check was left out, and the
+  // next click did nothing again. A page that could not be asked, as one
+  // going away, counts as one that takes it.
   async inputReaches() {
-    const spot = await this.eval(`${PROBE_SPOT}(${JSON.stringify(this.cursor)}, ${this.viewport.width}, ${this.viewport.height})`);
-    if (!spot || typeof spot.x !== "number" || typeof spot.y !== "number") return true;
+    const ready = await this.eval(`${PROBE_START}(${JSON.stringify(this.cursor)})`);
+    if (ready !== true) return true;
     let moved = false;
-    for (let tries = 0; tries < 2 && !moved; tries++) {
-      await this.pointer({ x: spot.x + 1, y: spot.y });
-      await this.pointer(spot);
-      for (let i = 0; i < 10 && !moved; i++) {
-        moved = (await this.eval("window.__easyscreenshotkitMoved")) !== false;
-        if (!moved) await sleep(50);
+    try {
+      for (let tries = 0; tries < 2 && !moved; tries++) {
+        await this.pointer({ x: this.cursor.x + 1, y: this.cursor.y });
+        await this.pointer(this.cursor);
+        for (let i = 0; i < 10 && !moved; i++) {
+          moved = (await this.eval("window.__easyscreenshotkitMoved")) !== false;
+          if (!moved) await sleep(50);
+        }
       }
+    } finally {
+      await this.eval(PROBE_END);
     }
-    if (spot.x !== this.cursor.x || spot.y !== this.cursor.y) await this.pointer(this.cursor);
     return moved;
   }
 

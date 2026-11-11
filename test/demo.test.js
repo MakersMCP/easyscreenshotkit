@@ -1850,15 +1850,20 @@ test("a demo's click after one on a tel: link opens its page, or the demo says t
 // in a document of its own: with one under the pointer, as a scroll can
 // put it there, the page heard nothing, and a demo whose next click was
 // fine stopped after a click on a mailto: link, which leaves the tab as it
-// was, with a sentence that blamed the browser. The mouse goes to the
-// nearest spot no frame covers, and a screen that frames cover all over
-// counts as one that takes input.
-test("a demo's click after one on a mailto: link opens its page with a frame under the pointer, and with frames all over the screen", { skip: missing || (process.platform !== "linux" && "the browser starts these programs through PATH and the session bus on Linux only"), timeout: 200_000 }, async () => {
+// was, with a sentence that blamed the browser. The frames under the
+// pointer are set aside for the moment of the check, one of the page's
+// process and one of a process of its own (a sandboxed frame) alike, also
+// where they cover the whole screen.
+const contactPage = (link, frame) => page("Contact | Acme", `<h1>Contact</h1><p style="font-size:32px;padding:0 40px">${link}</p>${frame}<p style="font-size:32px;padding:0 40px"><a href="/pricing">See pricing</a></p><div style="height:1400px;background:rgb(0,160,0)"></div>`);
+const mapFrame = (height, sandboxed = false) => `<iframe${sandboxed ? " sandbox" : ""} src="/map" style="display:block;width:100vw;height:${height}px;border:0;margin:0"></iframe>`;
+
+test("a demo's click after one on a mailto: link opens its page with a frame under the pointer, and with frames all over the screen", { skip: missing || (process.platform !== "linux" && "the browser starts these programs through PATH and the session bus on Linux only"), timeout: 300_000 }, async () => {
   const html = { "Content-Type": "text/html; charset=utf-8" };
-  const contact = (height) => page("Contact | Acme", `<h1>Contact</h1><p style="font-size:32px;padding:0 40px"><a href="mailto:hello@example.com">Write to us</a></p><iframe src="/map" style="display:block;width:100%;height:${height}px;border:0"></iframe><p style="font-size:32px;padding:0 40px"><a href="/pricing">See pricing</a></p><div style="height:1400px;background:rgb(0,160,0)"></div>`);
+  const write = '<a href="mailto:hello@example.com">Write to us</a>';
   const { server, origin } = await serve((req, res) => {
-    if (req.url === "/") return res.writeHead(200, html).end(contact(900));
-    if (req.url === "/wall") return res.writeHead(200, html).end(contact(2400));
+    if (req.url === "/") return res.writeHead(200, html).end(contactPage(write, mapFrame(900)));
+    if (req.url === "/wall") return res.writeHead(200, html).end(contactPage(write, mapFrame(2400)));
+    if (req.url === "/boxed") return res.writeHead(200, html).end(contactPage(write, mapFrame(2400, true)));
     if (req.url === "/map") return res.writeHead(200, html).end(page("Map", '<div style="height:2400px;background:rgb(200,200,255)"></div>'));
     if (req.url === "/pricing") return res.writeHead(200, html).end(page("Pricing | Acme", '<h1>Pricing</h1><div style="height:1400px;background:rgb(0,0,220)"></div>'));
     res.writeHead(404).end("not found");
@@ -1867,16 +1872,60 @@ test("a demo's click after one on a mailto: link opens its page with a frame und
   const cut = await cutOff(root);
   try {
     // The scroll puts the frame under the pointer, which the click on the
-    // mailto: link left at the top; on /wall the frame then fills the screen.
-    for (const [at, by] of [["/", 300], ["/wall", 500]]) {
-      const steps = path.join(root, `steps-${by}.yaml`);
+    // mailto: link left at the top; on /wall and /boxed the frame then fills
+    // the screen.
+    for (const [at, by] of [["/", 300], ["/wall", 500], ["/boxed", 500]]) {
+      const steps = path.join(root, `steps-${at.slice(1) || "home"}.yaml`);
       fs.writeFileSync(steps, `steps:\n  - visit: ${at}\n  - click: "text=Write to us"\n    zoom: false\n  - scroll: ${by}\n  - click: "text=See pricing"\n    zoom: false\n  - wait: 1\n`);
-      const run = await cut.demo([origin, "--steps", steps, "--no-gif", "--json", "--out", path.join(root, `demo-${by}`)]);
+      const run = await cut.demo([origin, "--steps", steps, "--no-gif", "--json", "--out", path.join(root, `demo-${at.slice(1) || "home"}`)]);
       assert.equal(run.status, 0, `${at}: ${run.stderr}`);
       const { steps: done, pages, notes } = JSON.parse(run.stdout);
       assert.equal(done[3].opened, `${origin}/pricing`, `${at}: ${run.stdout}`);
       assert.deepEqual(pages.map((p) => p.url), [`${origin}${at}`, `${origin}/pricing`], at);
       assert.ok(notes.includes("The page tried to open mailto:hello@example.com, which is not a web address: it was not opened, and the page stayed where it was."), notes.join("\n"));
+    }
+    assert.equal(cut.started(), "");
+    assert.deepEqual(cut.opened, []);
+  } finally {
+    await cut.close();
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// The same after a click on a tel: link, once a frame fills the screen: the
+// check was left out there, as it was where frames covered the whole
+// screen, and with a browser that takes no more input after tel:, as Chrome
+// 155 and 157 do, the next click did nothing while steps.json listed it as
+// done and the demo ended well. The demo now stops at it with its sentence,
+// or, with a browser that still takes input, the click opens its page.
+test("a demo's click after one on a tel: link opens its page, or the demo says the browser took no more clicks, with frames all over the screen", { skip: missing || (process.platform !== "linux" && "the browser starts these programs through PATH and the session bus on Linux only"), timeout: 300_000 }, async () => {
+  const html = { "Content-Type": "text/html; charset=utf-8" };
+  const call = '<a href="tel:+15551234567">Call us</a>';
+  const { server, origin } = await serve((req, res) => {
+    if (req.url === "/wall") return res.writeHead(200, html).end(contactPage(call, mapFrame(2400)));
+    if (req.url === "/boxed") return res.writeHead(200, html).end(contactPage(call, mapFrame(2400, true)));
+    if (req.url === "/map") return res.writeHead(200, html).end(page("Map", '<div style="height:2400px;background:rgb(200,200,255)"></div>'));
+    if (req.url === "/pricing") return res.writeHead(200, html).end(page("Pricing | Acme", '<h1>Pricing</h1><div style="height:1400px;background:rgb(0,0,220)"></div>'));
+    res.writeHead(404).end("not found");
+  });
+  const root = tempDir();
+  const cut = await cutOff(root);
+  try {
+    for (const at of ["/wall", "/boxed"]) {
+      const steps = path.join(root, `steps-${at.slice(1)}.yaml`);
+      fs.writeFileSync(steps, `steps:\n  - visit: ${at}\n  - click: "text=Call us"\n    zoom: false\n  - scroll: 500\n  - click: "text=See pricing"\n    zoom: false\n  - wait: 1\n`);
+      const out = path.join(root, `demo-${at.slice(1)}`);
+      const run = await cut.demo([origin, "--steps", steps, "--no-gif", "--json", "--out", out]);
+      if (run.status === 0) {
+        const { steps: done, pages } = JSON.parse(run.stdout);
+        assert.equal(done[3].opened, `${origin}/pricing`, `${at}: ${run.stdout}`);
+        assert.deepEqual(pages.map((p) => p.url), [`${origin}${at}`, `${origin}/pricing`], at);
+      } else {
+        assert.equal(run.status, 1, `${at}: ${run.stderr}`);
+        assert.equal(run.stderr.trim().split("\n").pop(), "easyscreenshotkit demo: step 4 (click): the browser took no more clicks or keys after the page tried to open tel:+15551234567, as some versions of Chrome do. Leave out the step that goes there, or make it the last click or key of the steps.", at);
+        assert.equal(fs.existsSync(out), false, at);
+      }
     }
     assert.equal(cut.started(), "");
     assert.deepEqual(cut.opened, []);
