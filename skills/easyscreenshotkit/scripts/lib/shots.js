@@ -32,6 +32,7 @@ const { renderSheet } = require("./sheet");
 const { begin, checkDir, realFolder } = require("./outdir");
 const { setTimeLimit, timeLeft, sleep } = require("./time");
 const { guardFor, unresolvedError } = require("./address");
+const programs = require("./programs");
 const version = require("./version");
 
 // The devices a size names. Desktop at 1600x900 shows a site's full menu
@@ -1049,6 +1050,8 @@ async function takeShots(rawUrl, options = {}) {
     log = () => {},
   } = options;
   setTimeLimit(timeLimit);
+  // The programs an earlier run in this process found are found again.
+  programs.forget();
   const groups = parseSizes(sizes);
   if (pwa) addPwaShots(groups);
   const themes = theme === "both" ? ["light", "dark"] : [theme === "dark" ? "dark" : "light"];

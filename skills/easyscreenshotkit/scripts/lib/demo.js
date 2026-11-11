@@ -29,6 +29,7 @@ const { tagPng, pngSize, pngFileIsWhole } = require("./png");
 const { setTimeLimit, timeLeft } = require("./time");
 const { guardFor, unresolvedError } = require("./address");
 const { begin, checkDir, stopOnSignals } = require("./outdir");
+const programs = require("./programs");
 const version = require("./version");
 
 const USAGE = `Usage: easyscreenshotkit demo <url> [options]
@@ -408,6 +409,8 @@ async function makeDemo(rawUrl, options = {}) {
     log = () => {},
   } = options;
   setTimeLimit(timeLimit);
+  // The programs an earlier run in this process found are found again.
+  programs.forget();
   // Read without holding the process: a named pipe that nothing writes to
   // yet waits for as long as it takes, and a stop has to be heard meanwhile.
   const script = stepsFile ? await loadSteps(stepsFile) : null;

@@ -49,10 +49,16 @@ const FIX = {
 // PATH, as a shell would. Else where macOS and Windows install a browser,
 // and on Linux each of its names on PATH: the first program this user may
 // run, or else the first thing by such a name, as a folder or a file that
-// may not be run, to say what is wrong with it.
+// may not be run, to say what is wrong with it. A CHROME_PATH that names the
+// browser the run finds with it unset, as one a tool sets to what it found
+// does, is told to install another: unset, it gives the same one.
 function browserPlace() {
   const named = programs.named("CHROME_PATH", { name: "browser", fix: FIX.CHROME_PATH });
-  if (named) return named;
+  return named ? programs.orInstall(named, installed(), FIX.found) : installed();
+}
+
+// The browser the run finds with CHROME_PATH unset.
+function installed() {
   const listed = (file) => programs.found(file, { name: path.basename(file), where: "installed on this machine", fix: FIX.found });
   if (process.platform === "darwin") {
     const file = MAC.find((at) => fs.existsSync(at));

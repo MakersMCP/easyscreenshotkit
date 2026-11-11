@@ -30,10 +30,17 @@ const FIX = {
 // a path, taken from the folder the run starts in, or a name looked up on
 // PATH. Else the first ffmpeg on PATH this user may run, or the first thing
 // by that name there, to say what is wrong with it, and only where PATH has
-// nothing by that name, the one where a package manager puts it.
+// nothing by that name, the one where a package manager puts it. An
+// FFMPEG_PATH that names the ffmpeg the run finds with it unset, as one a
+// tool sets to what it found does, is told to install another: unset, it
+// gives the same one.
 function ffmpegPlace() {
   const named = programs.named("FFMPEG_PATH", { name: "ffmpeg", fix: FIX.FFMPEG_PATH });
-  if (named) return named;
+  return named ? programs.orInstall(named, onMachine(), FIX.found) : onMachine();
+}
+
+// The ffmpeg the run finds with FFMPEG_PATH unset.
+function onMachine() {
   const seen = programs.lookOnPath(programs.exe("ffmpeg"));
   const where = { name: "ffmpeg", where: "on PATH", fix: FIX.found };
   if (seen.file || seen.other) return programs.found(seen.file || seen.other, where);

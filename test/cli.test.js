@@ -1039,6 +1039,23 @@ test("a browser or an ffmpeg that cannot be started stops a run before any work 
       refused({ PATH }, SHOTS, `easyscreenshotkit: google-chrome did not start: ${at("broken", "google-chrome")}, the google-chrome on PATH, is a Windows program, which does not run on Linux. ${install.chrome}`);
       refused({ PATH }, DEMO, `easyscreenshotkit demo: The demo needs ffmpeg, and ${at("broken", "ffmpeg")}, the ffmpeg on PATH, is a Windows program, which does not run on Linux. ${install.ffmpeg}`);
     });
+    // A variable that names the program the run finds with it unset, as a
+    // tool sets it to what it found, by its path or its name: to unset it
+    // would give the same program, so the words say to install another,
+    // where they said to unset it.
+    await t.test("a variable that names the program the run finds with it unset", () => {
+      const PATH = `${at("broken")}${path.delimiter}${base.PATH}`;
+      for (const value of [at("broken", "google-chrome"), "google-chrome"]) {
+        const found = value === "google-chrome" ? `, found on PATH at ${at("broken", "google-chrome")}` : "";
+        refused({ PATH, CHROME_PATH: value }, SHOTS, `easyscreenshotkit: google-chrome did not start: CHROME_PATH is ${value}${found}, a Windows program, which does not run on Linux. ${install.chrome}`);
+      }
+      for (const value of [at("broken", "ffmpeg"), "ffmpeg"]) {
+        const found = value === "ffmpeg" ? `, found on PATH at ${at("broken", "ffmpeg")}` : "";
+        refused({ PATH, FFMPEG_PATH: value }, DEMO, `easyscreenshotkit demo: The demo needs ffmpeg, and FFMPEG_PATH is ${value}${found}, a Windows program, which does not run on Linux. ${install.ffmpeg}`);
+      }
+      // One that names another program keeps the words to unset it.
+      refused({ PATH, FFMPEG_PATH: at("pe", "ffmpeg") }, DEMO, `easyscreenshotkit demo: The demo needs ffmpeg, and FFMPEG_PATH is ${at("pe", "ffmpeg")}, a Windows program, which does not run on Linux. ${FIX.FFMPEG_PATH}`);
+    });
     // A file system mounted noexec, in a mount namespace of its own, where
     // the run is root of a user namespace.
     const mount = at("noexec");
