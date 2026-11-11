@@ -341,6 +341,7 @@ async function launch({ lang = "", args = [] } = {}) {
   let tried = await start(binary, { lang, args, own: true, wait: wait.ms });
   if (tried.tooDeep && tried.own) tried = await start(binary, { lang, args, own: false, wait: wait.ms });
   if (tried.chrome) return tried.chrome;
+  if (tried.unguarded) throw new Error(`${name} was not started: it hands addresses such as mailto: to programs of this machine, and none could be put in their place, as no program may run from the temp folder, ${os.tmpdir()}. Point TMPDIR at a folder where programs may run.`);
   if (tried.refused) throw new Error(`${name} cannot be told to refuse the downloads a page starts (${tried.refused}), so it was not used: a site could save files on this machine through it. Point CHROME_PATH at another browser.`);
   if (tried.tooDeep) throw new Error(`${name} did not start: the temp folder's path, ${os.tmpdir()}, is too long for the socket it opens there. Point TMPDIR at a folder with a shorter path.`);
   const free = freeInTemp();
@@ -403,6 +404,13 @@ function freeInTemp() {
 // and the error it answered the order to refuse downloads with.
 async function start(binary, { lang, args, own, wait = START_MS }) {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-chrome-"));
+  // No program of the machine opens what the browser hands out (see
+  // standIns): a browser that could not be kept from it is not started.
+  const handlers = process.platform === "linux" ? standIns(profile) : "";
+  if (handlers === null) {
+    fs.rmSync(profile, { recursive: true, force: true });
+    return { unguarded: true };
+  }
   const inProfile = own && process.platform === "linux" && roomIn(profile);
   const locksBefore = lockFolders();
   // In the temp folder, the folders the browser may leave there (see
@@ -437,7 +445,7 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
       ...(process.getuid && process.getuid() === 0 ? ["--no-sandbox"] : []),
       "about:blank",
     ],
-    { stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"], env: { ...process.env, ...configIn(profile), ...(inProfile ? { TMPDIR: profile } : {}) } },
+    { stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"], env: { ...process.env, ...configIn(profile), ...(inProfile ? { TMPDIR: profile } : {}), ...(handlers ? { PATH: `${handlers}${path.delimiter}${process.env.PATH ?? "/usr/bin:/bin"}` } : {}) } },
   );
   let exited = false;
   // Whether the browser ended, or its connection closed, before close()
@@ -592,6 +600,42 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
   return { own: inProfile, tooDeep: removeStrayLocks(locksBefore) || deep, silent, refused };
 }
 
+// On Linux the browser hands an address of a kind it does not open itself,
+// mailto:, news: or snews:, to a program of the machine without asking, by
+// starting xdg-email or xdg-open by its name through PATH: a page that went
+// to mailto: as it loaded opened the user's own mail program with the site's
+// message in it, and on a service that runs the kit for many people started
+// xdg-open there. Programs of those names that start nothing come first on
+// the browser's PATH, links to true in a folder of its profile, or scripts
+// that exit at once where there is no true; the rest of PATH stays as it
+// was. Returns that folder, or null when no program in it may run, as on a
+// temp folder mounted noexec with no true to link to.
+const HANDED_TO = ["xdg-open", "xdg-email", "x-www-browser", "www-browser", "sensible-browser"];
+
+function standIns(profile) {
+  const dir = path.join(profile, "easyscreenshotkit-handlers");
+  const runs = (file) => {
+    try {
+      fs.accessSync(file, fs.constants.X_OK);
+      return fs.statSync(file).isFile();
+    } catch {
+      return false;
+    }
+  };
+  try {
+    fs.mkdirSync(dir);
+    const truth = ["/usr/bin/true", "/bin/true"].find(runs);
+    for (const name of HANDED_TO) {
+      const at = path.join(dir, name);
+      if (truth) fs.symlinkSync(truth, at);
+      else fs.writeFileSync(at, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    }
+    return HANDED_TO.every((name) => runs(path.join(dir, name))) ? dir : null;
+  } catch {
+    return null;
+  }
+}
+
 // On Linux a browser keeps its crash reports in the folder of the user's own
 // browser of its kind (~/.config/google-chrome/Crash Reports), whatever
 // profile it is given: it rewrote a file there each time it started, and one
@@ -692,6 +736,11 @@ function userAgentFor(device, chromeAgent) {
   // browser with a window would.
   return { userAgent: chromeAgent.replace("HeadlessChrome", "Chrome") };
 }
+
+// Whether an address is of a kind the browser does not open as a page but
+// hands to a program of the machine: anything with a scheme of its own that
+// is no web address and none of the browser's own.
+const outside = (url) => /^[a-z][a-z0-9+.-]*:/i.test(String(url || "")) && !/^(https?|about|data|blob|javascript|file|filesystem|chrome|chrome-error|devtools):/i.test(String(url));
 
 // The event a tab gets when a document of its own was not loaded because
 // the run's guard refuses its address (see guardBrowser()): {url, why,
@@ -820,6 +869,21 @@ async function openTab(chrome, device, { lang = "", theme = "light", reducedMoti
     // A dialog a page opens (an alert while it loads, a question before it
     // is left) holds the tab until someone answers it, and nothing else does.
     cdp.on("Page.javascriptDialogOpening", () => cdp.send("Page.handleJavaScriptDialog", { accept: true }).catch(() => {}));
+    // The page, a frame of it or a window it opens going to an address of
+    // another kind, as mailto:, which the browser hands to a program of the
+    // machine (see standIns), is named to the tab as a refused document is:
+    // it is no page to open, and the page stays where it was. handed: on a
+    // system where no program could be put in the way, it may have gone to
+    // one.
+    if (!own) {
+      const handed = process.platform !== "linux";
+      cdp.on("Page.frameRequestedNavigation", (p) => {
+        if (outside(p.url) && (!p.disposition || p.disposition === "currentTab")) cdp.emit(BARRED, { url: p.url, why: NOT_WEB, main: p.frameId === targetId, window: false, stays: true, handed });
+      });
+      cdp.on("Page.windowOpen", (p) => {
+        if (outside(p.url)) cdp.emit(BARRED, { url: p.url, why: NOT_WEB, main: false, window: true, stays: true, handed });
+      });
+    }
     await cdp.send("Inspector.enable", {}, left()).catch(() => {});
     await cdp.send("Page.enable", {}, left());
     await cdp.send(

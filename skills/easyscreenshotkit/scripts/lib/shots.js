@@ -647,10 +647,15 @@ function openNote(result) {
 // A page's note on what it tried to open that the run does not open: the
 // page itself, by moving on once it had loaded, a frame of it, or a window
 // it opened.
+// handed: an address of another kind, as mailto:, on a system where the
+// browser may have handed it to a program of the machine (see standIns in
+// chrome.js).
 function barredNote(b) {
-  if (b.main) return `it tried to open ${b.url}, which is ${b.why}: it was not opened`;
-  if (b.window) return `it tried to open a window at ${b.url}, which is ${b.why}: it was not opened`;
-  return `a frame of it tried to open ${b.url}, which is ${b.why}: it was not opened`;
+  const url = String(b.url).slice(0, 200);
+  const end = b.handed ? "the browser may have handed it to a program of this machine" : "it was not opened";
+  if (b.main) return `it tried to open ${url}, which is ${b.why}: ${end}`;
+  if (b.window) return `it tried to open a window at ${url}, which is ${b.why}: ${end}`;
+  return `a frame of it tried to open ${url}, which is ${b.why}: ${end}`;
 }
 
 // The notes on the downloads a page started, which the browser refused:

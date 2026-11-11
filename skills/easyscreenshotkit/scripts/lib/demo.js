@@ -96,6 +96,11 @@ page's own pictures, styles, scripts and the data it fetches are left to
 the browser's own rules, and on a site you run on your machine they can
 come from other ports of it.
 
+A click on a link to an address of another kind, such as mailto:, or a
+page that goes to one, leaves the page where it is, with a note in
+steps.json: on Linux the browser hands it to no program of the machine,
+and on macOS and Windows it can hand it to the mail program there.
+
 When the address given is another page than the home page, or a #route of
 it, a tour whose home page answers an error or a bot check, or cannot be
 opened, leaves it out with a note and starts at the address given. An
@@ -240,11 +245,14 @@ const drawnTooSlowly = (cut) => `The browser took too long to draw the demo's fr
 
 // steps.json's note on a document the page did not open, as the run does
 // not open its address: the page itself, a frame of it, or a window.
-function barredNote({ url, why, kind }) {
+// handed: an address of another kind, as mailto:, on a system where the
+// browser may have handed it to a program of the machine.
+function barredNote({ url, why, kind, handed = false }) {
   const where = String(url).slice(0, 200);
-  if (kind === "frame") return `A frame of the page tried to open ${where}, which is ${why}: it was not opened.`;
-  if (kind === "window") return `The page tried to open a window at ${where}, which is ${why}: it was not opened.`;
-  return `The page tried to open ${where}, which is ${why}: it was not opened, and the page stayed where it was.`;
+  const end = handed ? "the browser may have handed it to a program of this machine" : "it was not opened";
+  if (kind === "frame") return `A frame of the page tried to open ${where}, which is ${why}: ${end}.`;
+  if (kind === "window") return `The page tried to open a window at ${where}, which is ${why}: ${end}.`;
+  return `The page tried to open ${where}, which is ${why}: ${end}, and the page stayed where it was.`;
 }
 
 // steps.json's notes on what the demo's pages tried to open that the run

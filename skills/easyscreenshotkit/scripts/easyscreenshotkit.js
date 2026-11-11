@@ -70,13 +70,17 @@ is not opened, and the report names it with the reason, and neither is a
 frame or a window a page opens there, nor a host whose name does not
 resolve here or gives no answer in 10 s; an address given on such a host
 stops the run. A page that moves on to one before it has loaded is
-refused as a redirect there is. --pwa and
---pwa-check read a manifest and its screenshots by the same rule, and from
-a manifest file no screenshot at such an address. The rule is for the
-pages the run opens and the files it reads itself: a page's own pictures,
-styles, scripts and the data it fetches are left to the browser's own
-rules, and on a site you run on your machine they can come from other
-ports of it.
+refused as a redirect there is. --pwa and --pwa-check read a manifest and
+its screenshots by the same rule, and from a manifest file no screenshot
+at such an address. The rule is for the pages the run opens and the files
+it reads itself: a page's own pictures, styles, scripts and the data it
+fetches are left to the browser's own rules, and on a site you run on
+your machine they can come from other ports of it.
+
+An address of another kind that a page goes to, such as mailto:, is no
+page to open, and its notes say so: on Linux the browser hands it to no
+program of the machine, and on macOS and Windows it can hand it to the
+mail program there.
 
 When the address given is another page than the home page, or a #route of
 it, a home page that answers an error or a bot check, or cannot be opened,

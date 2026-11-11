@@ -1684,6 +1684,53 @@ test("a click on a download link saves no file", { skip: missing || (process.pla
   }
 });
 
+// No click of a demo makes the browser start a program of this machine: a
+// click on a mailto: or a news: link, or on a button that opens a window at
+// mailto:, had the browser start the user's own mail program. The stand-ins
+// on PATH write down any start, so no test starts a real one.
+test("no click of a demo makes the browser start a program of this machine", { skip: missing || (process.platform !== "linux" && "the browser starts these programs through PATH on Linux only"), timeout: 200_000 }, async () => {
+  const html = { "Content-Type": "text/html; charset=utf-8" };
+  const { server, origin } = await serve((req, res) => {
+    if (req.url !== "/") return res.writeHead(404).end("not found");
+    res.writeHead(200, html).end(page("Contact | Acme", '<h1>Contact</h1><p style="font-size:32px;padding:0 40px"><a href="mailto:sales@example.com?subject=Hello">Write to us</a> <a href="news:comp.lang.c">News</a> <button onclick="window.open(\'mailto:open@example.com\')">Open a window</button></p><div style="height:1400px;background:rgb(0,160,0)"></div>'));
+  });
+  const root = tempDir();
+  const dir = path.join(root, "handlers");
+  fs.mkdirSync(dir);
+  const log = path.join(root, "started.log");
+  for (const name of ["xdg-open", "xdg-email", "x-www-browser", "www-browser", "sensible-browser", "gio", "kde-open", "gnome-open", "exo-open"]) fs.writeFileSync(path.join(dir, name), `#!/bin/sh\necho "$0 $*" >> '${log}'\n`, { mode: 0o755 });
+  const env = { ...process.env, PATH: `${dir}${path.delimiter}${process.env.PATH}` };
+  for (const name of ["DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "XDG_CURRENT_DESKTOP", "DESKTOP_SESSION", "BROWSER"]) delete env[name];
+  const steps = path.join(root, "steps.yaml");
+  // The window first: once the browser has handed out an address, it opens
+  // no window for the next one, and says nothing of it.
+  fs.writeFileSync(steps, 'steps:\n  - visit: /\n  - click: "text=Open a window"\n    zoom: false\n  - click: "text=Write to us"\n    zoom: false\n  - click: "text=News"\n    zoom: false\n  - wait: 1\n');
+  try {
+    // Not spawnSync: this process's server answers the demo's browser.
+    const run = await new Promise((resolve) => {
+      const child = spawn(process.execPath, [CLI, "demo", origin, "--steps", steps, "--no-gif", "--json", "--out", path.join(root, "demo")], { env });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (d) => (stdout += d));
+      child.stderr.on("data", (d) => (stderr += d));
+      child.on("close", (status) => resolve({ status, stdout, stderr }));
+    });
+    assert.equal(run.status, 0, run.stderr);
+    const { notes } = JSON.parse(run.stdout);
+    for (const note of [
+      "The page tried to open mailto:sales@example.com?subject=Hello, which is not a web address: it was not opened, and the page stayed where it was.",
+      "The page tried to open news:comp.lang.c, which is not a web address: it was not opened, and the page stayed where it was.",
+      "The page tried to open a window at mailto:open@example.com, which is not a web address: it was not opened.",
+    ]) {
+      assert.ok(notes.includes(note), `${note}\n${notes.join("\n")}`);
+    }
+    assert.equal(fs.existsSync(log) ? fs.readFileSync(log, "utf8") : "", "");
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // A page that thanks for a download and sends the browser to the file once
 // it is drawn, from the end of its body, is shown as it is drawn, by a
 // click on a link to it and by a visit, with a note that no file was saved,

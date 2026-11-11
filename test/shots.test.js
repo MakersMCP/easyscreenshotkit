@@ -3156,6 +3156,49 @@ test("a page that moves on before it has loaded is refused at once, by a visit a
   }
 });
 
+// Stand-ins on PATH for the programs the browser hands an address of
+// another kind to (mailto:, news:), each writing down that it was started,
+// so that no test starts the user's own mail program, as a test of the code
+// before this change did on a desktop; nor does a test run with a display or
+// a session bus to reach.
+function recordingHandlers(root) {
+  const dir = path.join(root, "handlers");
+  fs.mkdirSync(dir);
+  const log = path.join(root, "started.log");
+  for (const name of ["xdg-open", "xdg-email", "x-www-browser", "www-browser", "sensible-browser", "gio", "kde-open", "gnome-open", "exo-open"]) {
+    fs.writeFileSync(path.join(dir, name), `#!/bin/sh\necho "$0 $*" >> '${log}'\n`, { mode: 0o755 });
+  }
+  const env = { ...process.env, PATH: `${dir}${path.delimiter}${process.env.PATH}` };
+  for (const name of ["DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "XDG_CURRENT_DESKTOP", "DESKTOP_SESSION", "BROWSER"]) delete env[name];
+  return { env, started: () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8") : "") };
+}
+
+// No page makes the browser start a program of this machine: a page that
+// went to mailto: as it loaded had the browser start the user's own mail
+// program with the site's message in it, and its frames and windows could
+// as well. The page is taken as it is drawn, and its notes say what it
+// tried to open.
+test("no page makes the browser start a program of this machine, by moving to mailto: as it loads or by a frame at news:", { skip: noBrowser || (process.platform !== "linux" && "the browser starts these programs through PATH on Linux only"), timeout: 120_000 }, async () => {
+  const html = { "Content-Type": "text/html; charset=utf-8" };
+  const { server, origin } = await serve((req, res) => {
+    if (req.url !== "/") return res.writeHead(404).end("not found");
+    res.writeHead(200, html).end(page("Acme | Tools", '<h1>Acme</h1><iframe src="news:comp.lang.c"></iframe><div style="height:1400px;background:rgb(0,160,0)"></div><script>location.href = "mailto:hello@example.com?subject=Hi";</script>'));
+  });
+  const root = tempDir();
+  const { env, started } = recordingHandlers(root);
+  try {
+    const run = await runCli([origin, "--pages", "1", "--sizes", "desktop", "--json", "--out", path.join(root, "shots")], { env });
+    assert.equal(run.status, 0, run.stderr);
+    const { notes } = JSON.parse(run.stdout).pages[0];
+    assert.ok(notes.includes("it tried to open mailto:hello@example.com?subject=Hi, which is not a web address: it was not opened"), notes.join("\n"));
+    assert.ok(notes.includes("a frame of it tried to open news:comp.lang.c, which is not a web address: it was not opened"), notes.join("\n"));
+    assert.equal(started(), "");
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // A page's version in another language that a link names at an address
 // that is no web address, as file://127.0.0.1/... names a file of a site
 // on this machine, is not opened: the browser showed the file, and the run

@@ -322,7 +322,7 @@ class Recorder {
         this.refusal = { url: b.url, why: b.why, left: true, stays: Boolean(b.stays) };
       }
       const kind = b.main ? "page" : b.window ? "window" : "frame";
-      if (!this.take.barred.some((known) => known.url === b.url)) this.take.barred.push({ url: b.url, why: b.why, kind });
+      if (!this.take.barred.some((known) => known.url === b.url)) this.take.barred.push({ url: b.url, why: b.why, kind, handed: Boolean(b.handed) });
     });
     // An app that changes its address without loading a page (its own
     // router): the title bar follows. A new #route is another page; a new
