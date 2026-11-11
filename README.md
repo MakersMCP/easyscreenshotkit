@@ -127,6 +127,8 @@ The demo needs ffmpeg, the one on your machine (`brew install ffmpeg`, `sudo apt
 
 `--out`, `--lang`, `--hide`, `--reduced-motion`, `--no-clean` and `--json` work as they do for screenshots. A demo's `--theme` takes light or dark, and `--timeout` gives a demo 900 seconds by default.
 
+A `--background` colour is one the browser knows: a name such as `slategray`, or a `#hex`, `rgb()` or `hsl()` value. A word it does not read as a colour, a file that is no picture it can draw, and a picture cut short are refused before anything is recorded, and an earlier demo in the folder stays as it was.
+
 How a demo is made:
 
 1. A tour takes the pages the screenshots would: the home page, then features, pricing and the like, each opened first to check it. On each page it rests on the first screen, scrolls down to a section or two, and goes on to the next page through the link in the site's own menu, or with a crossfade when the menu has none. Pricing comes last. It follows paths only: the notes in steps.json name the `#/` and `#!` links it finds on the home page, on the address given and on each `--page`, and the `#/` and `#!` addresses the site's sitemap lists, which `--page` can add.

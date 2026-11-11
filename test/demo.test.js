@@ -321,9 +321,12 @@ test("a --background file is judged by the browser: what it draws is taken, what
     return at;
   };
   try {
-    // Colours and gradients are no files.
+    // Colours and gradients are no files: the browser says whether each is a
+    // colour. A word CSS does not know drew a plain white backdrop.
     await checkBackdrop(chrome, "#0f172a, rgb(1, 2, 3)", root);
     await checkBackdrop(chrome, "", root);
+    for (const color of ["slategray", "SlateGray", "rgb(10 20 30 / 50%)", "hsl(200, 50%, 40%), tomato"]) await checkBackdrop(chrome, color, root);
+    for (const color of ["notacolour", "charcoal", "#12345", "red, slate"]) await assert.rejects(checkBackdrop(chrome, color, root), { message: `--background takes a colour, two colours for a gradient, or a picture file, not ${color}` }, color);
     for (const [name, data] of Object.entries(pictures)) await checkBackdrop(chrome, file(name, data), root);
     for (const [name, data] of Object.entries(notPictures)) await assert.rejects(checkBackdrop(chrome, file(name, data), root), new RegExp(`^Error: --background: .*${name} is no picture the browser can draw: PNG, JPEG, WebP, GIF, AVIF or SVG\\.$`), name);
     // ffmpeg makes a JPEG and a GIF with encoders of its own; a WebP only
@@ -374,6 +377,16 @@ test("a demo is refused a --background the browser cannot draw, or one cut short
     await makeDemo(origin, { dir: out, steps, background: good, gif: false, timeLimit: 150_000 });
     const poster = readPng(path.join(out, "poster.png"));
     assert.ok(near(poster.pixel(20, 20), [0, 170, 119], 30), `backdrop: ${poster.pixel(20, 20)}`);
+    // A word that is no colour is refused before anything is recorded, and
+    // the earlier demo stays as it was, where it drew a white backdrop and
+    // replaced it.
+    const before = snapshot(out);
+    const visits = seen.length;
+    const word = spawnSync(process.execPath, [CLI, "demo", origin, "--steps", steps, "--background", "charcoal", "--no-gif", "--out", out], { encoding: "utf8", timeout: 60_000 });
+    assert.equal(word.status, 1, word.stderr);
+    assert.equal(word.stderr, "easyscreenshotkit demo: --background takes a colour, two colours for a gradient, or a picture file, not charcoal\n");
+    assert.deepEqual(snapshot(out), before);
+    assert.equal(seen.length, visits);
   } finally {
     server.close();
     fs.rmSync(root, { recursive: true, force: true });

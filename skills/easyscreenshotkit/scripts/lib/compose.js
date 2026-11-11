@@ -53,6 +53,12 @@ const PICTURE_FILE = /\.(png|jpe?g|webp|gif|avif|svg)$/i;
 const noPicture = (file) => new Error(`--background: ${file} is no picture the browser can draw: PNG, JPEG, WebP, GIF, AVIF or SVG.`);
 const cutShort = (file) => new Error(`--background: ${file} is cut short, so the browser would draw only part of it.`);
 
+const notAColour = (text) => new Error(`--background takes a colour, two colours for a gradient, or a picture file, not ${text}`);
+
+// The colours of a --background that is no picture file, at its commas
+// outside brackets.
+const colorsOf = (text) => text.split(/\s*,\s*(?![^()]*\))/);
+
 // --background: a colour, two colours for a gradient, or a picture file.
 // Only a regular file can be one: the browser opening a named pipe would
 // wait for whatever writes to it. Whether it draws is checkBackdrop()'s.
@@ -64,20 +70,33 @@ function backdropOf(value) {
     if (!fs.statSync(text).isFile()) throw noPicture(text);
     return `url("${pathToFileURL(path.resolve(text)).href}") center / cover no-repeat, #222`;
   }
-  const colors = text.split(/\s*,\s*(?![^()]*\))/);
-  if (!colors.length || colors.length > 3 || colors.some((c) => !COLOR.test(c))) throw new Error(`--background takes a colour, two colours for a gradient, or a picture file, not ${text}`);
+  const colors = colorsOf(text);
+  if (!colors.length || colors.length > 3 || colors.some((c) => !COLOR.test(c))) throw notAColour(text);
   return colors.length === 1 ? colors[0] : `linear-gradient(135deg, ${colors.join(", ")})`;
 }
 
-// A --background file is the browser's to judge, before anything is
-// recorded: it draws nothing for a file that is no picture, and the backdrop
-// came out plain grey with no word of why. It is loaded as the video's
-// page would load it, from a page in dir. The browser also draws the part
-// that is there of a picture cut short, a strip over grey, and says it
-// loaded: a picture is read to its end first (see pictureIsWhole).
+// A --background is the browser's to judge, before anything is recorded. A
+// colour is one it reads as a colour: any word passed the check above, and
+// one CSS does not know, as charcoal, drew a plain white backdrop with no
+// word of why. A file is one it draws: it draws nothing for a file that is
+// no picture, and the backdrop came out plain grey. It is loaded as the
+// video's page would load it, from a page in dir. The browser also draws
+// the part that is there of a picture cut short, a strip over grey, and
+// says it loaded: a picture is read to its end first (see pictureIsWhole).
 async function checkBackdrop(chrome, value, dir) {
   const file = String(value || "").trim();
-  if (!PICTURE_FILE.test(file)) return;
+  if (!file) return;
+  if (!PICTURE_FILE.test(file)) {
+    const tab = await openTab(chrome, { width: 64, height: 64, scale: 1, mobile: false, touch: false, agent: "desktop" }, { own: true });
+    try {
+      const expression = `${JSON.stringify(colorsOf(file))}.every((color) => CSS.supports("color", color))`;
+      const { result } = await tab.send("Runtime.evaluate", { expression, returnByValue: true }, 10_000);
+      if (!(result && result.value === true)) throw notAColour(file);
+    } finally {
+      await closeTab(chrome, tab);
+    }
+    return;
+  }
   const page = path.join(dir, "picture.html");
   fs.writeFileSync(page, "<!doctype html><title>picture</title>");
   const tab = await openTab(chrome, { width: 64, height: 64, scale: 1, mobile: false, touch: false, agent: "desktop" }, { own: true });
