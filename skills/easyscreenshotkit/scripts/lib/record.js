@@ -324,9 +324,11 @@ class Recorder {
         this.refusedAt = Date.now();
         this.refusal = { url: b.url, why: b.why, left: true, stays: Boolean(b.stays) };
       }
-      // An address of another kind, after which the tab may take no more
-      // input (see inputReaches()).
-      if (b.stays && !this.outside) this.outside = b.url;
+      // An address of another kind the browser itself was asked to open,
+      // after which the tab may take no more input (see inputReaches()).
+      // A redirect to one never reaches the browser, and the tab takes
+      // input after it as before.
+      if (b.asked && !this.outside) this.outside = b.url;
       const kind = b.main ? "page" : b.window ? "window" : "frame";
       if (!this.take.barred.some((known) => known.url === b.url)) this.take.barred.push({ url: b.url, why: b.why, kind, handed: Boolean(b.handed) });
     });

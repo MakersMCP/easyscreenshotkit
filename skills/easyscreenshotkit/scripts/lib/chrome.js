@@ -899,7 +899,8 @@ const BARRED = "easyscreenshotkit.addressRefused";
 // The answer to each such request is held a moment too, before the browser
 // reads it: one that redirects to an address of another kind, as a 302 to
 // mailto:, is not followed, on any system, and the tab is told of it as of
-// a move there. Followed, it had the browser hand the address to a program
+// a move there, one the browser was not asked to open (no asked, see
+// openTab()). Followed, it had the browser hand the address to a program
 // of the machine, and a page that redirected there was said to fail in the
 // browser's bare words (net::ERR_ABORTED), or, for a frame or a page that
 // moved there once it had loaded, went without a note.
@@ -1022,14 +1023,16 @@ async function openTab(chrome, device, { lang = "", theme = "light", reducedMoti
     // machine (see standIns), is named to the tab as a refused document is:
     // it is no page to open, and the page stays where it was. handed: on a
     // system where no program could be put in the way, it may have gone to
-    // one.
+    // one. asked: the browser itself was asked to open it, as it is not for
+    // a redirect to one, which the guard does not follow (see
+    // guardBrowser()).
     if (!own) {
       const handed = process.platform !== "linux";
       cdp.on("Page.frameRequestedNavigation", (p) => {
-        if (outside(p.url) && (!p.disposition || p.disposition === "currentTab")) cdp.emit(BARRED, { url: p.url, why: NOT_WEB, main: p.frameId === targetId, window: false, stays: true, handed });
+        if (outside(p.url) && (!p.disposition || p.disposition === "currentTab")) cdp.emit(BARRED, { url: p.url, why: NOT_WEB, main: p.frameId === targetId, window: false, stays: true, handed, asked: true });
       });
       cdp.on("Page.windowOpen", (p) => {
-        if (outside(p.url)) cdp.emit(BARRED, { url: p.url, why: NOT_WEB, main: false, window: true, stays: true, handed });
+        if (outside(p.url)) cdp.emit(BARRED, { url: p.url, why: NOT_WEB, main: false, window: true, stays: true, handed, asked: true });
       });
     }
     await cdp.send("Inspector.enable", {}, left()).catch(() => {});

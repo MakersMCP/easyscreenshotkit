@@ -1727,7 +1727,8 @@ test("a click on a download link saves no file", { skip: missing || (process.pla
 // writes down what it is asked to open (see bus.js), or one where nothing
 // listens, never the user's own, which a program given no bus can find in
 // XDG_RUNTIME_DIR; and no display. Resolves to { demo(args): the run's
-// status, stdout and stderr; started(): what the stand-ins wrote; opened:
+// status, stdout and stderr; node(args): the same for node with args, as a
+// script of the test's own; started(): what the stand-ins wrote; opened:
 // what the portal was asked; close() }.
 async function cutOff(root) {
   const dir = path.join(root, "handlers");
@@ -1739,17 +1740,19 @@ async function cutOff(root) {
   const bus = noBus(root) ? null : await privateBus(fs.mkdtempSync(path.join(root, "bus-")));
   const portal = bus ? await fakePortal(bus.address) : null;
   Object.assign(env, bus ? { DBUS_SESSION_BUS_ADDRESS: bus.address, XDG_RUNTIME_DIR: bus.dir, XDG_CURRENT_DESKTOP: "GNOME" } : { DBUS_SESSION_BUS_ADDRESS: `unix:path=${path.join(root, "no-bus")}`, XDG_RUNTIME_DIR: root });
+  // Not spawnSync: this process's server answers the browser.
+  const node = (args) =>
+    new Promise((resolve) => {
+      const child = spawn(process.execPath, args, { env });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (d) => (stdout += d));
+      child.stderr.on("data", (d) => (stderr += d));
+      child.on("close", (status) => resolve({ status, stdout, stderr }));
+    });
   return {
-    // Not spawnSync: this process's server answers the demo's browser.
-    demo: (args) =>
-      new Promise((resolve) => {
-        const child = spawn(process.execPath, [CLI, "demo", ...args], { env });
-        let stdout = "";
-        let stderr = "";
-        child.stdout.on("data", (d) => (stdout += d));
-        child.stderr.on("data", (d) => (stderr += d));
-        child.on("close", (status) => resolve({ status, stdout, stderr }));
-      }),
+    demo: (args) => node([CLI, "demo", ...args]),
+    node,
     started: () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8") : ""),
     opened: portal ? portal.opened : [],
     close: async () => {
@@ -1832,6 +1835,68 @@ test("a demo's click after one on a tel: link opens its page, or the demo says t
       assert.equal(run.stderr.trim().split("\n").pop(), "easyscreenshotkit demo: step 3 (click): the browser took no more clicks or keys after the page tried to open tel:+15551234567, as some versions of Chrome do. Leave out the step that goes there, or make it the last click or key of the steps.");
       assert.equal(fs.existsSync(path.join(root, "demo")), false);
     }
+    assert.equal(cut.started(), "");
+    assert.deepEqual(cut.opened, []);
+  } finally {
+    await cut.close();
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A redirect to an address of another kind is not followed (see
+// guardBrowser() in chrome.js): the browser never sees the address, and the
+// tab takes clicks and keys after it as before. So the demo checks that the
+// tab still takes them after a page asked the browser to open such an
+// address, as a click on a tel: link does, and not after a click on a link
+// that redirects to one, where it checked and, on a page it misjudged,
+// stopped with a sentence that blamed the browser for an address it was
+// never given. The recorder runs in a process cut off from the machine's
+// programs, as a demo does (see cutOff).
+test("a demo checks the tab after a click on a tel: link, and not after one on a link that redirects to tel:", { skip: missing || (process.platform !== "linux" && "the browser starts these programs through PATH and the session bus on Linux only"), timeout: 120_000 }, async () => {
+  const html = { "Content-Type": "text/html; charset=utf-8" };
+  const { server, origin } = await serve((req, res) => {
+    if (req.url === "/") return res.writeHead(200, html).end(page("Contact | Acme", '<h1>Contact</h1><p style="font-size:32px;padding:0 40px"><a href="/call">Call the office</a> <a href="tel:+15551234567">Call us</a></p><div style="height:1400px;background:rgb(0,160,0)"></div>'));
+    if (req.url === "/call") return res.writeHead(302, { Location: "tel:+15550000000" }).end();
+    res.writeHead(404).end("not found");
+  });
+  const root = tempDir();
+  const cut = await cutOff(root);
+  const lib = path.resolve(__dirname, "../skills/easyscreenshotkit/scripts/lib");
+  const frames = path.join(root, "frames");
+  fs.mkdirSync(frames);
+  // The address of another kind the recorder holds to check the tab by,
+  // after each click.
+  const script = `
+    const { launch } = require(${JSON.stringify(path.join(lib, "chrome"))});
+    const { guardFor } = require(${JSON.stringify(path.join(lib, "address"))});
+    const { Recorder } = require(${JSON.stringify(path.join(lib, "record"))});
+    require(${JSON.stringify(path.join(lib, "time"))}).setTimeLimit(100000);
+    (async () => {
+      const chrome = await launch();
+      const held = [];
+      try {
+        chrome.guard = await guardFor(${JSON.stringify(`${origin}/`)});
+        const recorder = new Recorder(chrome, { dir: ${JSON.stringify(frames)}, base: ${JSON.stringify(`${origin}/`)} });
+        await recorder.open();
+        await recorder.run({ action: "visit", url: "/" });
+        for (const text of ["Call the office", "Call us"]) {
+          await recorder.run({ action: "click", target: { text }, zoom: 1 });
+          held.push(recorder.outside);
+        }
+        await recorder.close();
+      } finally {
+        await chrome.close();
+      }
+      process.stdout.write(JSON.stringify(held));
+    })().catch((err) => {
+      console.error(err.stack);
+      process.exit(1);
+    });`;
+  try {
+    const run = await cut.node(["-e", script]);
+    assert.equal(run.status, 0, run.stderr);
+    assert.deepEqual(JSON.parse(run.stdout), ["", "tel:+15551234567"]);
     assert.equal(cut.started(), "");
     assert.deepEqual(cut.opened, []);
   } finally {
