@@ -3,7 +3,7 @@
 
 const fs = require("fs");
 const { takeShots, normalizeUrl } = require("./lib/shots");
-const { pathOf, printable } = require("./lib/pick");
+const { pathOf, readable, printable } = require("./lib/pick");
 const { stopOnSignals } = require("./lib/outdir");
 const { checkManifest, describeCheck } = require("./lib/pwa");
 const version = require("./lib/version");
@@ -195,9 +195,20 @@ function summary({ dir, manifest }) {
   }
   if (manifest.sheet) lines.push("", `  Sheet   ${manifest.sheet.file} (${manifest.sheet.width}x${manifest.sheet.height})`);
   if (manifest.pwa) lines.push(...(manifest.sheet ? [] : [""]), ...pwaLines(manifest.pwa));
-  // The first pages left out, those with the same reason together.
+  // The first pages left out, those with the same reason together, each by
+  // its path, or by its whole address when it is on another host or port
+  // than the address given: a page of another port of this machine, left
+  // out as not on the host and port given, read as a page of the site.
+  const origin = new URL(manifest.url).origin;
+  const where = (url) => {
+    try {
+      return new URL(url).origin === origin ? pathOf(url) : readable(url);
+    } catch {
+      return readable(url);
+    }
+  };
   const reasons = new Map();
-  for (const skip of manifest.skipped.slice(0, 6)) reasons.set(skip.reason, [...(reasons.get(skip.reason) || []), pathOf(skip.url)]);
+  for (const skip of manifest.skipped.slice(0, 6)) reasons.set(skip.reason, [...(reasons.get(skip.reason) || []), where(skip.url)]);
   const left = [...reasons].map(([reason, paths]) => `${paths.join(", ")} (${reason})`);
   if (left.length) lines.push(`  Skipped ${left.join("; ")}${manifest.skipped.length > 6 ? ` and ${manifest.skipped.length - 6} more` : ""}`);
   for (const note of manifest.notes) lines.push(`  Note    ${note}`);

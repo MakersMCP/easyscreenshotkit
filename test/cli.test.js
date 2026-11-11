@@ -293,6 +293,19 @@ test("the summary and the sheet show a view's #route with its path", () => {
   // The pages left out with the same reason come together.
   assert.match(text, /Skipped \/start \(redirected to a sign-in page\); \/app\/#\/light, \/app\/#\/settings \(a #route, which the tour does not follow: give it with --page\)\n/);
   assert.match(sheetHtml(manifest, "shots"), /<span>\/app\/#\/plants<\/span>/);
+  // A page on another host or port is named by its whole address, as a page
+  // of another port of this machine read as a page of the site given.
+  const local = {
+    ...manifest,
+    url: "http://127.0.0.1:19161/",
+    pages: [{ n: 1, slug: "home", url: "http://127.0.0.1:19161/", why: "the home page", shots: [shot("01-home-desktop.png", 3200, 1800)] }],
+    skipped: [
+      { url: "http://127.0.0.1:19161/start", reason: "redirected to a sign-in page" },
+      { url: "http://127.0.0.1:19162/x", reason: "not on the public internet, and not on the host and port given" },
+      { url: "http://localhost:19161/pricing", reason: "not on the public internet, and not on the host and port given" },
+    ],
+  };
+  assert.match(summary({ dir: "shots", manifest: local }), /Skipped \/start \(redirected to a sign-in page\); http:\/\/127\.0\.0\.1:19162\/x, http:\/\/localhost:19161\/pricing \(not on the public internet, and not on the host and port given\)\n/);
 });
 
 // SCREENSHOTS.md is read by people and coding agents. What a page or the
