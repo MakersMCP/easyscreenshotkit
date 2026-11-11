@@ -1116,3 +1116,50 @@ test("a browser or an ffmpeg that cannot be started stops a run before any work 
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// A run names a program by the role it has in that run. A program that
+// calls the kit's functions, takeShots and makeDemo, can start one run
+// after another in its own process: each run forgets the programs the runs
+// before it found, so a file an ffmpeg was looked for at, and that a later
+// run is given as its browser, is named as the browser, CHROME_PATH, and
+// not as the ffmpeg of a run that is over. The file is this machine's true with the name of
+// a library it needs changed: a program until it is started.
+test("a run names a program by its role in that run, whatever runs before it in the same process found it for", { skip: process.platform !== "linux" && "the program that cannot be started is Linux's", timeout: 120_000 }, async (t) => {
+  const { takeShots } = require("../skills/easyscreenshotkit/scripts/lib/shots");
+  const { makeDemo } = require("../skills/easyscreenshotkit/scripts/lib/demo");
+  const { findFfmpeg } = require("../skills/easyscreenshotkit/scripts/lib/ffmpeg");
+  const truth = fs.realpathSync(["/usr/bin/true", "/bin/true"].find((file) => fs.existsSync(file)));
+  const bytes = fs.readFileSync(truth);
+  const at = bytes.indexOf("libc.so.6", 0, "latin1");
+  if (at < 0) return t.skip("true links no libc.so.6");
+  if (!findFfmpeg()) return t.skip("no ffmpeg installed");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-roles-"));
+  const file = path.join(root, "program");
+  const copy = Buffer.from(bytes);
+  copy.write("libq.so.6", at, "latin1");
+  fs.writeFileSync(file, copy, { mode: 0o755 });
+  const what = "a program that needs the shared library libq.so.6, which is not on this machine";
+  const asFfmpeg = `The demo needs ffmpeg, and FFMPEG_PATH is ${file}, ${what}. Point FFMPEG_PATH at an ffmpeg that runs, or unset it to use the one on PATH.`;
+  const asBrowser = `program did not start: CHROME_PATH is ${file}, ${what}. Point CHROME_PATH at the program of a browser that runs, or unset it to use one installed on this machine.`;
+  const saved = { CHROME_PATH: process.env.CHROME_PATH, FFMPEG_PATH: process.env.FFMPEG_PATH };
+  const set = (env) => {
+    for (const name of ["CHROME_PATH", "FFMPEG_PATH"]) {
+      if (env[name]) process.env[name] = env[name];
+      else delete process.env[name];
+    }
+  };
+  const out = (name) => path.join(root, name);
+  try {
+    // Looked for as an ffmpeg, then given as the browser of a demo, whose
+    // ffmpeg is the machine's own, and of screenshots.
+    for (const [n, next] of [["1", () => makeDemo("http://127.0.0.1:9/", { dir: out("demo"), timeLimit: 60_000 })], ["2", () => takeShots("http://127.0.0.1:9/", { dir: out("shots"), pages: 1, sizes: "desktop", timeLimit: 60_000 })]]) {
+      set({ FFMPEG_PATH: file });
+      await assert.rejects(makeDemo("http://127.0.0.1:9/", { dir: out(`ffmpeg-${n}`), timeLimit: 60_000 }), { message: asFfmpeg });
+      set({ CHROME_PATH: file });
+      await assert.rejects(next(), { message: asBrowser });
+    }
+  } finally {
+    set(saved);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

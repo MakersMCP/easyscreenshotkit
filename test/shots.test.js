@@ -16,7 +16,7 @@ const { takeShots, readInfo, DEVICES } = require("../skills/easyscreenshotkit/sc
 const { findChrome, launch, startWait, openTab, closeTab, navigate, currentUrl, killBrowsers, removeProfiles, removeStrayLocks, removeFetchFolders, fetchFolders, roomIn, BARRED } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
 const { guardFor } = require("../skills/easyscreenshotkit/scripts/lib/address");
 const { setTimeLimit, sleep } = require("../skills/easyscreenshotkit/scripts/lib/time");
-const { watchRequests, networkQuiet, showsLoadingSign, looksEmpty } = require("../skills/easyscreenshotkit/scripts/lib/page");
+const { watchRequests, networkQuiet, showsLoadingSign, looksEmpty, waitForContent } = require("../skills/easyscreenshotkit/scripts/lib/page");
 const { LOCATE, Recorder } = require("../skills/easyscreenshotkit/scripts/lib/record");
 const { pngText } = require("../skills/easyscreenshotkit/scripts/lib/png");
 const programs = require("../skills/easyscreenshotkit/scripts/lib/programs");
@@ -1714,6 +1714,14 @@ test("a run that takes none of the pages asked for fails and leaves the earlier 
       assert.match(failed.stderr.trim().split("\n").pop(), new RegExp(`^easyscreenshotkit: ${message}$`));
       assert.deepEqual(snapshot(dir), before, args.join(" "));
     }
+    // One whose --page is a page it took already, here the home page, has
+    // one of the pages asked for: it goes on, and names both.
+    const same = await runCli([missing, "--pages", "2", "--page", "/", "--sizes", "desktop", "--out", dir]);
+    assert.equal(same.status, 0, same.stderr);
+    assert.equal(manifestOf().pages[0].slug, "home");
+    for (const note of [`${missing} was asked for but not taken: the page answered 404.`, `${origin}/ was asked for but not taken: the same page as home.`]) {
+      assert.ok(manifestOf().notes.includes(note), manifestOf().notes.join("\n"));
+    }
     // One that took a page asked for goes on, and names the other.
     const one = await runCli([missing, "--pages", "3", "--page", "/features", "--sizes", "desktop", "--out", dir]);
     assert.equal(one.status, 0, one.stderr);
@@ -3271,6 +3279,8 @@ test("a page that moves on before it has loaded is refused at once, by a visit a
     if (req.url === "/thanks-early") return res.writeHead(200, html).end(page("Thanks early | Acme", '<h1>Thanks for downloading</h1><p>Your download starts now.</p><script>location.href = "/file.bin";</script><div style="height:1400px"></div>'));
     if (req.url === "/to-file") return res.writeHead(200, html).end(page("To file | Acme", "<h1>To file</h1>", { head: '<script>location.href = "/file.bin";</script>' }));
     if (req.url === "/file.bin") return res.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Disposition": 'attachment; filename="x.bin"' }).end("bytes");
+    // A bare loading screen until 8 s after its load.
+    if (req.url === "/late") return res.writeHead(200, html).end(page("Late | Acme", '<p>.</p><script>addEventListener("load", () => setTimeout(() => { document.body.innerHTML = \'<h1 id="late">Late</h1><div style="height:1400px"></div>\'; }, 8000));</script>'));
     res.writeHead(404).end("not found");
   });
   const root = tempDir();
@@ -3284,6 +3294,16 @@ test("a page that moves on before it has loaded is refused at once, by a visit a
         await assert.rejects(navigate(tab, `${origin}${at}`), { refused: why });
         assert.ok(Date.now() - started < 10_000, `${at}: ${Date.now() - started} ms`);
       }
+      // The page a tab opens after one taken as it was drawn, as the tab a
+      // demo records in or a tour's home page opens its version in another
+      // language, is waited for: it is not taken as it stands, as a page
+      // whose load the browser stopped is.
+      await navigate(tab, `${origin}/thanks-early`);
+      assert.ok(tab.stopped, "a page taken as it was drawn");
+      await navigate(tab, `${origin}/late`);
+      assert.equal(await waitForContent(tab, 20_000), true);
+      const { result } = await tab.send("Runtime.evaluate", { expression: "Boolean(document.getElementById('late'))", returnByValue: true });
+      assert.equal(result.value, true, "the page was waited for until it showed its content");
     } finally {
       await closeTab(chrome, tab);
     }

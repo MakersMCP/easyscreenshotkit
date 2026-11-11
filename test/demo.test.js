@@ -1137,6 +1137,11 @@ test("a tour leaves out a --page that cannot be opened, and goes on, and fails w
     const one = await pickPages(chrome, `${origin}/missing`, { pages: 2, extra: ["/pricing"] });
     assert.deepEqual(one.pages.map((p) => [p.url.slice(origin.length), p.why]), [["/", "the home page"], ["/pricing", "asked for with --page"]]);
     assert.deepEqual(one.skipped, [{ url: `${origin}/missing`, reason: "the page answered 404" }]);
+    // A --page that is a page the tour has already, here the home page, is
+    // one of the pages asked for that it shows.
+    const same = await pickPages(chrome, `${origin}/missing`, { pages: 2, extra: ["/"] });
+    assert.deepEqual(same.pages.map((p) => p.url.slice(origin.length)), ["/"]);
+    assert.deepEqual(same.skipped, [{ url: `${origin}/missing`, reason: "the page answered 404" }, { url: `${origin}/`, reason: "the same page as home" }]);
   } finally {
     await chrome.close();
     server.close();
