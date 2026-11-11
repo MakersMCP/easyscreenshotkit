@@ -58,7 +58,8 @@ Options:
   --lang <code>       the site's version in this language, when it has one
   --hide <css>        hide one more element (repeat for more)
   --reduced-motion    ask the site for its reduced-motion version
-  --no-clean          keep the banners and bubbles
+  --no-clean          keep the banners and bubbles; --hide still hides what it
+                      names
   --no-gif            skip demo.gif
   --json              print steps.json instead of a summary
   --timeout <s>       give up after this many seconds (default: 900)

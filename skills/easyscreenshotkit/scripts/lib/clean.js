@@ -214,15 +214,18 @@ const UNLOCK = `(function () {
 
 // Cleans the page as it stands (scrolled to its top, after the walk, so a
 // box that comes up on scrolling is caught too). hide: more selectors the
-// user asked to hide. Returns {hidden, signs, unlocked, badSelectors}:
-// signs, how many of the boxes hidden showed a loading sign then.
-async function clean(cdp, { hide = [], viewport }) {
-  const selectors = [...KNOWN, ...hide];
+// user asked to hide. auto: the clean-up's own work too, the known tools'
+// boxes and what floats over the page; without it (--no-clean) only what
+// hide names is hidden, and the rest of the page is taken as it came.
+// Returns {hidden, signs, unlocked, badSelectors}: signs, how many of the
+// boxes hidden showed a loading sign then.
+async function clean(cdp, { hide = [], viewport, auto = true }) {
+  const selectors = [...(auto ? KNOWN : []), ...hide];
   const { result } = await cdp
     .send("Runtime.evaluate", { expression: `${HIDE_SELECTORS}(${JSON.stringify(selectors)}, ${SIGN_IN})`, returnByValue: true }, 10_000)
     .catch(() => ({ result: {} }));
   const known = (result && result.value) || { hidden: 0, signs: 0, bad: [], big: false };
-  const fixed = await hideFixed(cdp, viewport.width, viewport.height).catch(() => ({ hidden: 0, signs: 0, big: false }));
+  const fixed = auto ? await hideFixed(cdp, viewport.width, viewport.height).catch(() => ({ hidden: 0, signs: 0, big: false })) : { hidden: 0, signs: 0, big: false };
   let unlocked = 0;
   if (known.big || fixed.big) {
     const answer = await cdp.send("Runtime.evaluate", { expression: UNLOCK, returnByValue: true }, 5_000).catch(() => ({ result: {} }));

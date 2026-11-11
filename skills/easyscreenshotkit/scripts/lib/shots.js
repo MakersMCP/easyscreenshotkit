@@ -724,7 +724,8 @@ async function visit(chrome, page, group, theme, ctx, { check = null, links = fa
     else await scrollTo(tab, 0);
     const found = links || routes ? await readLinks(tab) : null;
     const m0 = await metrics(tab);
-    const tidy = () => (ctx.clean ? clean(tab, { hide: ctx.hide, viewport: { width: m0.width, height: m0.viewportHeight } }) : { hidden: 0, signs: 0, unlocked: false, badSelectors: [] });
+    // With --no-clean only what --hide names is hidden.
+    const tidy = () => (ctx.clean || ctx.hide.length ? clean(tab, { hide: ctx.hide, viewport: { width: m0.width, height: m0.viewportHeight }, auto: ctx.clean }) : { hidden: 0, signs: 0, unlocked: false, badSelectors: [] });
     // Whether a view whose wait ended before it was ready shows a loading
     // sign by then, read before the clean-up: that hides a fixed box that
     // says Loading as it hides any other.
@@ -950,13 +951,16 @@ function describeSizes(groups) {
   return out;
 }
 
-function writeMarkdown(manifest, run) {
+// SCREENSHOTS.md. clean and hide: what the run was asked to hide, which its
+// first lines say as it was done: the pages as they came with --no-clean,
+// where they said the banners and bubbles were hidden all the same.
+function writeMarkdown(manifest, run, { clean: tidied = true, hide = [] } = {}) {
   const date = manifest.takenAt.slice(0, 10);
   const lines = [`# Screenshots of ${manifest.site}`, "", `Taken from ${manifest.url} on ${date} by easyscreenshotkit ${version}.`, ""];
-  lines.push(
-    "Use the files as they are: they are the real pages, with cookie banners, chat bubbles and other floating boxes hidden. Do not redraw the interface, and do not present them as another product's. Boxes are in each image's own pixels: x, y, width, height.",
-    "",
-  );
+  const pages = tidied
+    ? "they are the real pages, with cookie banners, chat bubbles and other floating boxes hidden"
+    : `they are the real pages as they came, banners and bubbles included${hide.length ? ", with only what --hide names hidden" : ""}`;
+  lines.push(`Use the files as they are: ${pages}. Do not redraw the interface, and do not present them as another product's. Boxes are in each image's own pixels: x, y, width, height.`, "");
   for (const page of manifest.pages) {
     const label = `${String(page.n).padStart(2, "0")} ${page.slug}`;
     lines.push(`## ${label}`, "", `- Address: ${page.url}`, `- Why: ${page.why}`);
@@ -1411,7 +1415,7 @@ async function takeShots(rawUrl, options = {}) {
     chrome = null;
     if (siteCheck) Object.assign(manifest.pwa, await siteCheck);
     run.write("manifest.json", JSON.stringify(manifest, null, 2) + "\n");
-    writeMarkdown(manifest, run);
+    writeMarkdown(manifest, run, { clean: tidy, hide });
     // A run ends well only with whole files: each picture is read back
     // before it can take the place of an earlier run's.
     saved = [...written, ...(manifest.sheet ? ["sheet.png"] : []), ...(pwaSaved && pwaSaved.file ? [...pwaSaved.screenshots.map((shot) => shot.file), pwaSaved.file] : []), "SCREENSHOTS.md", "manifest.json"];

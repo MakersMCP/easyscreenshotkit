@@ -30,7 +30,8 @@ Options:
   --lang <code>     the site's version in this language, when it has one
   --hide <css>      hide one more element (repeat for more)
   --reduced-motion  ask the site for its reduced-motion version
-  --no-clean        take the pages as they come, banners and bubbles included
+  --no-clean        take the pages as they come, banners and bubbles included;
+                    --hide still hides what it names
   --pwa             also save screenshots for a web app manifest, in pwa/
   --pwa-check <m>   check the screenshots of a web app manifest instead: give
                     the manifest's file or address, or the site's address

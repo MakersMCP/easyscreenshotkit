@@ -480,6 +480,9 @@ class Recorder {
     if (this.tidy) {
       hidden = (await clean(tab, { hide: this.hide, viewport: this.viewport })).hidden;
       await this.eval(`${WATCH_FLOATING}(4000)`);
+    } else if (this.hide.length) {
+      // With --no-clean only what --hide names is hidden.
+      hidden = (await clean(tab, { hide: this.hide, viewport: this.viewport, auto: false })).hidden;
     }
     await this.eval(STEADY);
     await waitForFonts(tab);

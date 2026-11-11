@@ -440,10 +440,26 @@ test("--no-clean keeps the floating boxes; --hide hides more; --json prints the 
     const kept = readPng(path.join(root, "raw", manifest.pages[0].shots[0].file));
     assert.ok(near(css(kept, 2, 200, 880), BLUE), "cookie bar kept");
     assert.ok(near(css(kept, 2, 800, 100), ORANGE), "consent banner kept");
+    assert.ok(near(css(kept, 2, 1550, 780), MAGENTA), "chat bubble kept");
+    const said = (dir) => fs.readFileSync(path.join(root, dir, "SCREENSHOTS.md"), "utf8").split("\n")[4];
+    assert.equal(said("raw"), "Use the files as they are: they are the real pages as they came, banners and bubbles included. Do not redraw the interface, and do not present them as another product's. Boxes are in each image's own pixels: x, y, width, height.");
 
     const { manifest: hidden } = await takeShots(origin, { dir: path.join(root, "hide"), pages: 1, sizes: "desktop", hide: [".hero", "]bad["], timeLimit: 100_000 });
     const png = readPng(path.join(root, "hide", hidden.pages[0].shots[0].file));
     assert.ok(near(css(png, 2, 200, 300), WHITE), `the hero hidden: ${css(png, 2, 200, 300)}`);
+    assert.match(said("hide"), /^Use the files as they are: they are the real pages, with cookie banners, chat bubbles and other floating boxes hidden\./);
+
+    // --hide with --no-clean hides what it names, and only that: it was
+    // dropped without a word, and SCREENSHOTS.md said the banners and
+    // bubbles were hidden all the same.
+    const both = await runCli([origin, "--pages", "1", "--sizes", "desktop", "--no-clean", "--hide", ".chat", "--json", "--out", path.join(root, "both")]);
+    assert.equal(both.status, 0, both.stderr);
+    const named = JSON.parse(both.stdout);
+    const shot = readPng(path.join(root, "both", named.pages[0].shots[0].file));
+    assert.ok(!near(css(shot, 2, 1550, 780), MAGENTA), `the chat bubble hidden: ${css(shot, 2, 1550, 780)}`);
+    assert.ok(near(css(shot, 2, 200, 880), BLUE), "cookie bar kept");
+    assert.equal(named.pages[0].hidden, 1);
+    assert.equal(said("both"), "Use the files as they are: they are the real pages as they came, banners and bubbles included, with only what --hide names hidden. Do not redraw the interface, and do not present them as another product's. Boxes are in each image's own pixels: x, y, width, height.");
   } finally {
     server.close();
     fs.rmSync(root, { recursive: true, force: true });

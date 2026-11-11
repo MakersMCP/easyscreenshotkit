@@ -835,6 +835,25 @@ test("a scripted demo: scroll, click, type and a form sent with Enter, in an MP4
   }
 });
 
+// --hide with --no-clean hides what it names, and only that, where it was
+// dropped without a word.
+test("a demo with --no-clean hides what --hide names, and only that", { skip: missing, timeout: 200_000 }, async () => {
+  const { server, origin } = await fixture();
+  const root = tempDir();
+  const steps = path.join(root, "steps.yaml");
+  fs.writeFileSync(steps, "steps:\n  - visit: /\n  - wait: 1\n");
+  try {
+    await makeDemo(origin, { dir: path.join(root, "out"), steps, gif: false, clean: false, hide: [".chat"], timeLimit: 150_000 });
+    const poster = readPng(path.join(root, "out", "poster.png"));
+    assert.ok(near(unzoomed(poster, 800, 870), BLUE), `cookie bar kept: ${unzoomed(poster, 800, 870)}`);
+    assert.ok(!near(unzoomed(poster, 1546, 770), MAGENTA), `chat bubble hidden: ${unzoomed(poster, 1546, 770)}`);
+    assert.ok(near(unzoomed(poster, 800, 400), GREEN), `hero: ${unzoomed(poster, 800, 400)}`);
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a tour: the pages the menu puts forward, clicked through the menu, pricing last, and the tour written as steps", { skip: missing, timeout: 300_000 }, async () => {
   const { server, origin, seen } = await fixture();
   const root = tempDir();

@@ -184,7 +184,8 @@ npx easyscreenshotkit@latest <url> [options]
   --lang <code>     the site's version in this language, when it has one
   --hide <css>      hide one more element (repeat for more)
   --reduced-motion  ask the site for its reduced-motion version
-  --no-clean        take the pages as they come, banners and bubbles included
+  --no-clean        take the pages as they come, banners and bubbles included;
+                    --hide still hides what it names
   --pwa             also save screenshots for a web app manifest, in pwa/
   --pwa-check <m>   check the screenshots of a web app manifest instead: give
                     the manifest's file or address, or the site's address
@@ -214,7 +215,7 @@ npx easyscreenshotkit@latest yourapp.com --sizes iphone,mobile --theme both --ou
 npx easyscreenshotkit@latest 'yourapp.com/app/#/today' --pages 1 --page '/app/#/plants' --page '/app/#/settings' --sizes iphone,mobile --no-clean --out store
 ```
 
-The last one takes three views of a web app and nothing else: with `--pages 1` there is no tour, only the address and the `--page` ones. `--no-clean` keeps the app's own tab bar at the bottom of a phone's screen, which the clean-up would hide: it hides everything fixed to the screen but a bar along the top or down one side.
+The last one takes three views of a web app and nothing else: with `--pages 1` there is no tour, only the address and the `--page` ones. `--no-clean` keeps the app's own tab bar at the bottom of a phone's screen, which the clean-up would hide: it hides everything fixed to the screen but a bar along the top or down one side. With `--no-clean`, `--hide` still hides what it names, and SCREENSHOTS.md says the pages are as they came.
 
 The folder a run saves in has to be new, empty or hold an earlier run; the `.DS_Store`, `Thumbs.db` or `desktop.ini` a file browser leaves there does not count. It is looked at again when the run ends: if the folder by then holds something else and no earlier run of this kind, such as another tool's manifest or a demo where screenshots were going, the run fails and adds nothing. Two runs that end at the same moment in one folder take turns, and the files of the one that ends later replace the other's.
 
