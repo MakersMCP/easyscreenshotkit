@@ -27,7 +27,7 @@ const { cameraAt } = require("./motion");
 const { findFfmpeg, pickEncoder, startVideo, makeGif, MISSING } = require("./ffmpeg");
 const { tagPng, pngSize, pngFileIsWhole } = require("./png");
 const { setTimeLimit, timeLeft } = require("./time");
-const { guardFor } = require("./address");
+const { guardFor, unresolvedError } = require("./address");
 const { begin, checkDir, stopOnSignals } = require("./outdir");
 const version = require("./version");
 
@@ -86,7 +86,9 @@ before it has loaded, stops the demo, and so does a click on a link to a
 page that moves on so; a click on a link to one, or to a page that
 redirects to one, leaves the page where it was, with a note in steps.json,
 and a frame or a window a page opens there is not loaded; a tour leaves
-such a page out and says so. The rule is for the pages the demo opens: a
+such a page out and says so. A host whose name does not resolve here, or
+gives no answer in 10 s, is not opened either, and an address given on one
+stops the demo. The rule is for the pages the demo opens: a
 page's own pictures, styles, scripts and the data it fetches are left to
 the browser's own rules, and on a site you run on your machine they can
 come from other ports of it.
@@ -403,6 +405,12 @@ async function makeDemo(rawUrl, options = {}) {
   if (!ffmpeg) throw new Error(MISSING);
   const encoder = await pickEncoder(ffmpeg);
   if (!encoder) throw new Error(`${ffmpeg} has no H.264 encoder (x264, VideoToolbox, OpenH264 or Media Foundation). Install a full build of ffmpeg.`);
+  // The pages the demo opens, by a step, a click or the tour, are of the
+  // address given or on the public internet (see address.js). One whose
+  // host's name cannot be looked up here opens nothing, and the demo stops
+  // before any work.
+  const guard = await guardFor(asked);
+  if (guard.unresolved) throw unresolvedError(asked, guard);
   const target = dir || `easyscreenshotkit-demo-${siteOf(asked)}`;
   // Every file is made in the run's part folder, the frames too, and put in
   // place once the run has ended well (see outdir.js).
@@ -438,9 +446,7 @@ async function makeDemo(rawUrl, options = {}) {
   try {
     fs.mkdirSync(frames);
     chrome = await launch({ lang, args: [`--force-device-scale-factor=${density}`] });
-    // The pages the demo opens, by a step, a click or the tour, are of the
-    // address given or on the public internet (see address.js).
-    chrome.guard = await guardFor(asked);
+    chrome.guard = guard;
     recorder = new Recorder(chrome, { dir: frames, out: target, base: asked, fps, viewport, hide: [...hide, ...(script ? script.hide : [])], clean: tidy, theme, lang, reducedMotion, log });
     try {
       await checkBackdrop(chrome, background, frames);

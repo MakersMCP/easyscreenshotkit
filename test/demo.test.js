@@ -1783,6 +1783,53 @@ test("a demo opens no other address on this machine than the one it was given", 
   }
 });
 
+// Names that resolve here as a DNS server answers them, for the run's rule:
+// `answers`, by name, an address or an error code.
+async function withNames(answers, body) {
+  const dns = require("node:dns");
+  const lookup = dns.lookup;
+  dns.lookup = (host, options, callback) => {
+    if (typeof options === "function") [options, callback] = [{}, options];
+    const answer = answers[host];
+    if (answer === undefined) return lookup(host, options, callback);
+    if (!/^\d/.test(answer)) return process.nextTick(callback, Object.assign(new Error(`getaddrinfo ${answer} ${host}`), { code: answer, hostname: host }));
+    process.nextTick(callback, null, options && options.all ? [{ address: answer, family: 4 }] : answer, 4);
+  };
+  try {
+    return await body();
+  } finally {
+    dns.lookup = lookup;
+  }
+}
+
+// A name the demo cannot look up is not opened, whatever the browser's own
+// lookup would answer: not as the address given, by a visit step, or by a
+// window a click opens. The demo given one stops before any work.
+test("a demo opens no address on a host whose name it cannot look up", { skip: missing, timeout: 200_000 }, () => withNames({ "nowhere.example": "ENOTFOUND" }, async () => {
+  const UNRESOLVED = "on a host whose name could not be looked up";
+  let port = "";
+  const { server, origin } = await serve((req, res) => {
+    if (req.url !== "/") return res.writeHead(404).end("not found");
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Acme | Tools", `<h1>Acme</h1><p style="font-size:32px;padding:0 40px"><button onclick="window.open('http://nowhere.example:${port}/window')">Open a window</button></p><div style="height:1400px;background:rgb(0,160,0)"></div>`));
+  });
+  port = new URL(origin).port;
+  const root = tempDir();
+  const steps = path.join(root, "steps.yaml");
+  try {
+    const given = `http://nowhere.example:${port}/`;
+    await assert.rejects(makeDemo(given, { dir: path.join(root, "given"), gif: false, timeLimit: 100_000 }), { message: `Could not open ${given}: it is ${UNRESOLVED} (no such name).` });
+    assert.equal(fs.existsSync(path.join(root, "given")), false);
+    fs.writeFileSync(steps, 'steps:\n  - visit: /\n  - click: "text=Open a window"\n    zoom: false\n  - wait: 1\n');
+    const { manifest } = await makeDemo(origin, { dir: path.join(root, "demo"), steps, gif: false, timeLimit: 150_000 });
+    assert.ok(manifest.notes.includes(`The page tried to open a window at http://nowhere.example:${port}/window, which is ${UNRESOLVED}: it was not opened.`), manifest.notes.join("\n"));
+    fs.writeFileSync(steps, `steps:\n  - visit: /\n  - visit: http://nowhere.example:${port}/visited\n`);
+    await assert.rejects(makeDemo(origin, { dir: path.join(root, "visit"), steps, gif: false, timeLimit: 100_000 }), { message: `step 2 (visit): Could not open http://nowhere.example:${port}/visited: it is ${UNRESOLVED}.` });
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}));
+
 test("a step that points at nothing stops the run with its number and leaves nothing behind", { skip: missing, timeout: 120_000 }, async () => {
   const { server, origin } = await fixture();
   const root = tempDir();

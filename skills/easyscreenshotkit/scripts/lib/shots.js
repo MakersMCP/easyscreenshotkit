@@ -31,7 +31,7 @@ const { PWA_SHOTS, LOOKED_AT, planPwa, checkManifest } = require("./pwa");
 const { renderSheet } = require("./sheet");
 const { begin, checkDir, realFolder } = require("./outdir");
 const { setTimeLimit, timeLeft, sleep } = require("./time");
-const { guardFor } = require("./address");
+const { guardFor, unresolvedError } = require("./address");
 const version = require("./version");
 
 // The devices a size names. Desktop at 1600x900 shows a site's full menu
@@ -1038,6 +1038,12 @@ async function takeShots(rawUrl, options = {}) {
   const given = viewKey(asked) !== viewKey(home) ? asked : "";
   const asks = pagesAsked(extra, asked, home);
   const fragments = fragmentNotes(rawUrl, extra, asked, home);
+  // The pages the run opens, and the sitemaps it reads, are of the address
+  // given or on the public internet (see address.js). One whose host's name
+  // cannot be looked up here opens nothing, and the run stops before any
+  // work.
+  const guard = await guardFor(asked);
+  if (guard.unresolved) throw unresolvedError(asked, guard);
   const target = dir || `easyscreenshotkit-${siteOf(asked)}`;
   // Every file is made in the run's part folder and put in place once the
   // run has ended well (see outdir.js).
@@ -1072,9 +1078,7 @@ async function takeShots(rawUrl, options = {}) {
   };
   try {
     chrome = await launch({ lang });
-    // The pages the run opens, and the sitemaps it reads, are of the
-    // address given or on the public internet (see address.js).
-    chrome.guard = await guardFor(asked);
+    chrome.guard = guard;
     const [first] = groups;
     const firstTheme = themes[0];
     // The #route views whose other windows are still to be taken.

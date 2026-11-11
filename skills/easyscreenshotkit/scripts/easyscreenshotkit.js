@@ -64,8 +64,10 @@ only, and that host and port when the address given is on this machine or
 its network, as a site you run there is: a page, a redirect or a sitemap
 at localhost, 127.0.0.1, a private network or another address of that kind
 is not opened, and the report names it with the reason, and neither is a
-frame or a window a page opens there. A page that moves on to one, or to a
-file, before it has loaded is refused as a redirect there is. --pwa and
+frame or a window a page opens there, nor a host whose name does not
+resolve here or gives no answer in 10 s; an address given on such a host
+stops the run. A page that moves on to one, or to a file, before it has
+loaded is refused as a redirect there is. --pwa and
 --pwa-check read a manifest and its screenshots by the same rule, and from
 a manifest file no screenshot at such an address. The rule is for the
 pages the run opens and the files it reads itself: a page's own pictures,

@@ -2817,13 +2817,34 @@ test("the browser opens no port: the run drives it over a pipe", { skip: noBrows
   }
 });
 
+// Names that resolve here as a DNS server answers them, for the run's rule:
+// `answers`, by name, an address or an error code. The browser is given its
+// own answers (--host-resolver-rules), as it asks the DNS again for itself.
+async function withNames(answers, body) {
+  const dns = require("node:dns");
+  const lookup = dns.lookup;
+  dns.lookup = (host, options, callback) => {
+    if (typeof options === "function") [options, callback] = [{}, options];
+    const answer = answers[host];
+    if (answer === undefined) return lookup(host, options, callback);
+    if (!/^\d/.test(answer)) return process.nextTick(callback, Object.assign(new Error(`getaddrinfo ${answer} ${host}`), { code: answer, hostname: host }));
+    process.nextTick(callback, null, options && options.all ? [{ address: answer, family: 4 }] : answer, 4);
+  };
+  try {
+    return await body();
+  } finally {
+    dns.lookup = lookup;
+  }
+}
+
 // From a site on the public internet the browser opens no address on this
 // machine or its network: not one given to it, not one a redirect leads to,
 // and not one a page moves on to by itself, which stays where it was. Here
-// the site's name is one the DNS does not know, which the browser takes to
-// this machine, as a site's name leads it to the site's server; the other
-// server is another program on this machine.
-test("from a public site the browser opens no address on this machine: given, after a redirect, or when a page moves on by itself", { skip: noBrowser, timeout: 120_000 }, async () => {
+// the site's name resolves to a public address for the run's rule, as a
+// site's name does, and the browser takes it to this machine, as a site's
+// name leads it to the site's server; the other server is another program
+// on this machine.
+test("from a public site the browser opens no address on this machine: given, after a redirect, or when a page moves on by itself", { skip: noBrowser, timeout: 120_000 }, () => withNames({ "public.example": "93.184.215.14" }, async () => {
   const seen = [];
   const other = await serve((req, res) => {
     seen.push(req.url);
@@ -2865,14 +2886,14 @@ test("from a public site the browser opens no address on this machine: given, af
     other.server.close();
     fs.rmSync(path.dirname(secret), { recursive: true, force: true });
   }
-});
+}));
 
 // The same rule holds for a frame of another site, which runs in a process
 // of its own, when the page moves it later, by a script or a redirect, and
 // for a window a click opens: the tab's own requests were judged, and those
 // went through and were drawn into the screenshot. The frames and the window
 // are named to the tab.
-test("from a public site a frame of another site that is moved later, and a window a click opens, open no address on this machine", { skip: noBrowser, timeout: 120_000 }, async () => {
+test("from a public site a frame of another site that is moved later, and a window a click opens, open no address on this machine", { skip: noBrowser, timeout: 120_000 }, () => withNames({ "public.example": "93.184.215.14", "framed.example": "93.184.215.15" }, async () => {
   const seen = [];
   const other = await serve((req, res) => {
     seen.push(req.url);
@@ -2917,7 +2938,42 @@ test("from a public site a frame of another site that is moved later, and a wind
     server.close();
     other.server.close();
   }
-});
+}));
+
+// A name the run cannot look up is not opened, whatever the browser's own
+// lookup would answer: left to it, a DNS server that failed the kit's
+// question, or answered it late, could send the browser's next one to this
+// machine. The address given on such a host stops the run before any work,
+// and a frame, a --page or a page of the tour that leads to one is named
+// with the reason.
+const UNRESOLVED = "on a host whose name could not be looked up";
+
+test("a name the run cannot look up is not opened: not as the address given, a frame, a --page or a page of the tour", { skip: noBrowser, timeout: 200_000 }, () => withNames({ "nowhere.example": "ENOTFOUND", "failing.example": "EAI_AGAIN" }, async () => {
+  let port = "";
+  const html = { "Content-Type": "text/html; charset=utf-8" };
+  const { server, origin } = await serve((req, res) => {
+    if (req.url === "/") return res.writeHead(200, html).end(page("Acme | Tools", `<header><nav><a href="/features">Features</a></nav></header><h1>Acme</h1><iframe src="http://nowhere.example:${port}/frame"></iframe><div style="height:1400px"></div>`));
+    if (req.url === "/features") return res.writeHead(302, { Location: `http://failing.example:${port}/features` }).end();
+    if (req.url === "/away") return res.writeHead(302, { Location: `http://nowhere.example:${port}/away` }).end();
+    res.writeHead(404).end("not found");
+  });
+  port = new URL(origin).port;
+  const root = tempDir();
+  try {
+    const given = `http://nowhere.example:${port}/`;
+    await assert.rejects(takeShots(given, { dir: path.join(root, "given"), pages: 1, sizes: "desktop", timeLimit: 60_000 }), { message: `Could not open ${given}: it is ${UNRESOLVED} (no such name).` });
+    assert.equal(fs.existsSync(path.join(root, "given")), false);
+    const { manifest } = await takeShots(origin, { dir: path.join(root, "shots"), pages: 3, extra: ["/away"], sizes: "desktop", timeLimit: 150_000 });
+    assert.deepEqual(manifest.pages.map((p) => p.slug), ["home"]);
+    assert.ok(manifest.pages[0].notes.includes(`a frame of it tried to open http://nowhere.example:${port}/frame, which is ${UNRESOLVED}: it was not opened`), manifest.pages[0].notes.join("\n"));
+    const skipped = Object.fromEntries(manifest.skipped.map(({ url, reason }) => [url, reason]));
+    assert.equal(skipped[`${origin}/away`], `it leads to http://nowhere.example:${port}/away, which is ${UNRESOLVED}`);
+    assert.equal(skipped[`${origin}/features`], `it leads to http://failing.example:${port}/features, which is ${UNRESOLVED}`);
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}));
 
 // A run given an address on this machine, as a developer gives the site
 // they run there, opens that host and port and no other address of the

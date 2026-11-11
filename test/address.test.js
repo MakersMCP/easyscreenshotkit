@@ -9,7 +9,7 @@ const assert = require("node:assert/strict");
 const dns = require("node:dns");
 const http = require("node:http");
 const test = require("node:test");
-const { guardFor, getChecked, notPublicIp } = require("../skills/easyscreenshotkit/scripts/lib/address");
+const { guardFor, getChecked, notPublicIp, unresolvedError, UNRESOLVED } = require("../skills/easyscreenshotkit/scripts/lib/address");
 const { alternateFor } = require("../skills/easyscreenshotkit/scripts/lib/pick");
 
 const NOT_PUBLIC = "not on the public internet";
@@ -115,6 +115,48 @@ test("a request the kit makes itself goes to the address the name was judged by,
     // The host and port given on this machine are the run's own: any
     // address of them goes.
     assert.equal((await guardFor("http://localhost:3000/")).lookupFor("http://localhost:3000/robots.txt"), undefined);
+  } finally {
+    dns.lookup = lookup;
+  }
+});
+
+// A name that cannot be looked up here, as the DNS fails or answers late,
+// is refused, and stays refused for the run: it counted as public, was
+// kept so, and was left to the browser's own lookup, which the same DNS
+// server could answer with this machine. The address given on such a host
+// tells the run why, so it can stop before any work.
+test("a name that cannot be looked up here is refused for the run, and the address given on such a host says why", { timeout: 60_000 }, async () => {
+  const lookup = dns.lookup;
+  const asked = [];
+  dns.lookup = (host, options, callback) => {
+    asked.push(host);
+    if (host === "public.example") return process.nextTick(callback, null, [{ address: "93.184.215.14", family: 4 }]);
+    // No answer at all.
+    if (host === "slow.example") return;
+    process.nextTick(callback, Object.assign(new Error(`getaddrinfo ENOTFOUND ${host}`), { code: host === "flaky.example" ? "EAI_AGAIN" : "ENOTFOUND", hostname: host }));
+  };
+  try {
+    const guard = await guardFor("https://public.example/");
+    assert.equal(guard.unresolved, "");
+    assert.equal(await guard.refuses("https://nowhere.example/"), UNRESOLVED);
+    assert.equal(await guard.refuses("https://nowhere.example:8443/x"), UNRESOLVED);
+    assert.equal(await guard.refuses("https://flaky.example/"), UNRESOLVED);
+    let started = Date.now();
+    assert.equal(await guard.refuses("https://slow.example/"), UNRESOLVED);
+    assert.ok(Date.now() - started >= 9_000, `${Date.now() - started} ms`);
+    started = Date.now();
+    assert.equal(await guard.refuses("https://slow.example:8443/"), UNRESOLVED);
+    assert.ok(Date.now() - started < 1_000, `${Date.now() - started} ms`);
+    assert.deepEqual(asked.filter((host) => host !== "public.example"), ["nowhere.example", "flaky.example", "slow.example"]);
+    // From a site on this machine too.
+    assert.equal(await (await guardFor("http://localhost:3000/")).refuses("http://nowhere.example/"), UNRESOLVED);
+    // The address given on such a host.
+    assert.equal((await guardFor("https://nowhere.example/app/")).unresolved, "no such name");
+    assert.equal((await guardFor("https://flaky.example/")).unresolved, "the name servers did not answer");
+    assert.equal((await guardFor("https://slow.example/")).unresolved, "no answer in 10 s");
+    assert.equal(unresolvedError("https://nowhere.example/app/", await guardFor("https://nowhere.example/app/")).message, `Could not open https://nowhere.example/app/: it is ${UNRESOLVED} (no such name).`);
+    // A file the kit would read there is not read either.
+    await assert.rejects(getChecked("https://nowhere.example/sitemap.xml", { guard }), { refused: `it is ${UNRESOLVED}` });
   } finally {
     dns.lookup = lookup;
   }

@@ -1,7 +1,9 @@
 "use strict";
 
 // Which addresses a run opens and reads. A run opens the address it is given,
-// whatever it is, a steps file's url included, and what it finds from there
+// whatever host it is on, a steps file's url when the command line gives
+// none included, as long as its host's name can be looked up here (see
+// below), and what it finds from there
 // (a page of the tour, a step's visit, a redirect, a move of a page or of a
 // frame in it, a window a page opens, a sitemap, a manifest and its
 // screenshots) only while that is a web address on the public internet. So
@@ -23,7 +25,10 @@
 // one of those addresses, not to a second answer of the DNS. The browser
 // resolves a name again when it opens it, which a DNS server of the site's
 // can answer otherwise in between. A name that does not resolve here, or
-// gives no answer in LOOKUP_MS, is left to the browser's own lookup.
+// gives no answer in LOOKUP_MS, is not opened: left to the browser's own
+// lookup, it let a DNS server that failed the kit's question, or answered it
+// late, send the browser's next one to this machine. The address given on
+// such a host stops the run before any work.
 
 const dns = require("dns");
 const net = require("net");
@@ -35,6 +40,7 @@ const zlib = require("zlib");
 const NOT_WEB = "not a web address";
 const NOT_PUBLIC = "not on the public internet";
 const NOT_GIVEN = "not on the public internet, and not on the host and port given";
+const UNRESOLVED = "on a host whose name could not be looked up";
 
 // The ranges that are not on the public internet: this machine, private and
 // shared networks, link-local, and the ranges kept for documentation,
@@ -123,17 +129,34 @@ function addressesOf(host) {
   return answers.get(host);
 }
 
-// Whether a host, as a URL gives it, is not on the public internet: an
-// address of that kind, a name for this machine, or a name one of whose
-// addresses is. A name that cannot be resolved here is judged by the browser,
-// which cannot open it either.
-async function hostNotPublic(hostname) {
+// Where a host, as a URL gives it, stands: "inside" when it is not on the
+// public internet (an address of that kind, a name for this machine, or a
+// name one of whose addresses is), "unknown" for a name that could not be
+// looked up here, "" for one on the public internet. A failed lookup is
+// kept as unknown for the run, never as public.
+async function standing(hostname) {
   const host = String(hostname || "").replace(/^\[|\]$/g, "").replace(/\.$/, "");
-  if (!host) return true;
-  if (net.isIP(host)) return notPublicIp(host);
-  if (localName(host)) return true;
+  if (!host) return "inside";
+  if (net.isIP(host)) return notPublicIp(host) ? "inside" : "";
+  if (localName(host)) return "inside";
   const { list } = await addressesOf(host);
-  return Boolean(list && list.some((answer) => notPublicIp(answer.address)));
+  if (!list || !list.length) return "unknown";
+  return list.some((answer) => notPublicIp(answer.address)) ? "inside" : "";
+}
+
+async function hostNotPublic(hostname) {
+  return (await standing(hostname)) === "inside";
+}
+
+// Why a name could not be looked up, in a few words.
+async function lookupWhy(hostname) {
+  const host = String(hostname || "").replace(/\.$/, "");
+  const { error } = await addressesOf(host);
+  const code = (error && error.code) || "";
+  if (code === "ENOTFOUND" || code === "ENODATA" || !error) return "no such name";
+  if (code === "ETIMEOUT") return `no answer in ${LOOKUP_MS / 1000} s`;
+  if (code === "EAI_AGAIN") return "the name servers did not answer";
+  return code;
 }
 
 const portOf = (url) => url.port || (url.protocol === "https:" ? "443" : "80");
@@ -141,7 +164,9 @@ const portOf = (url) => url.port || (url.protocol === "https:" ? "443" : "80");
 // The rule for a run that starts at `start`, the address it was given, or
 // at no address ("", for a manifest read from a file). refuses(url)
 // resolves to "" for an address the run may open, else to what it is, as
-// said after "it is": not a web address, or not on the public internet.
+// said after "it is": not a web address, not on the public internet, or on
+// a host whose name could not be looked up. unresolved: why the host of the
+// address given could not be looked up, or "": a run given it opens nothing.
 async function guardFor(start) {
   let from = null;
   try {
@@ -149,7 +174,8 @@ async function guardFor(start) {
   } catch {
     from = null;
   }
-  const local = Boolean(from) && /^https?:$/.test(from.protocol) && (await hostNotPublic(from.hostname));
+  const at = from && /^https?:$/.test(from.protocol) ? await standing(from.hostname) : "";
+  const local = at === "inside";
   const given = (url) => local && url.hostname === from.hostname && portOf(url) === portOf(from);
   const parse = (raw) => {
     try {
@@ -160,11 +186,14 @@ async function guardFor(start) {
   };
   return {
     local,
+    unresolved: at === "unknown" ? await lookupWhy(from.hostname) : "",
     async refuses(raw) {
       const url = parse(raw);
       if (!url || !/^https?:$/.test(url.protocol)) return NOT_WEB;
       if (given(url)) return "";
-      if (await hostNotPublic(url.hostname)) return local ? NOT_GIVEN : NOT_PUBLIC;
+      const where = await standing(url.hostname);
+      if (where === "unknown") return UNRESOLVED;
+      if (where === "inside") return local ? NOT_GIVEN : NOT_PUBLIC;
       return "";
     },
     // For a request the kit makes itself: the lookup that connects it to
@@ -245,4 +274,10 @@ async function bodyOf(res, maxBytes) {
   return Buffer.concat(chunks);
 }
 
-module.exports = { guardFor, getChecked, notPublicIp, hostNotPublic, NOT_WEB, NOT_PUBLIC, NOT_GIVEN };
+// The error for an address given whose host could not be looked up, before
+// any work: guard is the run's rule for it.
+function unresolvedError(url, guard) {
+  return new Error(`Could not open ${url}: it is ${UNRESOLVED} (${guard.unresolved}).`);
+}
+
+module.exports = { guardFor, getChecked, notPublicIp, hostNotPublic, unresolvedError, NOT_WEB, NOT_PUBLIC, NOT_GIVEN, UNRESOLVED };
