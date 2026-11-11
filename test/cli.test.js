@@ -371,6 +371,42 @@ test("a path, a #route or a page's words that would act on the terminal are prin
   assert.equal(alternateFor([turkish], ""), null);
 });
 
+// What a page tried to open that the run does not open: its own moves
+// first, then its windows, then its frames, and how many more than are
+// shown, where the first three that came were shown and a page whose frames
+// came first lost its own move.
+test("the notes on what a page tried to open: its own first, then its windows, then its frames, with how many more", () => {
+  const { barredNotes } = require("../skills/easyscreenshotkit/scripts/lib/shots");
+  const { refusalNotes } = require("../skills/easyscreenshotkit/scripts/lib/demo");
+  const why = "not on the public internet";
+  const frames = [1, 2, 3, 4].map((n) => ({ url: `http://127.0.0.1:9/f${n}`, why, main: false, window: false }));
+  const moved = { url: "http://127.0.0.1:9/page-move", why, main: true, window: false };
+  const opened = { url: "http://127.0.0.1:9/window", why, main: false, window: true };
+  assert.deepEqual(barredNotes([...frames.slice(0, 3), moved]), [
+    `it tried to open http://127.0.0.1:9/page-move, which is ${why}: it was not opened`,
+    `a frame of it tried to open http://127.0.0.1:9/f1, which is ${why}: it was not opened`,
+    `a frame of it tried to open http://127.0.0.1:9/f2, which is ${why}: it was not opened`,
+    "it, its frames or its windows tried to open 1 more address, which was not opened",
+  ]);
+  assert.deepEqual(barredNotes([...frames, opened, moved]).slice(1, 2), [`it tried to open a window at http://127.0.0.1:9/window, which is ${why}: it was not opened`]);
+  assert.equal(barredNotes([...frames, opened, moved]).at(-1), "it, its frames or its windows tried to open 3 more addresses, which were not opened");
+  assert.deepEqual(barredNotes(frames.slice(0, 3)).length, 3);
+  assert.deepEqual(barredNotes(), []);
+  const kind = (b) => ({ url: b.url, why: b.why, kind: b.main ? "page" : b.window ? "window" : "frame" });
+  const many = [...frames, ...frames.map((b) => ({ ...b, url: `${b.url}b` })), opened, moved].map(kind);
+  const notes = refusalNotes({ barred: many, refused: Array.from({ length: 7 }, (_, n) => `http://127.0.0.1:9/file-${n}.bin`) });
+  assert.deepEqual(notes.slice(0, 6), [
+    ...[0, 1, 2, 3, 4].map((n) => `The page started a download of http://127.0.0.1:9/file-${n}.bin, which the browser refused: no file was saved.`),
+    "The pages started 2 more downloads, which the browser refused: no file was saved.",
+  ]);
+  assert.deepEqual(notes.slice(6, 8), [
+    `The page tried to open http://127.0.0.1:9/page-move, which is ${why}: it was not opened, and the page stayed where it was.`,
+    `The page tried to open a window at http://127.0.0.1:9/window, which is ${why}: it was not opened.`,
+  ]);
+  assert.equal(notes.at(-1), "The pages, their frames or their windows tried to open 5 more addresses, which were not opened.");
+  assert.equal(notes.length, 12);
+});
+
 test("the pages left out: those opened first, then the #route links, then the other links, 40 at most, with the #route links past them counted", () => {
   const ROUTE = "a #route, which the tour does not follow: give it with --page";
   const rejected = [{ url: "https://acme.com/start", reason: "redirected to a sign-in page" }, { url: "https://acme.com/app/#/private", reason: "the page answered 404" }];

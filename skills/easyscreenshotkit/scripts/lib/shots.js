@@ -653,6 +653,21 @@ function barredNote(b) {
   return `a frame of it tried to open ${b.url}, which is ${b.why}: it was not opened`;
 }
 
+// Of what a page tried to open that the run does not open, the notes it
+// gets: the page's own first, then its windows, then its frames, BARRED_SHOWN
+// at most, and how many more. Taken as they came, a page whose frames were
+// refused first had its own move left out of its notes.
+const BARRED_SHOWN = 3;
+
+function barredNotes(barred = []) {
+  const rank = (b) => (b.main ? 0 : b.window ? 1 : 2);
+  const sorted = [...barred].sort((a, b) => rank(a) - rank(b));
+  const notes = sorted.slice(0, BARRED_SHOWN).map(barredNote);
+  const more = sorted.length - BARRED_SHOWN;
+  if (more > 0) notes.push(`it, its frames or its windows tried to open ${more === 1 ? "1 more address, which was" : `${more} more addresses, which were`} not opened`);
+  return notes;
+}
+
 // What the waits for a window of a page saw by the time it was taken, as
 // notes, and only what they waited for: a run short of time waits less.
 function waitNotes(result) {
@@ -1141,7 +1156,7 @@ async function takeShots(rawUrl, options = {}) {
       });
       page.notes.push(...waitNotes(result));
       if (movedOn(page.asked, result.nav.url)) page.notes.push(`opened ${page.asked} and landed on ${result.nav.url}`);
-      for (const b of (result.barred || []).slice(0, 3)) page.notes.push(barredNote(b));
+      page.notes.push(...barredNotes(result.barred));
       kept.push(page);
       saveShots(page, result, firstTheme, run, written);
       log(`${String(page.n).padStart(2, "0")} ${page.slug}  ${pathOf(result.nav.url)}`);
@@ -1471,4 +1486,4 @@ function leftOut(rejected, routes, links) {
   return { skipped: all.slice(0, LEFT_OUT), routesPast: all.slice(LEFT_OUT).filter((skip) => skip.reason === ROUTE_LINK).length };
 }
 
-module.exports = { takeShots, parseSizes, addPwaShots, normalizeUrl, fragmentNotes, prepareDir, openShots, slugOf, identity, movedOn, pagesAsked, waitForView, leftOut, siteName, readInfo, readLinks, rejectAtOnce, rejectReason, notOpened, alternateNote, barredNote, writeMarkdown, DEVICES, MAX_HEIGHT };
+module.exports = { takeShots, parseSizes, addPwaShots, normalizeUrl, fragmentNotes, prepareDir, openShots, slugOf, identity, movedOn, pagesAsked, waitForView, leftOut, siteName, readInfo, readLinks, rejectAtOnce, rejectReason, notOpened, alternateNote, barredNote, barredNotes, writeMarkdown, DEVICES, MAX_HEIGHT };

@@ -1671,7 +1671,7 @@ test("a demo opens no other address on this machine than the one it was given", 
     if (req.url === "/robots.txt") return res.writeHead(200, { "Content-Type": "text/plain" }).end(`User-agent: *\nSitemap: ${elsewhere}/sitemap.xml\n`);
     if (req.url === "/") {
       return res.writeHead(200, html).end(
-        page("Acme | Tools", `<header><nav><a href="${elsewhere}/pricing">Pricing</a><a href="/features">Features</a></nav></header><h1>Acme</h1><p style="font-size:32px;padding:0 40px"><a href="${elsewhere}/inside">Go inside</a> <a href="/early">Early access</a></p><iframe src="${elsewhere}/framed" style="width:200px;height:100px"></iframe><div style="height:1400px;background:rgb(0,160,0)"></div>`).replace(
+        page("Acme | Tools", `<header><nav><a href="${elsewhere}/pricing">Pricing</a><a href="/features">Features</a></nav></header><h1>Acme</h1><p style="font-size:32px;padding:0 40px"><a href="${elsewhere}/inside">Go inside</a> <a href="/early">Early access</a></p>${[1, 2, 3, 4, 5, 6].map((n) => `<iframe src="${elsewhere}/framed${n}" style="width:100px;height:60px"></iframe>`).join("")}<div style="height:1400px;background:rgb(0,160,0)"></div>`).replace(
           "</head>",
           `<link rel="alternate" hreflang="de" href="${elsewhere}/de/"></head>`,
         ),
@@ -1699,10 +1699,12 @@ test("a demo opens no other address on this machine than the one it was given", 
     const clicked = await run([origin, "--steps", click, "--out", dir, "--no-gif"]);
     assert.equal(clicked.code, 0, clicked.err);
     const { notes, pages } = JSON.parse(fs.readFileSync(path.join(dir, "steps.json"), "utf8"));
-    assert.deepEqual(notes.filter((note) => /tried to open/.test(note)), [
-      `A frame of the page tried to open ${elsewhere}/framed, which is ${NOT_GIVEN}: it was not opened.`,
-      `The page tried to open ${elsewhere}/inside, which is ${NOT_GIVEN}: it was not opened, and the page stayed where it was.`,
-    ]);
+    // The page's own first, though its six frames were refused before it,
+    // then four of the frames, and how many more.
+    const tried = notes.filter((note) => /tried to open/.test(note));
+    assert.equal(tried[0], `The page tried to open ${elsewhere}/inside, which is ${NOT_GIVEN}: it was not opened, and the page stayed where it was.`, tried.join("\n"));
+    for (const note of tried.slice(1, 5)) assert.match(note, new RegExp(`^A frame of the page tried to open ${elsewhere}/framed[1-6], which is ${NOT_GIVEN}: it was not opened\\.$`));
+    assert.deepEqual(tried.slice(5), ["The pages, their frames or their windows tried to open 2 more addresses, which were not opened."]);
     assert.deepEqual(pages.map((shown) => shown.url), [`${origin}/`]);
 
     const before = snapshot(dir);

@@ -241,6 +241,25 @@ function barredNote({ url, why, kind }) {
   return `The page tried to open ${where}, which is ${why}: it was not opened, and the page stayed where it was.`;
 }
 
+// steps.json's notes on what the demo's pages tried to open that the run
+// does not open, and on the downloads they started: the pages' own moves
+// first, then their windows, then their frames, NOTED at most of each, and
+// how many more. Taken as they came, a page whose frames were refused first
+// had its own move left out of the notes.
+const NOTED = 5;
+
+function refusalNotes({ barred = [], refused = [] }) {
+  const rank = { page: 0, window: 1, frame: 2 };
+  const sorted = [...barred].sort((a, b) => rank[a.kind] - rank[b.kind]);
+  const notes = [];
+  for (const url of refused.slice(0, NOTED)) notes.push(`The page started a download of ${String(url).slice(0, 200)}, which the browser refused: no file was saved.`);
+  if (refused.length > NOTED) notes.push(`The pages started ${refused.length - NOTED} more ${refused.length - NOTED === 1 ? "download" : "downloads"}, which the browser refused: no file was saved.`);
+  notes.push(...sorted.slice(0, NOTED).map(barredNote));
+  const more = sorted.length - NOTED;
+  if (more > 0) notes.push(`The pages, their frames or their windows tried to open ${more === 1 ? "1 more address, which was" : `${more} more addresses, which were`} not opened.`);
+  return notes;
+}
+
 const round = (value, places = 3) => Math.round(value * 10 ** places) / 10 ** places;
 
 // How long the page shown last stays on camera at least, in seconds of the
@@ -476,8 +495,7 @@ async function makeDemo(rawUrl, options = {}) {
       await chrome.close();
     }
     if (!take.frames.length) throw new Error("No frame was recorded.");
-    for (const url of take.refused.slice(0, 5)) notes.push(`The page started a download of ${String(url).slice(0, 200)}, which the browser refused: no file was saved.`);
-    for (const barred of take.barred.slice(0, 5)) notes.push(barredNote(barred));
+    notes.push(...refusalNotes(take));
     if (take.slow) notes.push("A page drew slowly in this browser, so it was recorded in slow motion and played back at speed; its own animations look right, scripted ones may run fast.");
 
     // The video.
@@ -624,4 +642,4 @@ async function main(argv) {
   }
 }
 
-module.exports = { main, makeDemo, parseDemo, prepareDemoDir, openDemo, routesNote, barredNote, what, frameAt, stepEntries, pageEntries, summary, USAGE };
+module.exports = { main, makeDemo, parseDemo, prepareDemoDir, openDemo, routesNote, barredNote, refusalNotes, what, frameAt, stepEntries, pageEntries, summary, USAGE };

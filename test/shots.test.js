@@ -3096,6 +3096,37 @@ test("a page's version in another language that answers an error or a bot check,
   }
 });
 
+// A page whose frames were refused first, and which then moves on once it
+// has loaded, keeps the note on its own move: its notes on what it tried to
+// open went by the order they came in, three at most, so the move was left
+// out without a word.
+test("a page's own move is in its notes ahead of its frames, and the notes say how many more were not opened", { skip: noBrowser, timeout: 120_000 }, async () => {
+  const seen = [];
+  const other = await serve((req, res) => {
+    seen.push(req.url);
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Inside", "<h1>Inside</h1>"));
+  });
+  const elsewhere = other.origin;
+  const { server, origin } = await serve((req, res) => {
+    if (req.url !== "/") return res.writeHead(404).end("not found");
+    const frames = [1, 2, 3, 4].map((n) => `<iframe src="${elsewhere}/f${n}" style="width:100px;height:60px"></iframe>`).join("");
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Acme | Tools", `<h1>Acme</h1>${frames}<div style="height:1400px"></div><script>addEventListener("load", () => setTimeout(() => { location.href = "${elsewhere}/page-move"; }, 300));</script>`));
+  });
+  const dir = path.join(tempDir(), "shots");
+  try {
+    const { manifest } = await takeShots(origin, { dir, pages: 1, sizes: "desktop", timeLimit: 100_000 });
+    const notes = manifest.pages[0].notes;
+    assert.equal(notes[0], `it tried to open ${elsewhere}/page-move, which is ${NOT_GIVEN}: it was not opened`, notes.join("\n"));
+    assert.equal(notes.filter((note) => note.startsWith("a frame of it tried to open")).length, 2, notes.join("\n"));
+    assert.equal(notes.at(-1), "it, its frames or its windows tried to open 2 more addresses, which were not opened");
+    assert.deepEqual(seen, []);
+  } finally {
+    server.close();
+    other.server.close();
+    fs.rmSync(path.dirname(dir), { recursive: true, force: true });
+  }
+});
+
 // --pwa reads the manifest the home page links, and the screenshots it
 // lists, by the run's rule: one at an address the run does not open is not
 // read, and the summary says so. The check took the manifest's own address
