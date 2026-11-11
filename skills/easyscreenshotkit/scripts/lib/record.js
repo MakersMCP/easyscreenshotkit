@@ -270,6 +270,9 @@ class Recorder {
     this.navAt = 0;
     this.quiet = false;
     this.url = "";
+    // The address of another kind a page tried to open, until the tab is
+    // known to take input since (see inputReaches()).
+    this.outside = "";
     this.cursor = { x: viewport.width * 0.64, y: viewport.height * 0.76 };
     this.take = { start: { ...this.cursor }, shownAt: null, moves: [], clicks: [], typing: [], keys: [], scrolls: [], cuts: [], urls: [], refused: [], barred: [] };
     this.pages = [];
@@ -321,6 +324,9 @@ class Recorder {
         this.refusedAt = Date.now();
         this.refusal = { url: b.url, why: b.why, left: true, stays: Boolean(b.stays) };
       }
+      // An address of another kind, after which the tab may take no more
+      // input (see inputReaches()).
+      if (b.stays && !this.outside) this.outside = b.url;
       const kind = b.main ? "page" : b.window ? "window" : "frame";
       if (!this.take.barred.some((known) => known.url === b.url)) this.take.barred.push({ url: b.url, why: b.why, kind, handed: Boolean(b.handed) });
     });
@@ -532,6 +538,28 @@ class Recorder {
   // Puts the real mouse where the pointer is drawn.
   async pointer(at) {
     await this.tab.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: at.x, y: at.y }, 3_000).catch(() => {});
+  }
+
+  // Whether the page still takes input. Some versions of Chrome, 155 among
+  // them, take none more in a tab once a page of it tried to open tel: or
+  // news: (mailto: leaves it as it was): every later click, key and move
+  // did nothing, on a page a visit opened after it too, while the steps
+  // went on as if each had landed. The real mouse is moved a pixel off and
+  // back, and the page listens for it. A page that could not be asked, as
+  // one going away, counts as one that takes it.
+  async inputReaches() {
+    const listening = await this.eval(`(() => { window.__easyscreenshotkitMoved = false; addEventListener("mousemove", () => { window.__easyscreenshotkitMoved = true; }, { capture: true, once: true }); return true; })()`);
+    if (listening !== true) return true;
+    for (let tries = 0; tries < 2; tries++) {
+      await this.pointer({ x: this.cursor.x + 1, y: this.cursor.y });
+      await this.pointer(this.cursor);
+      for (let i = 0; i < 10; i++) {
+        const moved = await this.eval("window.__easyscreenshotkitMoved");
+        if (moved !== false) return true;
+        await sleep(50);
+      }
+    }
+    return false;
   }
 
   // ─── steps ───────────────────────────────────────────────────────────────
@@ -908,6 +936,14 @@ class Recorder {
   async run(step) {
     if (this.writeError) throw new Error(this.writeError);
     if (this.navAt) await this.follow();
+    // A step that clicks, types, presses a key or hovers, once the page has
+    // tried to open an address of another kind: in a tab that takes no more
+    // input it would do nothing, and the video would lack it without a word.
+    if (this.outside && ["click", "type", "key", "hover"].includes(step.action)) {
+      const url = this.outside;
+      if (!(await this.inputReaches())) throw new Error(`the browser took no more clicks or keys after the page tried to open ${url}, as some versions of Chrome do. Leave out the step that goes there, or make it the last click or key of the steps.`);
+      this.outside = "";
+    }
     const start = this.now();
     const record = { start };
     const before = this.url;

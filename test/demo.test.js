@@ -1803,6 +1803,44 @@ test("no click of a demo makes the browser start a program of this machine", { s
   }
 });
 
+// Some versions of Chrome, 155 among them, take no more input in a tab once
+// a page of it tried to open an address of another kind that they ask
+// before they open, as tel:: every later click and key did nothing, while
+// steps.json listed each as done and the demo ended well without the page
+// the next click opens. A demo that meets such a tab stops at the next step
+// that needs input and says why; with a version that does not do so, the
+// next click opens its page.
+test("a demo's click after one on a tel: link opens its page, or the demo says the browser took no more clicks", { skip: missing || (process.platform !== "linux" && "the browser starts these programs through PATH and the session bus on Linux only"), timeout: 200_000 }, async () => {
+  const html = { "Content-Type": "text/html; charset=utf-8" };
+  const { server, origin } = await serve((req, res) => {
+    if (req.url === "/") return res.writeHead(200, html).end(page("Contact | Acme", '<h1>Contact</h1><p style="font-size:32px;padding:0 40px"><a href="tel:+15551234567">Call us</a> <a href="/pricing">Pricing</a></p><div style="height:1400px;background:rgb(0,160,0)"></div>'));
+    if (req.url === "/pricing") return res.writeHead(200, html).end(page("Pricing | Acme", '<h1>Pricing</h1><div style="height:1400px;background:rgb(0,0,220)"></div>'));
+    res.writeHead(404).end("not found");
+  });
+  const root = tempDir();
+  const cut = await cutOff(root);
+  const steps = path.join(root, "steps.yaml");
+  fs.writeFileSync(steps, 'steps:\n  - visit: /\n  - click: "text=Call us"\n    zoom: false\n  - click: "text=Pricing"\n    zoom: false\n  - wait: 1\n');
+  try {
+    const run = await cut.demo([origin, "--steps", steps, "--no-gif", "--json", "--out", path.join(root, "demo")]);
+    if (run.status === 0) {
+      const { steps: done, pages } = JSON.parse(run.stdout);
+      assert.equal(done[2].opened, `${origin}/pricing`, run.stdout);
+      assert.deepEqual(pages.map((p) => p.url), [`${origin}/`, `${origin}/pricing`]);
+    } else {
+      assert.equal(run.status, 1, run.stderr);
+      assert.equal(run.stderr.trim().split("\n").pop(), "easyscreenshotkit demo: step 3 (click): the browser took no more clicks or keys after the page tried to open tel:+15551234567, as some versions of Chrome do. Leave out the step that goes there, or make it the last click or key of the steps.");
+      assert.equal(fs.existsSync(path.join(root, "demo")), false);
+    }
+    assert.equal(cut.started(), "");
+    assert.deepEqual(cut.opened, []);
+  } finally {
+    await cut.close();
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // A page that thanks for a download and sends the browser to the file once
 // it is drawn, from the end of its body, is shown as it is drawn, by a
 // click on a link to it and by a visit, with a note that no file was saved,

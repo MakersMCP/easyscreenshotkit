@@ -111,6 +111,8 @@ npx easyscreenshotkit@latest demo --steps demo.yaml
 
 A target is a CSS selector such as `"#signup"`, or the words on it such as `"text=Start free"`. Put a selector that starts with `#` in quotes, or YAML reads it as a comment. A step can also carry a `label`, which steps.json uses, and a `note` for whoever writes the narration. A JSON file of the same shape works too.
 
+Some versions of Chrome, 155 among them, take no more clicks or keys in a tab once a page of it has tried to open `tel:` or `news:`, as a click on such a link does. A demo then stops at the next step that clicks, types, presses a key or hovers, and says so: make such a click the last click or key of the steps, or leave it out.
+
 The demo needs ffmpeg, the one on your machine (`brew install ffmpeg`, `sudo apt install ffmpeg` or `winget install ffmpeg`). `npx easyscreenshotkit@latest demo --help` lists every option; these are the main ones:
 
 ```
