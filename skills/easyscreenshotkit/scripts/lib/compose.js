@@ -48,6 +48,9 @@ const LOOKS = {
 };
 
 const COLOR = /^(#[0-9a-f]{3,8}|(rgb|rgba|hsl|hsla)\([\d\s.,%/+-]+\)|[a-z]{3,30})$/i;
+// Words CSS takes for any property, as it takes a colour, which a backdrop
+// does not draw: inherit drew a plain white one.
+const WIDE = /^(inherit|initial|unset|revert|revert-layer)$/i;
 
 const PICTURE_FILE = /\.(png|jpe?g|webp|gif|avif|svg)$/i;
 const noPicture = (file) => new Error(`--background: ${file} is no picture the browser can draw: PNG, JPEG, WebP, GIF, AVIF or SVG.`);
@@ -71,15 +74,16 @@ function backdropOf(value) {
     return `url("${pathToFileURL(path.resolve(text)).href}") center / cover no-repeat, #222`;
   }
   const colors = colorsOf(text);
-  if (!colors.length || colors.length > 3 || colors.some((c) => !COLOR.test(c))) throw notAColour(text);
+  if (!colors.length || colors.length > 3 || colors.some((c) => !COLOR.test(c) || WIDE.test(c))) throw notAColour(text);
   return colors.length === 1 ? colors[0] : `linear-gradient(135deg, ${colors.join(", ")})`;
 }
 
 // A --background is the browser's to judge, before anything is recorded. A
-// colour is one it reads as a colour: any word passed the check above, and
-// one CSS does not know, as charcoal, drew a plain white backdrop with no
-// word of why. A file is one it draws: it draws nothing for a file that is
-// no picture, and the backdrop came out plain grey. It is loaded as the
+// colour is one it reads as a colour, and the backdrop it makes of it one
+// it draws, as the frames' page sets it: any word passed the check above,
+// and one CSS does not know, as charcoal, drew a plain white backdrop with
+// no word of why. A file is one it draws: it draws nothing for a file that
+// is no picture, and the backdrop came out plain grey. It is loaded as the
 // video's page would load it, from a page in dir. The browser also draws
 // the part that is there of a picture cut short, a strip over grey, and
 // says it loaded: a picture is read to its end first (see pictureIsWhole).
@@ -89,7 +93,7 @@ async function checkBackdrop(chrome, value, dir) {
   if (!PICTURE_FILE.test(file)) {
     const tab = await openTab(chrome, { width: 64, height: 64, scale: 1, mobile: false, touch: false, agent: "desktop" }, { own: true });
     try {
-      const expression = `${JSON.stringify(colorsOf(file))}.every((color) => CSS.supports("color", color))`;
+      const expression = `${JSON.stringify(colorsOf(file))}.every((color) => CSS.supports("color", color)) && CSS.supports("background", ${JSON.stringify(backdropOf(file))})`;
       const { result } = await tab.send("Runtime.evaluate", { expression, returnByValue: true }, 10_000);
       if (!(result && result.value === true)) throw notAColour(file);
     } finally {

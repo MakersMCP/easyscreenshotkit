@@ -327,7 +327,7 @@ test("a --background file is judged by the browser: what it draws is taken, what
     await checkBackdrop(chrome, "#0f172a, rgb(1, 2, 3)", root);
     await checkBackdrop(chrome, "", root);
     for (const color of ["slategray", "SlateGray", "rgb(10 20 30 / 50%)", "hsl(200, 50%, 40%), tomato"]) await checkBackdrop(chrome, color, root);
-    for (const color of ["notacolour", "charcoal", "#12345", "red, slate"]) await assert.rejects(checkBackdrop(chrome, color, root), { message: `--background takes a colour, two colours for a gradient, or a picture file, not ${color}` }, color);
+    for (const color of ["notacolour", "charcoal", "#12345", "red, slate", "none", "inherit", "red, inherit"]) await assert.rejects(checkBackdrop(chrome, color, root), { message: `--background takes a colour, two colours for a gradient, or a picture file, not ${color}` }, color);
     for (const [name, data] of Object.entries(pictures)) await checkBackdrop(chrome, file(name, data), root);
     for (const [name, data] of Object.entries(notPictures)) await assert.rejects(checkBackdrop(chrome, file(name, data), root), new RegExp(`^Error: --background: .*${name} is no picture the browser can draw: PNG, JPEG, WebP, GIF, AVIF or SVG\\.$`), name);
     // ffmpeg makes a JPEG and a GIF with encoders of its own; a WebP only

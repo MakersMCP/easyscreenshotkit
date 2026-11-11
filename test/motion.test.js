@@ -146,6 +146,9 @@ test("layout, backdrop and the address in the title bar", () => {
   assert.equal(backdropOf("#0f172a"), "#0f172a");
   assert.equal(backdropOf("#a1c4fd, rgb(194, 233, 251)"), "linear-gradient(135deg, #a1c4fd, rgb(194, 233, 251))");
   assert.throws(() => backdropOf("red; } body { display:none"), /--background takes a colour/);
+  // Words CSS takes for any property, as for a colour: the browser drew no
+  // backdrop of them, a plain white one, alone or in a gradient.
+  for (const word of ["inherit", "Initial", "unset", "revert", "red, inherit", "inherit, blue"]) assert.throws(() => backdropOf(word), { message: `--background takes a colour, two colours for a gradient, or a picture file, not ${word}` }, word);
   assert.throws(() => backdropOf("missing.png"), /no such picture file/);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-backdrop-"));
   try {
