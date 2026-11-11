@@ -112,8 +112,16 @@ const OTHER = { kind: "other", score: 10 };
 const EXCLUDED = [
   {
     reason: "sign-in or sign-up page",
-    slugs: ["login", "log-in", "signin", "sign-in", "signup", "sign-up", "register", "registration", "join", "account", "accounts", "my-account", "dashboard", "app", "auth", "oauth", "sso", "logout", "password", "reset-password", "forgot-password", "giris", "giris-yap", "uye-ol", "kayit", "kayit-ol", "anmelden", "registrieren", "konto", "connexion", "inscription", "compte", "iniciar-sesion", "registro", "cuenta", "entrar", "cadastro", "conta", "accedi", "registrati"],
+    slugs: ["login", "log-in", "signin", "sign-in", "signup", "sign-up", "register", "registration", "join", "auth", "oauth", "sso", "logout", "password", "reset-password", "forgot-password", "giris", "giris-yap", "uye-ol", "kayit", "kayit-ol", "anmelden", "registrieren", "konto", "connexion", "inscription", "compte", "iniciar-sesion", "registro", "cuenta", "entrar", "cadastro", "conta", "accedi", "registrati"],
     words: ["log in", "login", "sign in", "sign up", "register", "giris yap", "uye ol", "kayit ol", "anmelden", "registrieren", "connexion", "inscription"],
+  },
+  // An app of the site's own, as /app/ or /dashboard/, or an account page:
+  // no sign-in page as such, though it often asks for one. Named so, an
+  // app with no sign-in is not said to be a sign-in page.
+  {
+    reason: "the app itself or an account page, which often needs a sign-in",
+    slugs: ["account", "accounts", "my-account", "dashboard", "app"],
+    words: [],
   },
   {
     reason: "legal page",

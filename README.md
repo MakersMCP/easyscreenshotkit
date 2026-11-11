@@ -34,7 +34,7 @@ easyscreenshotkit-linear.app/
 ```
 
 - Pages are picked from the home page's own menu, its big buttons and its footer, with the sitemap as a fallback. Each one says why it was picked, for example `menu link "Pricing"`.
-- Sign-in pages, legal pages, careers, single blog posts and pages in another language are left out, and so is anything the site's robots.txt asks crawlers to stay out of. A page that only redirects to a sign-in page or to the home page, a bot check, and a second address for a page already taken are dropped too. The pages it left out are listed with the reason.
+- Sign-in pages, the site's app and account pages (/app/, /dashboard/, /account/), legal pages, careers, single blog posts and pages in another language are left out, and so is anything the site's robots.txt asks crawlers to stay out of. A page that only redirects to a sign-in page or to the home page, a bot check, and a second address for a page already taken are dropped too. The pages it left out are listed with the reason.
 - Cookie and consent banners, chat bubbles, promo boxes and modal backdrops are hidden, never clicked: pressing "Accept" would give consent for you.
 - Pictures that load late, sections that fade in on scroll, counters that count up and videos are there in full, on the first screen and on the whole page.
 - Every heading on a first screen comes with its box in the image's own pixels, and every section of a whole page with where it starts and ends, so a crop or a zoom does not have to guess.

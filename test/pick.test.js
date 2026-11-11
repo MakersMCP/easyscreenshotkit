@@ -47,6 +47,10 @@ test("sign-in, legal and other pages are left out with a reason", () => {
   assert.equal(reason("/login", "Log in"), "sign-in or sign-up page");
   assert.equal(reason("/start", "Sign up"), "sign-in or sign-up page");
   assert.equal(reason("/giris"), "sign-in or sign-up page");
+  // An app of the site's own, or an account page, is no sign-in page,
+  // though it often needs one: it was said to be one, of an app with none.
+  for (const at of ["/app/", "/dashboard", "/account/settings", "/my-account"]) assert.equal(reason(at), "the app itself or an account page, which often needs a sign-in", at);
+  assert.equal(reason("/account/login"), "sign-in or sign-up page");
   assert.equal(reason("/privacy-policy"), "legal page");
   assert.equal(reason("/kvkk"), "legal page");
   assert.equal(reason("/impressum"), "legal page");
@@ -159,7 +163,7 @@ test("ranking: a link to a #route offers its page to the tour; routeLinks lists 
   // out as an app's own page, and the home page for #/plants.
   const { candidates, skipped } = pick.rankLinks(links, ["https://acme.com/#/from-the-sitemap"], { home: HOME, keys: ["acme.com/app#/today"] });
   assert.deepEqual(candidates.map((c) => [new URL(c.url).pathname, c.kind, c.why]), [["/pricing", "pricing", 'menu link "Pricing"'], ["/docs/", "docs", 'menu link "Docs"']]);
-  assert.deepEqual(skipped.map((s) => [s.url, s.reason]), [["https://acme.com/app/", "sign-in or sign-up page"], ["https://acme.com/login", "sign-in or sign-up page"]]);
+  assert.deepEqual(skipped.map((s) => [s.url, s.reason]), [["https://acme.com/app/", "the app itself or an account page, which often needs a sign-in"], ["https://acme.com/login", "sign-in or sign-up page"]]);
   assert.deepEqual(
     pick.routeLinks(links, { home: HOME, keys: ["acme.com/app#/today"] }).map((s) => [s.url, s.reason]),
     [
