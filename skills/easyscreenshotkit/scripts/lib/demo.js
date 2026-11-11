@@ -100,7 +100,10 @@ they can come from other ports of it.
 A click on a link to an address of another kind, such as mailto:, or a
 page that goes to one, leaves the page where it is, with a note in
 steps.json: on Linux the browser hands it to no program of the machine,
-and on macOS and Windows it can hand it to the mail program there.
+and on macOS and Windows it can hand it to the mail program there. A visit
+or a click to a page that goes to one before anything of it is drawn stops
+the demo, as one that goes to a file then does, and a tour leaves such a
+page out and says so.
 
 When the address given is another page than the home page, or a #route of
 it, a tour whose home page answers an error or a bot check, or cannot be
@@ -112,6 +115,8 @@ A tour looks for pages of its own only while more than 4 minutes of
 given and each --page. Short of time as it records, it leaves out the
 scrolls and then the pages it picked itself, names each page it left out
 in steps.json, and fails when it has no time to show the address given.
+So does a tour that has none of the pages asked for, the address given and
+each --page, to show, as when the address answers an error.
 
 A demo builds its files inside the folder it saves in and moves them into
 place once it has ended well, replacing an earlier demo's. One that fails or

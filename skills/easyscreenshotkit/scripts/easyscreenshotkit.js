@@ -80,12 +80,22 @@ your machine they can come from other ports of it.
 An address of another kind that a page goes to, such as mailto:, is no
 page to open, and its notes say so: on Linux the browser hands it to no
 program of the machine, and on macOS and Windows it can hand it to the
-mail program there.
+mail program there. A page that goes to one before anything of it is
+drawn is refused, as one that goes to a file then is: a --page, a page of
+the tour and, above one page, the address given are left out, and with
+one page the address given stops the run.
 
 When the address given is another page than the home page, or a #route of
 it, a home page that answers an error or a bot check, or cannot be opened,
 is left out with a note, and the run starts at the address given. An
 address given that is itself the home page still fails.
+
+A --page, or above one page the address given, that answers an error or a
+bot check, or cannot be opened, is left out with a note, and the run goes
+on while it has taken the address given or a --page; one that took none of
+them fails. A run keeps part of its time for each of them and for each
+window, a smaller part when --timeout is under 135 s, so a short run still
+takes them; one with no time left for the address given fails.
 
 The folder has to be new, empty or hold an earlier run. A run builds its
 files in a folder whose name starts with a dot, inside the folder it saves
