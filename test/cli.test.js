@@ -1117,6 +1117,47 @@ test("a browser or an ffmpeg that cannot be started stops a run before any work 
   }
 });
 
+// A system with binfmt-support, as GitHub's ubuntu-22.04 runner, hands a
+// file that starts with MZ to a program of its own, run-detectors, which
+// says it found no interpreter for it and exits with 2: the system never
+// refuses the file, and /bin/sh never reads it. The run tells a Windows
+// program by its first bytes all the same, as the browser and as ffmpeg.
+// Where a user namespace can have a binfmt_misc of its own (Linux 6.7 and
+// later, with unshare), the test registers such a program there, as
+// binfmt-support registers run-detectors, and runs the kit inside it.
+test("a Windows program that the system hands to a program of its own, as binfmt-support does, is named a Windows program", { skip: process.platform !== "linux" && "binfmt_misc is Linux's", timeout: 120_000 }, (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-binfmt-"));
+  try {
+    const detectors = path.join(root, "run-detectors");
+    fs.writeFileSync(detectors, '#!/bin/sh\necho "run-detectors: unable to find an interpreter for $1" >&2\nexit 2\n', { mode: 0o755 });
+    fs.mkdirSync(path.join(root, "pe"));
+    const pe = Buffer.concat([Buffer.from("4d5a90000300000004000000ffff0000b800000000000000400000000000000000", "hex"), Buffer.alloc(4096)]);
+    for (const name of ["chrome", "ffmpeg"]) fs.writeFileSync(path.join(root, "pe", name), pe, { mode: 0o755 });
+    // A binfmt_misc of the namespace's own, with run-detectors for MZ.
+    const inside = (args, options = {}) => spawnSync("unshare", ["-rm", "sh", "-c", 'mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc && echo ":cli:M::MZ::$1:" > /proc/sys/fs/binfmt_misc/register && shift && exec "$@"', "sh", detectors, ...args], { encoding: "utf8", ...options });
+    const handed = inside([path.join(root, "pe", "chrome")]);
+    if (handed.status !== 2 || handed.stderr !== `run-detectors: unable to find an interpreter for ${path.join(root, "pe", "chrome")}\n`) return t.skip("needs a binfmt_misc of a user namespace's own, with unshare");
+    const { CHROME_PATH, FFMPEG_PATH, ...base } = process.env;
+    let n = 0;
+    const refused = (env, args, message) => {
+      const folder = path.join(root, "runs", String(n++));
+      const tmp = path.join(folder, "tmp");
+      fs.mkdirSync(tmp, { recursive: true });
+      const r = inside([process.execPath, CLI, ...args, "--out", path.join(folder, "out")], { env: { ...base, ...env, TMPDIR: tmp }, timeout: 60_000 });
+      assert.equal(r.stderr, `${message}\n`);
+      assert.equal(r.status, 1);
+      assert.deepEqual(fs.readdirSync(folder), ["tmp"]);
+      assert.deepEqual(fs.readdirSync(tmp), []);
+    };
+    const chrome = path.join(root, "pe", "chrome");
+    const ffmpeg = path.join(root, "pe", "ffmpeg");
+    refused({ CHROME_PATH: chrome }, ["http://127.0.0.1:9/", "--pages", "1"], `easyscreenshotkit: chrome did not start: CHROME_PATH is ${chrome}, a Windows program, which does not run on Linux. Point CHROME_PATH at the program of a browser that runs, or unset it to use one installed on this machine.`);
+    refused({ FFMPEG_PATH: ffmpeg }, ["demo", "http://127.0.0.1:9/"], `easyscreenshotkit demo: The demo needs ffmpeg, and FFMPEG_PATH is ${ffmpeg}, a Windows program, which does not run on Linux. Point FFMPEG_PATH at an ffmpeg that runs, or unset it to use the one on PATH.`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // A run names a program by the role it has in that run. A program that
 // calls the kit's functions, takeShots and makeDemo, can start one run
 // after another in its own process: each run forgets the programs the runs
