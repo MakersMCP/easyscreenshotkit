@@ -203,6 +203,8 @@ npx easyscreenshotkit@latest <url> [options]
 
 The phone sizes open the page as that phone's browser would, so a site that picks its mobile layout by the browser sends it. A whole page stops at 15,000 CSS pixels.
 
+With `--lang tr` every window asks the site for Turkish, and above one page, when the home page names its Turkish version (`<link rel="alternate" hreflang="tr" href="/tr/">`), the run starts at that version. One that answers an error or a bot check, or cannot be opened, as a link left to a version that is gone, is left out with a note, and the home page is taken as it came, in the language asked for. A demo's tour does the same.
+
 Some runs:
 
 ```bash

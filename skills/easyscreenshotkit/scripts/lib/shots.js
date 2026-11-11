@@ -1165,8 +1165,11 @@ async function takeShots(rawUrl, options = {}) {
     try {
       result = await visit(chrome, start, first, firstTheme, ctx, { links: wanted > 1 });
       // The site's own page in the language asked for, when it names one.
-      // One the run does not open, or that is left out as it is opened,
-      // leaves the home page as it was taken, with a note.
+      // One the run does not open, or that is left out as it is opened, as
+      // one that answers an error or a bot check or cannot be opened is,
+      // leaves the home page as it was taken, with a note: the home page
+      // answered, and a stale link to a version that is gone is no reason to
+      // lose it. A browser that ended or stopped answering fails the run.
       if (lang && wanted > 1 && !(spare && failure(result))) {
         const alternate = alternateFor(result.info.alternates, lang);
         if (alternate && pageKey(alternate.href) !== pageKey(result.nav.url) && siteOf(alternate.href) === siteOf(home)) {
@@ -1174,16 +1177,23 @@ async function takeShots(rawUrl, options = {}) {
           if (barred) notes.push(alternateNote(alternate, lang, `which is ${barred}: it was not opened`));
           else {
             log(`Opening its ${alternate.lang} version, ${alternate.href}`);
-            const before = { home, start, begun };
-            home = homeOf(alternate.href);
-            start = newPage(alternate.href, "home", `the home page in ${alternate.lang}`);
-            begun = Date.now();
+            const page = newPage(alternate.href, "home", `the home page in ${alternate.lang}`);
+            const opened = Date.now();
+            let got = null;
+            let why = "";
             try {
-              result = await visit(chrome, start, first, firstTheme, ctx, { links: true });
+              got = await visit(chrome, page, first, firstTheme, ctx, { links: true });
+              why = failure(got);
             } catch (err) {
-              if (!err.refused || chrome.gone()) throw err;
-              ({ home, start, begun } = before);
-              notes.push(alternateNote(alternate, lang, `which was left out (${err.refused})`));
+              if (chrome.gone()) throw err;
+              why = timeLeft() < 30_000 ? "time ran out; give more with --timeout" : notOpened(err);
+            }
+            if (why) notes.push(alternateNote(alternate, lang, `which was left out (${why})`));
+            else {
+              home = homeOf(alternate.href);
+              start = page;
+              begun = opened;
+              result = got;
             }
           }
         } else if (!alternate) {

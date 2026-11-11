@@ -3050,6 +3050,52 @@ test("a page's version in another language at an address the run does not open, 
   }
 });
 
+// A page's version in another language that answers an error or a bot
+// check, or cannot be opened, as a stale link to a version that is gone,
+// leaves the home page taken, with a note, whether the address given is the
+// home page or another page. The run failed over it when the home page was
+// the address given, and when another page was it left the home page out
+// and called the version the home page in its note.
+test("a page's version in another language that answers an error or a bot check, or cannot be opened, leaves the home page taken, with a note", { skip: noBrowser, timeout: 280_000 }, async () => {
+  const html = { "Content-Type": "text/html; charset=utf-8" };
+  const { server, origin } = await serve((req, res) => {
+    if (req.url === "/") {
+      const head = ["es", "fr", "de"].map((lang) => `<link rel="alternate" hreflang="${lang}" href="/${lang}/">`).join("");
+      return res.writeHead(200, html).end(page("Acme | Tools for teams", '<header><nav><a href="/pricing">Pricing</a></nav></header><h1>Acme</h1><div style="height:1400px"></div>', { head }));
+    }
+    if (req.url === "/pricing") return res.writeHead(200, html).end(simple("Pricing"));
+    // The connection closes with no answer.
+    if (req.url === "/fr/") return req.socket.destroy();
+    if (req.url === "/de/") return res.writeHead(200, html).end(page("Just a moment...", "<p>Checking your browser before accessing the site.</p>"));
+    res.writeHead(404).end("not found");
+  });
+  const root = tempDir();
+  try {
+    const cases = [
+      [`${origin}/`, "es", /^the page answered 404$/],
+      [`${origin}/`, "fr", /^could not be opened: net::ERR_[A-Z_]+$/],
+      [`${origin}/`, "de", /^a bot check instead of the page$/],
+      [`${origin}/pricing`, "es", /^the page answered 404$/],
+      [`${origin}/pricing`, "fr", /^could not be opened: net::ERR_[A-Z_]+$/],
+    ];
+    for (const [i, [given, lang, why]] of cases.entries()) {
+      const label = `${given} --lang ${lang}`;
+      const { manifest } = await takeShots(given, { dir: path.join(root, `shots-${i}`), pages: 2, sizes: "desktop", lang, timeLimit: 120_000 });
+      assert.deepEqual(manifest.pages.map((p) => p.url), [`${origin}/`, `${origin}/pricing`], label);
+      assert.equal(manifest.pages[0].why, "the home page", label);
+      const prefix = `The home page names its ${lang} version at ${origin}/${lang}/, which was left out (`;
+      const suffix = `), and the home page was taken with ${lang} as the browser's language.`;
+      const note = manifest.notes.find((text) => text.startsWith(prefix) && text.endsWith(suffix));
+      assert.ok(note, `${label}\n${manifest.notes.join("\n")}`);
+      assert.match(note.slice(prefix.length, -suffix.length), why, label);
+      assert.equal(manifest.notes.some((text) => /and the run started at the address given/.test(text)), false, `${label}\n${manifest.notes.join("\n")}`);
+    }
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // --pwa reads the manifest the home page links, and the screenshots it
 // lists, by the run's rule: one at an address the run does not open is not
 // read, and the summary says so. The check took the manifest's own address

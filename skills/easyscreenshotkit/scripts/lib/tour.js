@@ -61,9 +61,10 @@ async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = 
   // Opens the page the tour starts at. refused: why it cannot be, in the
   // words of the pages left out. alternates: look for its version in the
   // language asked for. One the run does not open, or that is left out as
-  // it is opened, leaves the home page as it was taken, with a note; the
-  // home page is opened again then, as the tab may hold a page that left
-  // its own load.
+  // it is opened, as one that answers an error or a bot check or cannot be
+  // opened is, leaves the home page as it was taken, with a note; the home
+  // page is opened again then, as the tab holds that version, or a page
+  // that left its own load. A browser that ended fails the demo.
   const opening = async (url, { alternates = false } = {}) => {
     let again = false;
     const tab = await openTab(chrome, PROBE, ctx);
@@ -83,15 +84,27 @@ async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = 
         if (barred) notes.push(alternateNote(alternate, lang, `which is ${barred}: it was not opened`));
         else {
           log(`Opening its ${alternate.lang} version, ${alternate.href}`);
+          let why = "";
           try {
-            nav = await navigate(tab, alternate.href);
-            home = homeOf(alternate.href);
-            await waitForContent(tab, 20_000);
-            await settle(tab, 6_000);
-            info = await readInfo(tab);
+            const next = await navigate(tab, alternate.href);
+            if (next.status >= 400) why = `the page answered ${next.status}`;
+            else {
+              await waitForContent(tab, 20_000);
+              await settle(tab, 6_000);
+              const read = await readInfo(tab);
+              if (read.challenge) why = "a bot check instead of the page";
+              else {
+                nav = next;
+                info = read;
+                home = homeOf(alternate.href);
+              }
+            }
           } catch (err) {
-            if (!err.refused || chrome.gone()) throw err;
-            notes.push(alternateNote(alternate, lang, `which was left out (${err.refused})`));
+            if (chrome.gone()) throw err;
+            why = notOpened(err);
+          }
+          if (why) {
+            notes.push(alternateNote(alternate, lang, `which was left out (${why})`));
             again = true;
           }
         }

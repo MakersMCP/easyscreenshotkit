@@ -1255,6 +1255,40 @@ test("a tour starts at the address given when the home page cannot be taken, and
   }
 });
 
+// A tour whose home page names a version in another language that answers
+// an error or cannot be opened starts at the home page, with a note, where
+// the demo failed over it.
+test("a tour whose home page names a version in another language that answers an error or cannot be opened takes the home page, with a note", { skip: !findChrome() && "no Chrome, Chromium, Edge or Brave installed", timeout: 200_000 }, async () => {
+  const html = { "Content-Type": "text/html; charset=utf-8" };
+  const { server, origin } = await serve((req, res) => {
+    if (req.url === "/") {
+      const head = '<link rel="alternate" hreflang="es" href="/es/"><link rel="alternate" hreflang="fr" href="/fr/">';
+      return res.writeHead(200, html).end(page("Acme | Tools for teams", '<header><a href="/pricing">Pricing</a></header><h1>Acme</h1><div style="height:1400px;background:rgb(0,160,0)"></div>').replace("</head>", `${head}</head>`));
+    }
+    if (req.url === "/pricing") return res.writeHead(200, html).end(page("Pricing | Acme", '<header><a href="/">Acme</a></header><h1>Pricing</h1><div style="height:1400px;background:rgb(200,0,0)"></div>'));
+    if (req.url === "/fr/") return req.socket.destroy();
+    res.writeHead(404).end("not found");
+  });
+  const chrome = await launch();
+  try {
+    for (const [lang, why] of [["es", /^the page answered 404$/], ["fr", /^could not be opened: net::ERR_[A-Z_]+$/]]) {
+      // A tour looks for pages while four minutes of the run are left.
+      setTimeLimit(300_000);
+      const tour = await pickPages(chrome, `${origin}/`, { pages: 2, lang });
+      assert.deepEqual(tour.pages.map((p) => [p.url, p.why]), [[`${origin}/`, "the home page"], [`${origin}/pricing`, 'menu link "Pricing"']], lang);
+      const prefix = `The home page names its ${lang} version at ${origin}/${lang}/, which was left out (`;
+      const suffix = `), and the home page was taken with ${lang} as the browser's language.`;
+      const note = tour.notes.find((text) => text.startsWith(prefix) && text.endsWith(suffix));
+      assert.ok(note, `${lang}\n${tour.notes.join("\n")}`);
+      assert.match(note.slice(prefix.length, -suffix.length), why, lang);
+      assert.deepEqual(tour.skipped, [], lang);
+    }
+  } finally {
+    await chrome.close();
+    server.close();
+  }
+});
+
 // A view that draws late with no request of its own would come in on its
 // loading screen: it is recorded once it no longer shows one.
 test("a recording of a #route view waits while it shows a loading sign", { skip: missing, timeout: 200_000 }, async () => {
