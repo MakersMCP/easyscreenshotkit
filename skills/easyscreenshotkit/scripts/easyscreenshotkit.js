@@ -96,7 +96,8 @@ bot check, or cannot be opened, is left out with a note, and the run goes
 on while it has taken the address given or a --page; one that took none of
 them fails. A run keeps part of its time for each of them and for each
 window, a smaller part when --timeout is under 135 s, so a short run still
-takes them; one with no time left for the address given fails.
+takes those it has time for, the address given first, and names the rest
+in its notes; one with no time left for the address given fails.
 
 The folder has to be new, empty or hold an earlier run. A run builds its
 files in a folder whose name starts with a dot, inside the folder it saves
