@@ -1143,6 +1143,26 @@ test("a tour leaves out a --page that cannot be opened, and goes on, and fails w
   }
 });
 
+// A --page the tour could not take is named once, with why: a #route link
+// to it, here in the sitemap, is not listed again with the #route links the
+// tour does not follow, whose note says to give one with --page, as it was
+// given. One nobody asked for still is.
+test("a tour does not list a --page it could not take with the #route links to give with --page", { skip: !findChrome() && "no Chrome, Chromium, Edge or Brave installed", timeout: 120_000 }, async () => {
+  const { server, origin } = await fixture({ sitemap: ["/", "/missing/#/gone", "/app/#/x"] });
+  setTimeLimit(110_000);
+  const chrome = await launch();
+  try {
+    const tour = await pickPages(chrome, origin, { pages: 2, extra: ["/missing/#/gone"] });
+    assert.deepEqual(tour.skipped, [{ url: `${origin}/missing/#/gone`, reason: "the page answered 404" }]);
+    const routes = tour.routes.map((route) => route.url.slice(origin.length));
+    assert.ok(routes.includes("/app/#/x"), routes.join(", "));
+    assert.ok(!routes.includes("/missing/#/gone"), routes.join(", "));
+  } finally {
+    await chrome.close();
+    server.close();
+  }
+});
+
 // A link to a #route goes by the query of the page it is on: clicked, a view
 // asked for with a query of its own would open on the page's query.
 test("a tour clicks to a view by its link only when the view has the query of the page before it", async () => {

@@ -1419,9 +1419,11 @@ async function takeShots(rawUrl, options = {}) {
       leftover = queue.slice(0, 20).map(({ url, kind, score, why }) => ({ url, kind, score, why }));
       // The views of an app that the home page, the address given and each
       // --page link to by #route, and those the sitemap lists: the tour
-      // does not follow them, so they are listed for --page.
+      // does not follow them, so they are listed for --page. A page the
+      // user named is not one of them, taken or not: one left out for want
+      // of time was listed so, with the words to give it with --page.
       const listed = (index.urls || []).map((href) => ({ href }));
-      routes = routeLinks([...(result.links || []), ...namedLinks, ...listed], { home: kept[0].url, keys: kept.flatMap((page) => [...page.keys]) });
+      routes = routeLinks([...(result.links || []), ...namedLinks, ...listed], { home: kept[0].url, keys: [...kept.flatMap((page) => [...page.keys]), ...named.map(([url]) => viewKey(url))] });
     }
 
     await pool.drain();

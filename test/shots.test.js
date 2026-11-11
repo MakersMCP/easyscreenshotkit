@@ -1625,6 +1625,37 @@ test("a short --timeout takes the pages asked for, in each size", { skip: noBrow
   }
 });
 
+// A --page a short run has no time for is named in its notes, and only
+// there: when a page it took links to it by #route, it was listed with the
+// #route links the tour does not follow too, with the words to give it with
+// --page, as it was given. Here a --page that never answers takes the run's
+// time, and the home page links to the view asked for after it.
+test("a --page left out for want of time is not listed as a #route link to give with --page", { skip: noBrowser, timeout: 150_000 }, async () => {
+  const html = { "Content-Type": "text/html; charset=utf-8" };
+  const held = [];
+  const { server, origin } = await serve((req, res) => {
+    if (req.url === "/") return res.writeHead(200, html).end(page("Acme | Tools", '<h1>Acme</h1><p><a href="/app/#/light">Light</a> <a href="/app/#/plants">Plants</a></p><div style="height:1400px;background:rgb(0,160,0)"></div>'));
+    if (req.url === "/app/") return res.writeHead(200, html).end(page("App | Acme", "<h1>App</h1><div style=\"height:1400px\"></div>"));
+    if (req.url === "/slow") return void held.push(res);
+    res.writeHead(404).end("not found");
+  });
+  const root = tempDir();
+  try {
+    const run = await runCli([origin, "--pages", "2", "--page", "/slow", "--page", "/app/#/light", "--sizes", "desktop", "--timeout", "30", "--json", "--out", path.join(root, "shots")]);
+    assert.equal(run.status, 0, run.stderr);
+    const manifest = JSON.parse(run.stdout);
+    const light = `${origin}/app/#/light`;
+    assert.ok(manifest.notes.includes(`${light} was asked for but not taken: time ran out; give more with --timeout.`), manifest.notes.join("\n"));
+    assert.deepEqual(manifest.skipped.filter((skip) => skip.url === light || skip.url === `${origin}/slow`), []);
+    // A #route link to a view nobody asked for is still listed.
+    assert.ok(manifest.skipped.some((skip) => skip.url === `${origin}/app/#/plants` && /give it with --page/.test(skip.reason)), JSON.stringify(manifest.skipped));
+  } finally {
+    for (const res of held) res.destroy();
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // A run whose home page left no time for the address given fails, and
 // leaves an earlier run as it was, as a demo's tour does with no time to
 // show it: with the home page asked for with --page as well, it went on

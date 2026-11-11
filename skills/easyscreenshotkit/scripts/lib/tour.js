@@ -167,7 +167,8 @@ async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = 
   // it picked itself took the place of an earlier demo.
   let shown = kept[0].asked;
   const missed = [];
-  for (const [url, why] of [...(given && !homeLost ? [[given, "the address given"]] : []), ...asks.map((url) => [url, "asked for with --page"])]) {
+  const named = [...(given && !homeLost ? [[given, "the address given"]] : []), ...asks.map((url) => [url, "asked for with --page"])];
+  for (const [url, why] of named) {
     const same = kept.find((page) => page.keys.has(viewKey(url)));
     if (same) {
       skipped.push({ url, reason: `the same page as ${same.slug}` });
@@ -228,9 +229,11 @@ async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = 
   }
   // The views of an app that the home page, the address given and each
   // --page link to by #route, and those the sitemap lists, whether the
-  // tour still needed pages or not.
+  // tour still needed pages or not. A page the user named is not one of
+  // them, taken or not: one left out was named twice, the second time with
+  // the words to give it with --page.
   const listed = (index.urls || []).map((href) => ({ href }));
-  const routes = wanted > 1 ? routeLinks([...links, ...namedLinks, ...listed], { home: nav.url, keys: kept.flatMap((page) => [...page.keys]) }) : [];
+  const routes = wanted > 1 ? routeLinks([...links, ...namedLinks, ...listed], { home: nav.url, keys: [...kept.flatMap((page) => [...page.keys]), ...named.map(([url]) => viewKey(url))] }) : [];
   // A visitor's order: what the product is first, what it costs last.
   const [first, ...rest] = kept;
   const ordered = [first, ...rest.filter((page) => page.kind !== "pricing"), ...rest.filter((page) => page.kind === "pricing")];
