@@ -75,7 +75,10 @@ keeps it. A tour follows paths only: the notes in steps.json name the
 #route links on the home page, the address given and each --page, and the
 #routes in the site's sitemap. An address that answers with a file to
 download is refused: a tour leaves it out and says so, a visit step to one
-stops the demo, and the browser saves nothing.
+stops the demo, and the browser saves nothing. So does a visit or a click
+to a page that moves on to a file before anything of it is drawn; one drawn
+before it does, as a page that thanks for a download, is shown as it is
+drawn, with a note in steps.json.
 
 From the address given a demo opens web addresses on the public internet
 only, and that host and port when the address given is on this machine or

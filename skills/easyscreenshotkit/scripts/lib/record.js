@@ -23,7 +23,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { openTab, closeTab, navigate, currentUrl, BARRED, NOT_A_PAGE } = require("./chrome");
+const { openTab, closeTab, navigate, drawnSoFar, currentUrl, BARRED, NOT_A_PAGE } = require("./chrome");
 const { metrics, walk, waitForContent, settle, watchRequests, networkQuiet, waitForDrawn, waitForFonts, resetPictureWait, waitForPictures } = require("./page");
 const { clean } = require("./clean");
 const { readInfo, siteName } = require("./shots");
@@ -304,10 +304,11 @@ class Recorder {
     // refuses it (see launch()), and the page stays where it is. left: the
     // page went to it itself, by a move that made it leave its own load
     // when that had not ended, and not by a link with a download attribute.
+    // stays: a page that does so is still there, as drawn as it was.
     tab.on("Page.downloadWillBegin", (p) => {
       if (p.frameId !== this.frameId) return;
       this.refusedAt = Date.now();
-      this.refusal = { url: p.url, why: NOT_A_PAGE, left: this.askedAt >= (this.committedAt || 0) };
+      this.refusal = { url: p.url, why: NOT_A_PAGE, left: this.askedAt >= (this.committedAt || 0), stays: true };
       if (!this.take.refused.includes(p.url)) this.take.refused.push(p.url);
     });
     // A document the page, a frame of it or a window it opened tried to open
@@ -318,7 +319,7 @@ class Recorder {
     tab.on(BARRED, (b) => {
       if (b.main) {
         this.refusedAt = Date.now();
-        this.refusal = { url: b.url, why: b.why, left: true };
+        this.refusal = { url: b.url, why: b.why, left: true, stays: Boolean(b.stays) };
       }
       const kind = b.main ? "page" : b.window ? "window" : "frame";
       if (!this.take.barred.some((known) => known.url === b.url)) this.take.barred.push({ url: b.url, why: b.why, kind });
@@ -577,13 +578,15 @@ class Recorder {
     }
     if (live) this.v += NAV_HOLD;
     await this.pace(1);
-    // A new page that moves on by itself before its load event, to an
-    // address the run does not open or to a file, has left its own load:
-    // the browser draws nothing more of it, so it is refused, as a visit
-    // to it is (see navigate()), and not waited for.
+    // A new page that moves on by itself before its load event has left its
+    // own load: one that moves to an address the run does not open is
+    // refused, as a visit to it is (see navigate()), and not waited for. One
+    // that moves to a file, or to an address of another kind, stays where
+    // it was, and is taken as it is drawn, as a page that thanks for a
+    // download is; with nothing drawn yet it is refused too.
     const left = () => this.refusedAt > this.committedAt && this.refusal && this.refusal.left;
     while (Date.now() - started < 20_000 && !(this.loadedAt > at) && !left()) await sleep(50);
-    if (!(this.loadedAt > at) && left()) throw new Error(`Could not open ${this.navUrl}: it leads to ${this.refusal.url}, which is ${this.refusal.why}.`);
+    if (!(this.loadedAt > at) && left() && !(this.refusal.stays && (await drawnSoFar(this.tab)))) throw new Error(`Could not open ${this.navUrl}: it leads to ${this.refusal.url}, which is ${this.refusal.why}.`);
     // Free to note a redirect the new page makes while it is made ready.
     this.navAt = 0;
     const page = await this.ready();

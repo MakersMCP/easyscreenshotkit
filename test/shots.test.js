@@ -16,7 +16,7 @@ const { findChrome, launch, startWait, openTab, closeTab, navigate, currentUrl, 
 const { guardFor } = require("../skills/easyscreenshotkit/scripts/lib/address");
 const { setTimeLimit, sleep } = require("../skills/easyscreenshotkit/scripts/lib/time");
 const { watchRequests, networkQuiet, showsLoadingSign, looksEmpty } = require("../skills/easyscreenshotkit/scripts/lib/page");
-const { LOCATE } = require("../skills/easyscreenshotkit/scripts/lib/record");
+const { LOCATE, Recorder } = require("../skills/easyscreenshotkit/scripts/lib/record");
 const { pngText } = require("../skills/easyscreenshotkit/scripts/lib/png");
 const { readPng, serve, near, descendants } = require("./helpers");
 
@@ -3021,16 +3021,19 @@ test("a run opens no other address on this machine than the one given: not by it
 });
 
 // A page that moves on by itself before its load event has left its own
-// load: the browser draws nothing more of it. When it moves to an address the
-// run does not open, as a local app sends a visitor who has not signed in to
-// its sign-in server, or to a file, the run refuses it at once, as a
-// redirect there: the address given fails the run with that, and a --page is
-// left out with it. Waited for, it held the run 20 s for a load that never
-// came, and each capture after it failed, 105 s in all. A page that moves on
-// once it has loaded, or starts a download by a link with a download
-// attribute, is taken, with a note when it tried to open such an address;
-// so is one with a frame there.
-test("a page that moves on by itself before it has loaded, to an address the run does not open or to a file, is refused at once; one that does so once it has loaded is taken, with a note", { skip: noBrowser, timeout: 240_000 }, async () => {
+// load. When it moves to an address the run does not open, as a local app
+// sends a visitor who has not signed in to its sign-in server, the run
+// refuses it at once, as a redirect there: the address given fails the run
+// with that, and a --page is left out with it. Waited for, it held the run
+// 20 s for a load that never came, and each capture after it failed, 105 s
+// in all. One that moves to a file stays where it was: taken as it is drawn
+// when it has something drawn, as a page that thanks for a download and
+// sends the browser to the file from the end of its body or once its HTML
+// is read, with a note, where the run refused it as one with nothing drawn,
+// whose head sends the browser on, still is. A page that moves on once it
+// has loaded, or starts a download by a link with a download attribute, is
+// taken, with a note; so is one with a frame at such an address.
+test("a page that moves on by itself before it has loaded, to an address the run does not open, or to a file with nothing drawn, is refused at once; one drawn, or that moves on once it has loaded, is taken, with a note", { skip: noBrowser, timeout: 240_000 }, async () => {
   const seen = [];
   const other = await serve((req, res) => {
     seen.push(req.url);
@@ -3047,6 +3050,8 @@ test("a page that moves on by itself before it has loaded, to an address the run
     if (at === "/to-file") return res.writeHead(200, html).end(page("To file | Acme", body("To file"), { head: '<script>location.href = "/file.bin";</script>' }));
     if (at === "/file.bin") return res.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Disposition": 'attachment; filename="from-the-site.txt"' }).end("bytes");
     if (at === "/download-link") return res.writeHead(200, html).end(page("Download link | Acme", body("Download link"), { head: '<script>const a = document.createElement("a"); a.href = "/file.bin"; a.download = "x.bin"; document.head.appendChild(a); a.click();</script>' }));
+    if (at === "/thanks") return res.writeHead(200, html).end(page("Thanks | Acme", `${body("Thanks for downloading")}<script>location.href = "/file.bin";</script>`));
+    if (at === "/thanks-ready") return res.writeHead(200, html).end(page("Thanks ready | Acme", body("Thanks for downloading"), { head: '<script>addEventListener("DOMContentLoaded", () => { location.href = "/file.bin"; });</script>' }));
     if (at === "/refresh") return res.writeHead(200, html).end(page("Refresh | Acme", body("Refresh"), { head: `<meta http-equiv="refresh" content="0; url=${elsewhere}/refresh">` }));
     if (at === "/framed") return res.writeHead(200, html).end(page("Framed | Acme", `<h1>Framed</h1><iframe src="${elsewhere}/framed"></iframe><div style="height:1400px"></div>`));
     res.writeHead(404).end("not found");
@@ -3063,14 +3068,21 @@ test("a page that moves on by itself before it has loaded, to an address the run
     assert.match(given.stderr, new RegExp(`^easyscreenshotkit: Could not open ${origin}/early: it leads to ${elsewhere}/login, which is ${NOT_GIVEN}\\.$`, "m"));
     assert.ok(givenSecs < 60, `${givenSecs} s`);
     assert.equal(fs.existsSync(out), false);
+    const dropped = (url) => `it started a download of ${url}, which the browser refused: no file was saved`;
+    const thanks = await runCli([`${origin}/thanks`, "--pages", "1", "--sizes", "desktop", "--out", out], { env });
+    assert.equal(thanks.status, 0, thanks.stderr);
+    const thanked = JSON.parse(fs.readFileSync(path.join(out, "manifest.json"), "utf8"));
+    assert.deepEqual(thanked.pages.map((p) => [p.slug, p.heading, p.notes]), [["thanks", "Thanks for downloading", [dropped(`${origin}/file.bin`)]]]);
+    const drawn = readPng(path.join(out, thanked.pages[0].shots[0].file));
+    assert.ok(near(css(drawn, 2, 800, 400), GREEN), `the page drawn: ${css(drawn, 2, 800, 400)}`);
 
     started = Date.now();
-    const asks = ["/module", "/to-file", "/download-link", "/refresh", "/framed"].flatMap((at) => ["--page", at]);
+    const asks = ["/module", "/to-file", "/download-link", "/refresh", "/framed", "/thanks-ready"].flatMap((at) => ["--page", at]);
     const run = await runCli([origin, "--pages", "1", "--sizes", "desktop", ...asks, "--out", out], { env });
     const runSecs = (Date.now() - started) / 1000;
     assert.equal(run.status, 0, run.stderr);
     const manifest = JSON.parse(fs.readFileSync(path.join(out, "manifest.json"), "utf8"));
-    assert.deepEqual(manifest.pages.map((p) => p.slug), ["home", "download-link", "refresh", "framed"]);
+    assert.deepEqual(manifest.pages.map((p) => p.slug), ["home", "download-link", "refresh", "framed", "thanks-ready"]);
     const skipped = Object.fromEntries(manifest.skipped.map(({ url, reason }) => [url, reason]));
     assert.deepEqual(skipped, {
       [`${origin}/module`]: `it leads to ${elsewhere}/module, which is ${NOT_GIVEN}`,
@@ -3079,10 +3091,65 @@ test("a page that moves on by itself before it has loaded, to an address the run
     const notesOf = (slug) => manifest.pages.find((p) => p.slug === slug).notes;
     assert.ok(notesOf("refresh").includes(`it tried to open ${elsewhere}/refresh, which is ${NOT_GIVEN}: it was not opened`), notesOf("refresh").join("\n"));
     assert.ok(notesOf("framed").includes(`a frame of it tried to open ${elsewhere}/framed, which is ${NOT_GIVEN}: it was not opened`), notesOf("framed").join("\n"));
-    assert.deepEqual(notesOf("download-link"), []);
+    assert.deepEqual(notesOf("download-link"), [dropped(`${origin}/file.bin`)]);
+    assert.deepEqual(notesOf("thanks-ready"), [dropped(`${origin}/file.bin`)]);
     assert.ok(runSecs < 150, `${runSecs} s`);
     assert.deepEqual(seen, []);
   } finally {
+    server.close();
+    other.server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// The refusal of a page that moves on before it has loaded, to an address
+// the run does not open or to a file with nothing drawn, comes at once, by
+// a visit and by a demo's click on a link to it: timed itself, where the
+// time of a whole run left room for the 20 s it waited for a load that
+// never came.
+test("a page that moves on before it has loaded is refused at once, by a visit and by a click", { skip: noBrowser, timeout: 120_000 }, async () => {
+  setTimeLimit(300_000);
+  const seen = [];
+  const html = { "Content-Type": "text/html; charset=utf-8" };
+  const other = await serve((req, res) => {
+    seen.push(req.url);
+    res.writeHead(200, html).end(page("Sign in", "<h1>Sign in</h1>"));
+  });
+  const elsewhere = other.origin;
+  const { server, origin } = await serve((req, res) => {
+    if (req.url === "/") return res.writeHead(200, html).end(page("Acme | Tools", '<h1>Acme</h1><p style="font-size:32px;padding:0 40px"><a href="/early">Early access</a></p><div style="height:1400px"></div>'));
+    if (req.url === "/early") return res.writeHead(200, html).end(page("Early | Acme", "<h1>Early</h1>", { head: `<script>location.href = "${elsewhere}/login";</script>` }));
+    if (req.url === "/to-file") return res.writeHead(200, html).end(page("To file | Acme", "<h1>To file</h1>", { head: '<script>location.href = "/file.bin";</script>' }));
+    if (req.url === "/file.bin") return res.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Disposition": 'attachment; filename="x.bin"' }).end("bytes");
+    res.writeHead(404).end("not found");
+  });
+  const root = tempDir();
+  const chrome = await launch();
+  try {
+    chrome.guard = await guardFor(`${origin}/`);
+    const tab = await openTab(chrome, DEVICES.desktop);
+    try {
+      for (const [at, why] of [["/early", `it leads to ${elsewhere}/login, which is ${NOT_GIVEN}`], ["/to-file", `it leads to ${origin}/file.bin, which is a file to download instead of a page`]]) {
+        const started = Date.now();
+        await assert.rejects(navigate(tab, `${origin}${at}`), { refused: why });
+        assert.ok(Date.now() - started < 10_000, `${at}: ${Date.now() - started} ms`);
+      }
+    } finally {
+      await closeTab(chrome, tab);
+    }
+    const recorder = new Recorder(chrome, { dir: root, base: `${origin}/` });
+    await recorder.open();
+    try {
+      await recorder.run({ action: "visit", url: "/" });
+      const started = Date.now();
+      await assert.rejects(recorder.run({ action: "click", target: { text: "Early access" }, zoom: false }), { message: `Could not open ${origin}/early: it leads to ${elsewhere}/login, which is ${NOT_GIVEN}.` });
+      assert.ok(Date.now() - started < 10_000, `${Date.now() - started} ms`);
+    } finally {
+      await recorder.close();
+    }
+    assert.deepEqual(seen, []);
+  } finally {
+    await chrome.close();
     server.close();
     other.server.close();
     fs.rmSync(root, { recursive: true, force: true });

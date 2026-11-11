@@ -888,13 +888,37 @@ async function closeTab(chrome, cdp) {
 //
 // A page that moves on by itself before its load event, as a local app
 // sends a visitor who has not signed in to its sign-in server, has left
-// its own load: the browser stops reading it and draws nothing more of it.
-// When the guard refuses where it moves to, or it moves to a file the
-// browser does not download, it is refused as a redirect there is, at
-// once: waited for, it held the run 20 s for a load that never came, and
-// every capture after it failed. A move after the load event leaves the
-// page as it was, drawn, and only the tab's BARRED says so.
+// its own load: no load event comes. When the guard refuses where it moves
+// to, it is refused as a redirect there is, at once: waited for, it held
+// the run 20 s for a load that never came, and every capture after it
+// failed. One that moves to a file the browser does not download, or to an
+// address of another kind such as mailto:, stays where it was: one with
+// something drawn by then, as a page that thanks for a download and sends
+// the browser to the file from the end of its body, is taken as it is
+// drawn, and only the notes say what it tried; one with nothing drawn, as
+// one whose head sends the browser on, has stopped before its body, and is
+// refused at once too. A move after the load event leaves the page as it
+// was, drawn, and only the tab's BARRED says so.
 const NOT_A_PAGE = "a file to download instead of a page";
+
+// Whether a page that stopped where it was has something drawn: words or a
+// picture, a field or a frame in its body. Asked a few times over a moment.
+const DRAWN_SO_FAR = `(() => {
+  const body = document.body;
+  if (!body) return false;
+  if (body.innerText.trim()) return true;
+  return [...body.querySelectorAll("img, svg, video, canvas, picture, input, button, select, textarea, iframe")].some((el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; });
+})()`;
+
+async function drawnSoFar(cdp) {
+  for (let i = 0; i < 5; i++) {
+    const { result } = await cdp.send("Runtime.evaluate", { expression: DRAWN_SO_FAR, returnByValue: true }, 5_000).catch(() => ({ result: {} }));
+    if (result && result.value === true) return true;
+    if (cdp.closed && cdp.closed()) return false;
+    await sleep(200);
+  }
+  return false;
+}
 
 async function navigate(cdp, url) {
   if (!cdp.own) {
@@ -908,7 +932,8 @@ async function navigate(cdp, url) {
     off.push(() => cdp.off(method, listener));
   };
   // barred: the first refusal of a document of the page itself. left: where
-  // the page went, before its load event, that it may not go.
+  // the page went, before its load event, that it may not go; stays, when
+  // that left the page where it was (a file, an address of another kind).
   let barred = null;
   let left = null;
   let loadedYet = false;
@@ -929,7 +954,7 @@ async function navigate(cdp, url) {
   };
   listen(BARRED, (b) => {
     if (!b.main) return;
-    barred = barred || b;
+    if (!b.stays) barred = barred || b;
     goes(b);
   });
   // A download the page itself went to as it loaded. One a link with a
@@ -938,7 +963,7 @@ async function navigate(cdp, url) {
     if (p.frameId === cdp.targetId && (!p.disposition || p.disposition === "currentTab")) asked = true;
   });
   listen("Page.downloadWillBegin", (p) => {
-    if (p.frameId === cdp.targetId && asked) goes({ url: p.url, why: NOT_A_PAGE });
+    if (p.frameId === cdp.targetId && asked) goes({ url: p.url, why: NOT_A_PAGE, stays: true });
   });
   try {
     const wait = waitOf(ANSWER_MS);
@@ -960,7 +985,7 @@ async function navigate(cdp, url) {
     // A tab that crashed, or a browser that ended, fires no such event: the
     // calls that come next say which.
     await Promise.race([loaderId ? loaded : moved, leaving, cdp.over, new Promise((resolve) => (timer = setTimeout(resolve, limit)))]);
-    if (left && !loadedYet) {
+    if (left && !loadedYet && !(left.stays && (await drawnSoFar(cdp)))) {
       const why = `it leads to ${left.url}, which is ${left.why}`;
       throw Object.assign(new Error(`Could not open ${url}: ${why}.`), { refused: why });
     }
@@ -1070,4 +1095,4 @@ function removeProfiles(browsers) {
   }
 }
 
-module.exports = { findChrome, onPath, launch, startWait, openTab, closeTab, guardBrowser, navigate, currentUrl, killBrowsers, removeProfiles, removeStrayLocks, removeFetchFolders, fetchFolders, roomIn, lockFolderOf, userAgentFor, busy, CRASHED, BARRED, NOT_A_PAGE };
+module.exports = { findChrome, onPath, launch, startWait, openTab, closeTab, guardBrowser, navigate, drawnSoFar, currentUrl, killBrowsers, removeProfiles, removeStrayLocks, removeFetchFolders, fetchFolders, roomIn, lockFolderOf, userAgentFor, busy, CRASHED, BARRED, NOT_A_PAGE };

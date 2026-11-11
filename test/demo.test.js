@@ -1684,6 +1684,36 @@ test("a click on a download link saves no file", { skip: missing || (process.pla
   }
 });
 
+// A page that thanks for a download and sends the browser to the file once
+// it is drawn, from the end of its body, is shown as it is drawn, by a
+// click on a link to it and by a visit, with a note that no file was saved,
+// where the demo stopped over it.
+test("a demo shows a page that thanks for a download as it is drawn, by a click and by a visit", { skip: missing, timeout: 200_000 }, async () => {
+  const html = { "Content-Type": "text/html; charset=utf-8" };
+  const { server, origin } = await serve((req, res) => {
+    if (req.url === "/") return res.writeHead(200, html).end(page("Get it | Acme", '<h1>Get it</h1><p style="font-size:32px;padding:0 40px"><a href="/thanks">Get it for Mac</a></p><div style="height:1400px;background:rgb(0,160,0)"></div>'));
+    if (req.url === "/thanks") return res.writeHead(200, html).end(page("Thanks | Acme", '<h1>Thanks for downloading</h1><div style="height:1400px;background:rgb(200,0,0)"></div><script>location.href = "/file.bin";</script>'));
+    if (req.url === "/file.bin") return res.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Disposition": 'attachment; filename="from-the-site.bin"' }).end("bytes");
+    res.writeHead(404).end("not found");
+  });
+  const root = tempDir();
+  const steps = path.join(root, "steps.yaml");
+  try {
+    fs.writeFileSync(steps, 'steps:\n  - visit: /\n  - click: "text=Get it for Mac"\n    zoom: false\n  - wait: 1\n  - visit: /\n  - wait: 0.5\n  - visit: /thanks\n  - wait: 1\n');
+    const { manifest } = await makeDemo(origin, { dir: path.join(root, "demo"), steps, gif: false, timeLimit: 180_000 });
+    assert.deepEqual(manifest.pages.map((p) => new URL(p.url).pathname), ["/", "/thanks", "/", "/thanks"]);
+    assert.equal(manifest.steps[1].opened, `${origin}/thanks`);
+    assert.deepEqual(manifest.notes.filter((note) => /download/.test(note)), [`The page started a download of ${origin}/file.bin, which the browser refused: no file was saved.`]);
+    for (const shown of [manifest.pages[1], manifest.pages[3]]) {
+      const frame = await frameOf(path.join(root, "demo", "demo.mp4"), (shown.start + shown.end) / 2);
+      assert.ok(near(unzoomed(frame, 800, 500), RED), `the page drawn: ${unzoomed(frame, 800, 500)}`);
+    }
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // A demo opens no address on this machine but the host and port it was
 // given: not by a visit step, nor by a click on a link, nor by its tour's
 // menu, which a site or a steps file could point at the machine's other

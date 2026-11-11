@@ -653,6 +653,15 @@ function barredNote(b) {
   return `a frame of it tried to open ${b.url}, which is ${b.why}: it was not opened`;
 }
 
+// The notes on the downloads a page started, which the browser refused:
+// BARRED_SHOWN at most, and how many more.
+function downloadNotes(downloads = []) {
+  const notes = downloads.slice(0, BARRED_SHOWN).map((url) => `it started a download of ${String(url).slice(0, 200)}, which the browser refused: no file was saved`);
+  const more = downloads.length - BARRED_SHOWN;
+  if (more > 0) notes.push(`it started ${more === 1 ? "1 more download" : `${more} more downloads`}, which the browser refused: no file was saved`);
+  return notes;
+}
+
 // Of what a page tried to open that the run does not open, the notes it
 // gets: the page's own first, then its windows, then its frames, BARRED_SHOWN
 // at most, and how many more. Taken as they came, a page whose frames were
@@ -697,6 +706,13 @@ async function visit(chrome, page, group, theme, ctx, { check = null, links = fa
     const barred = [];
     tab.on(BARRED, (b) => {
       if (!barred.some((known) => known.url === b.url)) barred.push(b);
+    });
+    // The downloads the page started, which the browser refused (see
+    // launch()): a page that thanks for a download and sends the browser to
+    // the file is taken as it is drawn, and its notes say so.
+    const downloads = [];
+    tab.on("Page.downloadWillBegin", (p) => {
+      if (p.url && !downloads.includes(p.url)) downloads.push(p.url);
     });
     const nav = await navigate(tab, page.url);
     // A bot check, an error or a redirect to a sign-in page is known at once:
@@ -822,7 +838,7 @@ async function visit(chrome, page, group, theme, ctx, { check = null, links = fa
         shots.push({ size: shot.size, full: true, png: whole.png, scale: shot.scale, cssWidth: m.width, cssHeight: whole.height, truncated: whole.truncated, sections });
       }
     }
-    return { nav, info, loaded, busy, open, waited: page.busy ? BUSY_WAIT_MS : VIEW_WAIT_MS, short, links: found, shots, cleaned, barred };
+    return { nav, info, loaded, busy, open, waited: page.busy ? BUSY_WAIT_MS : VIEW_WAIT_MS, short, links: found, shots, cleaned, barred, downloads };
   } finally {
     await closeTab(chrome, tab);
   }
@@ -1164,7 +1180,7 @@ async function takeShots(rawUrl, options = {}) {
       });
       page.notes.push(...waitNotes(result));
       if (movedOn(page.asked, result.nav.url)) page.notes.push(`opened ${page.asked} and landed on ${result.nav.url}`);
-      page.notes.push(...barredNotes(result.barred));
+      page.notes.push(...barredNotes(result.barred), ...downloadNotes(result.downloads));
       kept.push(page);
       saveShots(page, result, firstTheme, run, written);
       log(`${String(page.n).padStart(2, "0")} ${page.slug}  ${pathOf(result.nav.url)}`);
