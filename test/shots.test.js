@@ -3291,9 +3291,11 @@ test("a page that moves on before it has loaded is refused at once, by a visit a
 });
 
 // Stand-ins on PATH for the programs the browser hands an address of
-// another kind to (mailto:, news:), each writing down that it was started,
-// so that no test starts the user's own mail program, as a test of the code
-// before this change did on a desktop; nor does a test run with a display.
+// another kind to (mailto:, news:), and for xdg-settings and xdg-mime,
+// which it asks first which program opens one, each writing down that it
+// was started, so that no test starts the user's own mail program, as a
+// test of the code before this change did on a desktop, or any program of
+// the machine; nor does a test run with a display.
 // Its session bus is one of the test's own (see bus.js), with a stand-in
 // for the desktop's portal on it that writes down what it is asked to open,
 // or one where nothing listens: never the user's own, which a program given
@@ -3302,7 +3304,7 @@ function recordingHandlers(root, bus = null) {
   const dir = path.join(root, "handlers");
   fs.mkdirSync(dir);
   const log = path.join(root, "started.log");
-  for (const name of ["xdg-open", "xdg-email", "x-www-browser", "www-browser", "sensible-browser", "gio", "kde-open", "gnome-open", "exo-open"]) {
+  for (const name of ["xdg-open", "xdg-email", "x-www-browser", "www-browser", "sensible-browser", "xdg-settings", "xdg-mime", "gio", "kde-open", "gnome-open", "exo-open"]) {
     fs.writeFileSync(path.join(dir, name), `#!/bin/sh\necho "$0 $*" >> '${log}'\n`, { mode: 0o755 });
   }
   const env = { ...process.env, PATH: `${dir}${path.delimiter}${process.env.PATH}` };
@@ -3477,8 +3479,18 @@ test("the browser starts with no display, a session bus where nothing listens, a
     }
     const handlers = path.join(own, "easyscreenshotkit-handlers");
     assert.equal(env.PATH.split(path.delimiter)[0], handlers);
-    for (const name of ["xdg-open", "xdg-email", "x-www-browser", "www-browser", "sensible-browser"]) {
-      assert.equal(programs.lookOnPath(name, { within: env.PATH }).file, path.join(handlers, name), name);
+    // The programs it hands an address to start nothing and end well; the
+    // ones it asks which program opens the address, xdg-settings and
+    // xdg-mime, find none, where it started the machine's own xdg-settings,
+    // with the desktop's display.
+    for (const [names, status] of [[["xdg-open", "xdg-email", "x-www-browser", "www-browser", "sensible-browser"], 0], [["xdg-settings", "xdg-mime"], 1]]) {
+      for (const name of names) {
+        const file = programs.lookOnPath(name, { within: env.PATH }).file;
+        assert.equal(file, path.join(handlers, name), name);
+        const ran = spawnSync(file, name === "xdg-settings" ? ["get", "default-url-scheme-handler", "mailto"] : name === "xdg-mime" ? ["query", "default", "x-scheme-handler/mailto"] : ["mailto:hello@example.com"], { encoding: "utf8" });
+        assert.equal(ran.stdout, "", name);
+        assert.equal(ran.status, status, name);
+      }
     }
   } finally {
     if (chrome) await chrome.close();

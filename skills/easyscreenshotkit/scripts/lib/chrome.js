@@ -700,18 +700,24 @@ function browserEnv(profile, more) {
 // with what the site wrote in the address; with no portal to ask, it starts
 // xdg-email or xdg-open by its name through PATH, which did the same, and
 // on a service that runs the kit for many people started xdg-open there.
+// Before either, it starts xdg-settings through PATH, twice, to ask which
+// program opens such an address (tel: too), which runs xdg-mime.
 // So the browser starts with a session bus where nothing listens, a socket
 // in its profile that is never made (unset, a bus can be looked for in
 // XDG_RUNTIME_DIR, where the desktop's is, as libdbus does), with no
-// display (see browserEnv), and with programs of those names that start
-// nothing first on its PATH: links to true in a folder of its profile, or
-// scripts that exit at once where there is no true. The rest of PATH stays
-// as it was. Returns the browser's PATH and bus, once each of those names
-// on that PATH leads to its stand-in, or { problem }: why it cannot, as no
-// program may run from the temp folder (one mounted noexec, with no true
-// to link to), or the temp folder's path has in it the character that
-// parts the folders of PATH, which led the browser to the real programs.
+// display (see browserEnv), and with programs of those names first on its
+// PATH, in a folder of its profile: links to true, which start nothing, in
+// the place of the programs it hands an address to (HANDED_TO), and links
+// to false, which find no program, in the place of those it asks (ASKED),
+// or scripts that exit at once where there is no true or false. The rest
+// of PATH stays as it was. Returns the browser's PATH and bus, once each
+// of those names on that PATH leads to its stand-in, or { problem }: why it
+// cannot, as no program may run from the temp folder (one mounted noexec,
+// with no true or false to link to), or the temp folder's path has in it
+// the character that parts the folders of PATH, which led the browser to
+// the real programs.
 const HANDED_TO = ["xdg-open", "xdg-email", "x-www-browser", "www-browser", "sensible-browser"];
+const ASKED = ["xdg-settings", "xdg-mime"];
 
 function standIns(profile) {
   const dir = path.resolve(profile, "easyscreenshotkit-handlers");
@@ -726,16 +732,18 @@ function standIns(profile) {
   };
   try {
     fs.mkdirSync(dir);
-    const truth = ["/usr/bin/true", "/bin/true"].find(runs);
-    for (const name of HANDED_TO) {
-      const at = path.join(dir, name);
-      if (truth) fs.symlinkSync(truth, at);
-      else fs.writeFileSync(at, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    for (const [names, ends] of [[HANDED_TO, 0], [ASKED, 1]]) {
+      const program = (ends ? ["/usr/bin/false", "/bin/false"] : ["/usr/bin/true", "/bin/true"]).find(runs);
+      for (const name of names) {
+        const at = path.join(dir, name);
+        if (program) fs.symlinkSync(program, at);
+        else fs.writeFileSync(at, `#!/bin/sh\nexit ${ends}\n`, { mode: 0o700 });
+      }
     }
   } catch {
     // Said below: the names do not lead to stand-ins.
   }
-  if (HANDED_TO.every((name) => programs.lookOnPath(name, { within: PATH }).file === path.join(dir, name))) {
+  if ([...HANDED_TO, ...ASKED].every((name) => programs.lookOnPath(name, { within: PATH }).file === path.join(dir, name))) {
     return { PATH, DBUS_SESSION_BUS_ADDRESS: `unix:path=${busPath(path.resolve(profile, "easyscreenshotkit-no-bus"))}` };
   }
   const tmp = os.tmpdir();

@@ -1712,7 +1712,7 @@ test("no click of a demo makes the browser start a program of this machine", { s
   const dir = path.join(root, "handlers");
   fs.mkdirSync(dir);
   const log = path.join(root, "started.log");
-  for (const name of ["xdg-open", "xdg-email", "x-www-browser", "www-browser", "sensible-browser", "gio", "kde-open", "gnome-open", "exo-open"]) fs.writeFileSync(path.join(dir, name), `#!/bin/sh\necho "$0 $*" >> '${log}'\n`, { mode: 0o755 });
+  for (const name of ["xdg-open", "xdg-email", "x-www-browser", "www-browser", "sensible-browser", "xdg-settings", "xdg-mime", "gio", "kde-open", "gnome-open", "exo-open"]) fs.writeFileSync(path.join(dir, name), `#!/bin/sh\necho "$0 $*" >> '${log}'\n`, { mode: 0o755 });
   const env = { ...process.env, PATH: `${dir}${path.delimiter}${process.env.PATH}` };
   for (const name of ["DISPLAY", "WAYLAND_DISPLAY", "XDG_CURRENT_DESKTOP", "DESKTOP_SESSION", "BROWSER"]) delete env[name];
   const bus = noBus(root) ? null : await privateBus(fs.mkdtempSync(path.join(root, "bus-")));
