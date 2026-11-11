@@ -1118,7 +1118,7 @@ test("a tour lists the #route links of the home page and the address given, and 
 // A --page the browser cannot open, here one that answers with nothing, is
 // left out of the tour with the reason, and the tour goes on: it stopped
 // the demo.
-test("a tour leaves out a --page that cannot be opened, and goes on", { skip: !findChrome() && "no Chrome, Chromium, Edge or Brave installed", timeout: 60_000 }, async () => {
+test("a tour leaves out a --page that cannot be opened, and goes on, and fails with none of the pages asked for", { skip: !findChrome() && "no Chrome, Chromium, Edge or Brave installed", timeout: 150_000 }, async () => {
   const { server, origin } = await fixture();
   setTimeLimit(50_000);
   const chrome = await launch();
@@ -1128,6 +1128,15 @@ test("a tour leaves out a --page that cannot be opened, and goes on", { skip: !f
     assert.equal(tour.skipped.length, 1);
     assert.equal(tour.skipped[0].url, `${origin}/nothing`);
     assert.match(tour.skipped[0].reason, /^could not be opened: net::ERR_[A-Z_]+$/);
+    // A tour that has none of the pages the user named to show fails: one
+    // that showed the home page and pages it picked itself took the place
+    // of an earlier demo. With one of them, it goes on.
+    setTimeLimit(120_000);
+    await assert.rejects(pickPages(chrome, `${origin}/missing`, { pages: 2 }), { message: `${origin}/missing was asked for but not taken: the page answered 404. No demo was recorded.` });
+    await assert.rejects(pickPages(chrome, `${origin}/missing`, { pages: 1, extra: ["/nothing"] }), new RegExp(`^Error: ${origin}/missing was asked for but not taken: the page answered 404\\. ${origin}/nothing was asked for but not taken: could not be opened: net::ERR_[A-Z_]+\\. No demo was recorded\\.$`));
+    const one = await pickPages(chrome, `${origin}/missing`, { pages: 2, extra: ["/pricing"] });
+    assert.deepEqual(one.pages.map((p) => [p.url.slice(origin.length), p.why]), [["/", "the home page"], ["/pricing", "asked for with --page"]]);
+    assert.deepEqual(one.skipped, [{ url: `${origin}/missing`, reason: "the page answered 404" }]);
   } finally {
     await chrome.close();
     server.close();

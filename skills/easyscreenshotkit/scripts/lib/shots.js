@@ -591,12 +591,24 @@ function rejectReason({ asked, nav, info, loaded }, check) {
 
 // A visit takes its first screenshot while FIRST_CAPTURE_MS of the run's
 // time is left, so a run short of time still has its page, and each other
-// one while CAPTURE_MS is. Before the first one it hides what floats over
-// the page and waits for the fonts, which with the end of a walk down the
-// page can take BEFORE_CAPTURE_MS.
+// one while CAPTURE_MS is, or the share of it a short run keeps (see
+// reserveOf). Before the first one it hides what floats over the page and
+// waits for the fonts, which with the end of a walk down the page can take
+// BEFORE_CAPTURE_MS.
 const FIRST_CAPTURE_MS = 5_000;
 const CAPTURE_MS = 20_000;
 const BEFORE_CAPTURE_MS = 7_000;
+
+// What a run keeps of its time to open a page the user named, the address
+// given or a --page, and a window of a page: PAGE_MS and WINDOW_MS, and in
+// a run given less than RESERVE_FROM less of them, in step with its
+// --timeout, so a page keeps a third of it at most. A run given 30 s kept
+// 45 s for each page it was asked for, so it took none of them, and saved
+// the home page alone.
+const PAGE_MS = 45_000;
+const WINDOW_MS = 30_000;
+const RESERVE_FROM = 135_000;
+const reserveOf = (ms, timeLimit) => Math.min(ms, (ms * timeLimit) / RESERVE_FROM);
 
 // A view of a single page app, the address asked or the one the app went
 // to, draws once its data has come: up to VIEW_WAIT_MS for that, but never
@@ -813,7 +825,7 @@ async function visit(chrome, page, group, theme, ctx, { check = null, links = fa
     let screen = null;
     for (const shot of group.shots) {
       if (shot.pwa && theme !== ctx.pwaTheme) continue;
-      if (timeLeft() < (shots.length ? CAPTURE_MS : FIRST_CAPTURE_MS)) break;
+      if (timeLeft() < (shots.length ? ctx.captureMs || CAPTURE_MS : FIRST_CAPTURE_MS)) break;
       const m = await metrics(tab);
       // A phone page wider than the screen (no viewport tag, or content that
       // overflows) is shown zoomed out, as a phone shows it: the first screen
@@ -1052,6 +1064,8 @@ async function takeShots(rawUrl, options = {}) {
   setTimeLimit(timeLimit);
   // The programs an earlier run in this process found are found again.
   programs.forget();
+  const pageMs = reserveOf(PAGE_MS, timeLimit);
+  const windowMs = reserveOf(WINDOW_MS, timeLimit);
   const groups = parseSizes(sizes);
   if (pwa) addPwaShots(groups);
   const themes = theme === "both" ? ["light", "dark"] : [theme === "dark" ? "dark" : "light"];
@@ -1077,7 +1091,7 @@ async function takeShots(rawUrl, options = {}) {
   // run has ended well (see outdir.js).
   const run = openShots(target, { pwa });
   // The screenshots for a manifest are taken in the first theme only.
-  const ctx = { lang, hide, reducedMotion, clean: tidy, pwaTheme: pwa ? themes[0] : "" };
+  const ctx = { lang, hide, reducedMotion, clean: tidy, pwaTheme: pwa ? themes[0] : "", captureMs: reserveOf(CAPTURE_MS, timeLimit) };
   const notes = [...fragments];
   // Pages opened and left out come first in the manifest's list, then the
   // links left out without opening.
@@ -1122,7 +1136,7 @@ async function takeShots(rawUrl, options = {}) {
             // not be saved: no note on it, and no more windows.
             if (unsaved || chrome.gone()) return;
             const label = `${group.key}${themeName === "dark" ? " (dark)" : ""}`;
-            if (timeLeft() < 30_000) {
+            if (timeLeft() < windowMs) {
               page.notes.push(`${label} not taken: time ran out`);
               return;
             }
@@ -1237,7 +1251,7 @@ async function takeShots(rawUrl, options = {}) {
               why = failure(got);
             } catch (err) {
               if (chrome.gone()) throw err;
-              why = timeLeft() < 30_000 ? "time ran out; give more with --timeout" : notOpened(err);
+              why = timeLeft() < windowMs ? "time ran out; give more with --timeout" : notOpened(err);
             }
             if (why) notes.push(alternateNote(alternate, lang, `which was left out (${why})`));
             else {
@@ -1279,21 +1293,40 @@ async function takeShots(rawUrl, options = {}) {
     // asked for with --page, even past --pages: taken whatever they are,
     // unless they fail to open (an address that answers with a file, which
     // the browser does not save, a host that does not answer). One that is
-    // not taken is named in the notes, and the run goes on. With a tour,
-    // the #route links on each are listed with the pages left out, as the
-    // home page's are.
+    // not taken is named in the notes, and the run goes on while it has
+    // taken one of them; one that took none of the pages the user named
+    // has not ended well, and fails, as one of a single page does over the
+    // address given, where it put the home page and pages it picked itself
+    // in the place of an earlier run. With a tour, the #route links on each
+    // are listed with the pages left out, as the home page's are.
     const namedLinks = [];
     const named = [...(given && start.kind !== "given" ? [[given, "the address given"]] : []), ...asks.map((url) => [url, "asked for with --page"])];
+    // Whether a page the user named is in the run: the page it started at
+    // is one when that is the address given.
+    let tookNamed = !given || start.kind === "given";
+    const missed = [];
+    const notTaken = (url, reason) => {
+      missed.push({ url, reason });
+      notes.push(`${url} was asked for but not taken: ${reason}.`);
+    };
+    const LEFT_FOR_TIME = "time ran out; give more with --timeout";
+    // The address given, left out for want of time, fails the run there, as
+    // a demo's tour fails when it has no time to show it.
+    const outOfTime = (url, why) => {
+      notTaken(url, LEFT_FOR_TIME);
+      if (why === "the address given") throw new Error(`${url} was asked for but not taken: ${LEFT_FOR_TIME}. No screenshots were saved.`);
+    };
     for (const [url, why] of named) {
       const same = kept.find((page) => page.keys.has(viewKey(url)));
       if (same) {
         notes.push(`${url} was asked for but not taken: the same page as ${same.slug}.`);
+        tookNamed = true;
         continue;
       }
       await alone(url);
       alive();
-      if (timeLeft() < 45_000) {
-        notes.push(`${url} was asked for but not taken: time ran out; give more with --timeout.`);
+      if (timeLeft() < pageMs) {
+        outOfTime(url, why);
         continue;
       }
       const kind = (kindOf(new URL(url), "") || { kind: "other" }).kind;
@@ -1306,24 +1339,26 @@ async function takeShots(rawUrl, options = {}) {
         alive();
         // One that failed because the run's time ran out is said so, and
         // not left out as a page that could not be opened.
-        if (timeLeft() < 30_000) {
-          notes.push(`${url} was asked for but not taken: time ran out; give more with --timeout.`);
+        if (timeLeft() < windowMs) {
+          outOfTime(url, why);
           continue;
         }
         const reason = notOpened(err);
         rejected.push({ url, reason });
-        notes.push(`${url} was asked for but not taken: ${reason}.`);
+        notTaken(url, reason);
         continue;
       }
       const failed = got.nav.status >= 400 ? `the page answered ${got.nav.status}` : got.info.challenge ? "a bot check instead of the page" : "";
       if (failed) {
         rejected.push({ url, reason: failed });
-        notes.push(`${url} was asked for but not taken: ${failed}.`);
+        notTaken(url, failed);
       } else {
         keep(page, got);
+        tookNamed = true;
         namedLinks.push(...(got.links || []));
       }
     }
+    if (!tookNamed) throw new Error(`${missed.map(({ url, reason }) => `${url} was asked for but not taken: ${reason}.`).join(" ")} No screenshots were saved.`);
 
     if (wanted > 1) {
       const site = siteOf(home);

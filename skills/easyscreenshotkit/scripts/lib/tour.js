@@ -162,10 +162,16 @@ async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = 
   // The page given and the ones asked for come whatever they are, unless
   // they fail to open, as a link to a file does; one the tour has already
   // is said so. A page that fails because the browser ended fails the demo.
+  // So does a tour that has none of the pages the user named, the address
+  // given and each --page, to show: one that showed the home page and pages
+  // it picked itself took the place of an earlier demo.
+  let shown = kept[0].asked;
+  const missed = [];
   for (const [url, why] of [...(given && !homeLost ? [[given, "the address given"]] : []), ...asks.map((url) => [url, "asked for with --page"])]) {
     const same = kept.find((page) => page.keys.has(viewKey(url)));
     if (same) {
       skipped.push({ url, reason: `the same page as ${same.slug}` });
+      shown = true;
       continue;
     }
     let got;
@@ -174,14 +180,19 @@ async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = 
     } catch (err) {
       if (chrome.gone()) throw err;
       skipped.push({ url, reason: notOpened(err) });
+      missed.push({ url, reason: notOpened(err) });
       continue;
     }
-    if (got.rejected) skipped.push({ url, reason: got.rejected });
-    else {
+    if (got.rejected) {
+      skipped.push({ url, reason: got.rejected });
+      missed.push({ url, reason: got.rejected });
+    } else {
       keep(url, (kindOf(new URL(url), "") || { kind: "other" }).kind, why, got, { asked: true, given: why === "the address given" });
+      shown = true;
       namedLinks.push(...got.links);
     }
   }
+  if (!shown) throw new Error(`${missed.map(({ url, reason }) => `${url} was asked for but not taken: ${reason}.`).join(" ")} No demo was recorded.`);
   const index = await indexing;
   notes.push(...indexNotes(index.refused));
   // short: the tour looked for no more pages of its own as time ran short,

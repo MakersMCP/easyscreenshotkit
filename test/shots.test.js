@@ -954,7 +954,12 @@ test("a #route view whose sign has gone is kept, one that moved on is judged by 
     );
     const words = await take("words", { timeLimit: 40_000 });
     assert.deepEqual(words.pages[0].notes.slice(0, 2), ["still loading data after 10 s", "taken while it still showed a loading screen: time ran short; give more with --timeout"]);
-    assert.deepEqual(words.pwa.leftOut, [UNREADY_LEFT_OUT[0]]);
+    // Its phone's window for --pwa is taken too while the run's time allows
+    // it, a run given 40 s keeping 9 s for a window, and is left out as the
+    // first one is.
+    assert.deepEqual(words.pwa.leftOut[0], UNREADY_LEFT_OUT[0]);
+    assert.ok(words.pwa.leftOut.slice(1).every((item) => item.form_factor === "narrow" && item.reason === UNREADY_LEFT_OUT[1].reason), JSON.stringify(words.pwa.leftOut));
+    assert.deepEqual(words.pwa.screenshots, []);
     const link = await take("link", { timeLimit: 40_000 });
     assert.deepEqual(link.pages[0].notes.slice(0, 1), ["a request was still open after 10 s"]);
     assert.deepEqual(link.pwa.leftOut, []);
@@ -1592,6 +1597,97 @@ test("a run that fails or is stopped leaves the earlier run's files as they were
       if (process.platform === "linux") assert.equal(stopped.locks.length, 1, "a lock folder to look for");
       for (const left of [...stopped.profiles, ...stopped.locks]) assert.equal(fs.existsSync(left), false, left);
     }
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A run given little time keeps a share of it for each page the user named
+// and each window, in step with its --timeout: given 30 s it kept 45 s for
+// each page, so it left out the address given and each --page as time ran
+// out a few seconds in, and put the home page alone in the place of an
+// earlier run.
+test("a short --timeout takes the pages asked for, in each size", { skip: noBrowser, timeout: 120_000 }, async () => {
+  const { server, origin } = await fixture();
+  const root = tempDir();
+  const dir = path.join(root, "shots");
+  try {
+    const earlier = await runCli([origin, "--pages", "1", "--sizes", "desktop", "--out", dir]);
+    assert.equal(earlier.status, 0, earlier.stderr);
+    const quick = await runCli([`${origin}/pricing`, "--pages", "2", "--page", "/features", "--sizes", "desktop,mobile", "--timeout", "30", "--out", dir]);
+    assert.equal(quick.status, 0, quick.stderr);
+    const { pages } = JSON.parse(fs.readFileSync(path.join(dir, "manifest.json"), "utf8"));
+    assert.deepEqual(pages.map((p) => [p.slug, p.why, p.shots.map((shot) => shot.size)]), [["home", "the home page", ["desktop", "mobile"]], ["pricing", "the address given", ["desktop", "mobile"]], ["features", "asked for with --page", ["desktop", "mobile"]]]);
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A run whose home page left no time for the address given fails, and
+// leaves an earlier run as it was, as a demo's tour does with no time to
+// show it: with the home page asked for with --page as well, it went on
+// with the home page alone, exited with 0 and replaced the earlier run.
+test("a run with no time left for the address given fails and leaves the earlier run as it was", { skip: noBrowser, timeout: 150_000 }, async () => {
+  const html = { "Content-Type": "text/html; charset=utf-8" };
+  let slow = false;
+  const { server, origin } = await serve((req, res) => {
+    const answer = () => res.writeHead(200, html).end(page(req.url === "/" ? "Acme | Tools" : "Pricing | Acme", `<h1>${req.url === "/" ? "Acme" : "Pricing"}</h1><div style="height:1400px;background:rgb(0,160,0)"></div>`));
+    if (req.url !== "/" && req.url !== "/pricing") return res.writeHead(404).end("not found");
+    // Given 60 s, the run keeps 20 s for the address given: the home page
+    // leaves it about 14.
+    if (req.url === "/" && slow) setTimeout(answer, 44_000);
+    else answer();
+  });
+  const root = tempDir();
+  const dir = path.join(root, "shots");
+  try {
+    const earlier = await runCli([`${origin}/pricing`, "--pages", "1", "--sizes", "desktop", "--out", dir]);
+    assert.equal(earlier.status, 0, earlier.stderr);
+    const before = snapshot(dir);
+    slow = true;
+    const late = await runCli([`${origin}/pricing`, "--pages", "2", "--page", "/", "--sizes", "desktop", "--timeout", "60", "--out", dir]);
+    assert.equal(late.status, 1, late.stdout);
+    assert.equal(late.stderr.trim().split("\n").pop(), `easyscreenshotkit: ${origin}/pricing was asked for but not taken: time ran out; give more with --timeout. No screenshots were saved.`);
+    assert.deepEqual(snapshot(dir), before);
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A run that takes none of the pages the user named, the address given and
+// each --page, fails and leaves an earlier run as it was, as a run of one
+// page does over the address given: one that left out an address given that
+// answered an error, a bot check or with a file put the home page and pages
+// it picked itself in its place, with 0.
+test("a run that takes none of the pages asked for fails and leaves the earlier run as it was", { skip: noBrowser, timeout: 240_000 }, async () => {
+  const { server, origin } = await fixture();
+  const root = tempDir();
+  const dir = path.join(root, "shots");
+  const manifestOf = () => JSON.parse(fs.readFileSync(path.join(dir, "manifest.json"), "utf8"));
+  try {
+    const earlier = await runCli([origin, "--pages", "1", "--sizes", "desktop", "--out", dir]);
+    assert.equal(earlier.status, 0, earlier.stderr);
+    const before = snapshot(dir);
+    const missing = `${origin}/missing`;
+    const words = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    for (const [args, message] of [
+      [[missing], words(`${missing} was asked for but not taken: the page answered 404. No screenshots were saved.`)],
+      [[`${origin}/docs`], words(`${origin}/docs was asked for but not taken: a bot check instead of the page. No screenshots were saved.`)],
+      [[missing, "--page", "/nothing"], `${words(`${missing} was asked for but not taken: the page answered 404. ${origin}/nothing was asked for but not taken: could not be opened: net::`)}ERR_[A-Z_]+\\. No screenshots were saved\\.`],
+    ]) {
+      const failed = await runCli([...args, "--pages", "3", "--sizes", "desktop", "--out", dir]);
+      assert.equal(failed.status, 1, failed.stdout);
+      assert.match(failed.stderr.trim().split("\n").pop(), new RegExp(`^easyscreenshotkit: ${message}$`));
+      assert.deepEqual(snapshot(dir), before, args.join(" "));
+    }
+    // One that took a page asked for goes on, and names the other.
+    const one = await runCli([missing, "--pages", "3", "--page", "/features", "--sizes", "desktop", "--out", dir]);
+    assert.equal(one.status, 0, one.stderr);
+    assert.deepEqual(manifestOf().pages.map((p) => p.slug), ["home", "features", "pricing"]);
+    assert.ok(manifestOf().notes.includes(`${missing} was asked for but not taken: the page answered 404.`), manifestOf().notes.join("\n"));
   } finally {
     server.close();
     fs.rmSync(root, { recursive: true, force: true });
