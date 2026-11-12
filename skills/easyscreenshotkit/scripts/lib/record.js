@@ -125,53 +125,41 @@ const SCROLLER = `(() => {
 })()`;
 
 // Readies the page to hear the real mouse at the pointer (see
-// inputReaches()): a frame, as a map or a video is, takes the moves over it
-// in a document of its own, which the page does not hear, and frames can
-// cover the whole screen. So each frame under the pointer, or under the
-// pixel to its right, takes no pointer events until PROBE_END: the move
-// goes to the page below it. An element in a shadow root is looked for
-// through its host, and its own style is set, which a page's
-// Content-Security-Policy does not stop as it stops a style sheet. Then the
-// page listens for the next move, and the promise settles once the page
-// has drawn twice, by when the browser routes a move by the page as it is
-// now, or after 300 ms.
-const PROBE_START = `((at) => {
-  const hit = (x, y) => {
-    let el = document.elementFromPoint(x, y);
-    for (let depth = 0; el && el.shadowRoot && depth < 32; depth++) {
-      const inner = el.shadowRoot.elementFromPoint(x, y);
-      if (!inner || inner === el) break;
-      el = inner;
-    }
-    return el;
-  };
-  const framed = (el) => el && /^(IFRAME|FRAME|OBJECT|EMBED|FENCEDFRAME|PORTAL)$/.test(el.tagName);
-  const set = (window.__easyscreenshotkitProbe = []);
-  for (const x of [at.x, at.x + 1]) {
-    for (let el = hit(x, at.y), n = 0; framed(el) && n < 32; el = hit(x, at.y), n++) {
-      set.push([el, el.style.getPropertyValue("pointer-events"), el.style.getPropertyPriority("pointer-events"), el.hasAttribute("style")]);
-      el.style.setProperty("pointer-events", "none", "important");
-    }
-  }
+// inputReaches()): it listens for the next move, and the promise settles
+// once the page has drawn twice, by when the browser routes a move by the
+// page as it is now, with the frames under the pointer set aside, or after
+// 300 ms.
+const PROBE_START = `(() => {
   window.__easyscreenshotkitMoved = false;
   addEventListener("mousemove", () => { window.__easyscreenshotkitMoved = true; }, { capture: true, once: true });
   return new Promise((done) => {
     requestAnimationFrame(() => requestAnimationFrame(() => done(true)));
     setTimeout(() => done(true), 300);
   });
-})`;
-
-// Gives the frames PROBE_START set aside their pointer events back, as they
-// were.
-const PROBE_END = `(() => {
-  for (const [el, value, priority, had] of window.__easyscreenshotkitProbe || []) {
-    if (value) el.style.setProperty("pointer-events", value, priority);
-    else el.style.removeProperty("pointer-events");
-    if (!had && !el.getAttribute("style")) el.removeAttribute("style");
-  }
-  window.__easyscreenshotkitProbe = null;
-  return true;
 })()`;
+
+// A frame, as a map or a video is, takes the moves over it in a document of
+// its own, which the page does not hear (see inputReaches()). Called on an
+// element the browser's hit test found under the pointer: one that holds a
+// document of its own, or that is known to (owner), takes no pointer events
+// until it is put back, and how its style was is returned for that; any
+// other gives null. Its own style is set, which a page's
+// Content-Security-Policy does not stop as it stops a style sheet.
+const SET_ASIDE = `function (owner) {
+  if (!owner && !/^(IFRAME|FRAME|OBJECT|EMBED|FENCEDFRAME|PORTAL)$/.test(this.tagName)) return null;
+  const was = [this.style.getPropertyValue("pointer-events"), this.style.getPropertyPriority("pointer-events"), this.hasAttribute("style")];
+  this.style.setProperty("pointer-events", "none", "important");
+  return was;
+}`;
+
+// Gives a frame set aside its pointer events back, as they were.
+const PUT_BACK = `function (value, priority, had) {
+  if (value) this.style.setProperty("pointer-events", value, priority);
+  else this.style.removeProperty("pointer-events");
+  if (!had && !this.getAttribute("style")) this.removeAttribute("style");
+}`;
+
+const PROBE_GROUP = "easyscreenshotkit-probe";
 
 // A glide: the page moves itself to the next position on each animation
 // frame (every skip-th one), and notes where it really went and when.
@@ -597,16 +585,18 @@ class Recorder {
   // did nothing, on a page a visit opened after it too, while the steps
   // went on as if each had landed. The real mouse is moved a pixel off and
   // back at the pointer, and the page listens for it, with the frames under
-  // the pointer set aside for the moment (see PROBE_START): a frame there
+  // the pointer set aside for the moment (see framesAside()): a frame there
   // took the move in a document of its own, and the page heard nothing.
   // Where frames covered the whole screen the check was left out, and the
-  // next click did nothing again. A page that could not be asked, as one
-  // going away, counts as one that takes it.
+  // next click did nothing again. The frames are given back whatever
+  // happens, a check the page did not answer in time included, where they
+  // took no pointer events for the rest of the page. A page that could not
+  // be asked, as one going away, counts as one that takes it.
   async inputReaches() {
-    const ready = await this.eval(`${PROBE_START}(${JSON.stringify(this.cursor)})`);
-    if (ready !== true) return true;
-    let moved = false;
+    const aside = await this.framesAside(this.cursor);
     try {
+      if ((await this.eval(PROBE_START)) !== true) return true;
+      let moved = false;
       for (let tries = 0; tries < 2 && !moved; tries++) {
         await this.pointer({ x: this.cursor.x + 1, y: this.cursor.y });
         await this.pointer(this.cursor);
@@ -615,10 +605,57 @@ class Recorder {
           if (!moved) await sleep(50);
         }
       }
+      return moved;
     } finally {
-      await this.eval(PROBE_END);
+      await this.putBack(aside);
     }
-    return moved;
+  }
+
+  // Sets aside, for the moment of the check, each frame under the pointer
+  // and under the pixel to its right (see SET_ASIDE), as the browser's own
+  // hit test finds them: it sees into a shadow root the page keeps closed,
+  // which the page's own elementFromPoint gives as its host, so a frame in
+  // one, as a map's own element can hold, took the move and the demo
+  // stopped after a click on a mailto: link with a sentence that blamed the
+  // browser. A frame that runs in the page's process is hit inside, and set
+  // aside by the element that holds it; one that runs in a process of its
+  // own is hit as that element. Returns what putBack() needs.
+  async framesAside(at) {
+    const aside = [];
+    const scroll = await this.eval("[scrollX, scrollY]", 5_000);
+    if (!Array.isArray(scroll)) return aside;
+    const send = (method, params) => this.tab.send(method, params, 5_000).catch(() => null);
+    for (const x of [at.x, at.x + 1]) {
+      for (let n = 0; n < 32; n++) {
+        // In the page's own coordinates, its scroll included.
+        const hit = await send("DOM.getNodeForLocation", { x: Math.round(x + scroll[0]), y: Math.round(at.y + scroll[1]) });
+        if (!hit || !hit.backendNodeId) break;
+        let node = hit.backendNodeId;
+        const inside = Boolean(hit.frameId && hit.frameId !== this.tab.targetId);
+        if (inside) {
+          const owner = await send("DOM.getFrameOwner", { frameId: hit.frameId });
+          if (!owner || !owner.backendNodeId) break;
+          node = owner.backendNodeId;
+        }
+        const resolved = await send("DOM.resolveNode", { backendNodeId: node, objectGroup: PROBE_GROUP });
+        const objectId = resolved && resolved.object && resolved.object.objectId;
+        if (!objectId) break;
+        const set = await send("Runtime.callFunctionOn", { objectId, functionDeclaration: SET_ASIDE, arguments: [{ value: inside }], returnByValue: true });
+        const was = set && set.result && set.result.value;
+        if (!Array.isArray(was)) break;
+        aside.push({ objectId, was });
+      }
+    }
+    return aside;
+  }
+
+  // Gives the frames framesAside() set aside their pointer events back, and
+  // lets go of what it held of the page, all at once, so a page that
+  // answers late holds the demo 5 s at most. The browser runs them in turn.
+  async putBack(aside) {
+    const calls = aside.reverse().map(({ objectId, was }) => this.tab.send("Runtime.callFunctionOn", { objectId, functionDeclaration: PUT_BACK, arguments: was.map((value) => ({ value })) }, 5_000));
+    calls.push(this.tab.send("Runtime.releaseObjectGroup", { objectGroup: PROBE_GROUP }, 5_000));
+    await Promise.all(calls.map((call) => call.catch(() => {})));
   }
 
   // ─── steps ───────────────────────────────────────────────────────────────

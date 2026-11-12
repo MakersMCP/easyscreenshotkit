@@ -1856,14 +1856,25 @@ test("a demo's click after one on a tel: link opens its page, or the demo says t
 // where they cover the whole screen.
 const contactPage = (link, frame) => page("Contact | Acme", `<h1>Contact</h1><p style="font-size:32px;padding:0 40px">${link}</p>${frame}<p style="font-size:32px;padding:0 40px"><a href="/pricing">See pricing</a></p><div style="height:1400px;background:rgb(0,160,0)"></div>`);
 const mapFrame = (height, sandboxed = false) => `<iframe${sandboxed ? " sandbox" : ""} src="/map" style="display:block;width:100vw;height:${height}px;border:0;margin:0"></iframe>`;
+// A frame in a shadow root the page keeps closed, which the page's own
+// elementFromPoint gives as its host: an element of its own, as a map's
+// is, or a div.
+const closedFrame = (tag, frame) => {
+  const id = `holder-${tag}`;
+  const fill = (el) => `${el}.attachShadow({ mode: "closed" }).innerHTML = ${JSON.stringify(frame)};`;
+  if (tag.includes("-")) return `<${tag} style="display:block;width:100vw;height:2400px"></${tag}><script>customElements.define("${tag}", class extends HTMLElement { constructor() { super(); ${fill("this")} } });</script>`;
+  return `<${tag} id="${id}" style="display:block;width:100vw;height:2400px"></${tag}><script>${fill(`document.getElementById("${id}")`)}</script>`;
+};
 
-test("a demo's click after one on a mailto: link opens its page with a frame under the pointer, and with frames all over the screen", { skip: missing || (process.platform !== "linux" && "the browser starts these programs through PATH and the session bus on Linux only"), timeout: 300_000 }, async () => {
+test("a demo's click after one on a mailto: link opens its page with a frame under the pointer, and with frames all over the screen", { skip: missing || (process.platform !== "linux" && "the browser starts these programs through PATH and the session bus on Linux only"), timeout: 500_000 }, async () => {
   const html = { "Content-Type": "text/html; charset=utf-8" };
   const write = '<a href="mailto:hello@example.com">Write to us</a>';
   const { server, origin } = await serve((req, res) => {
     if (req.url === "/") return res.writeHead(200, html).end(contactPage(write, mapFrame(900)));
     if (req.url === "/wall") return res.writeHead(200, html).end(contactPage(write, mapFrame(2400)));
     if (req.url === "/boxed") return res.writeHead(200, html).end(contactPage(write, mapFrame(2400, true)));
+    if (req.url === "/shadow") return res.writeHead(200, html).end(contactPage(write, closedFrame("x-map", mapFrame(2400))));
+    if (req.url === "/shadow-box") return res.writeHead(200, html).end(contactPage(write, closedFrame("div", mapFrame(2400, true))));
     if (req.url === "/map") return res.writeHead(200, html).end(page("Map", '<div style="height:2400px;background:rgb(200,200,255)"></div>'));
     if (req.url === "/pricing") return res.writeHead(200, html).end(page("Pricing | Acme", '<h1>Pricing</h1><div style="height:1400px;background:rgb(0,0,220)"></div>'));
     res.writeHead(404).end("not found");
@@ -1873,8 +1884,9 @@ test("a demo's click after one on a mailto: link opens its page with a frame und
   try {
     // The scroll puts the frame under the pointer, which the click on the
     // mailto: link left at the top; on /wall and /boxed the frame then fills
-    // the screen.
-    for (const [at, by] of [["/", 300], ["/wall", 500], ["/boxed", 500]]) {
+    // the screen, and on /shadow and /shadow-box one in a shadow root that
+    // the page keeps closed does.
+    for (const [at, by] of [["/", 300], ["/wall", 500], ["/boxed", 500], ["/shadow", 500], ["/shadow-box", 500]]) {
       const steps = path.join(root, `steps-${at.slice(1) || "home"}.yaml`);
       fs.writeFileSync(steps, `steps:\n  - visit: ${at}\n  - click: "text=Write to us"\n    zoom: false\n  - scroll: ${by}\n  - click: "text=See pricing"\n    zoom: false\n  - wait: 1\n`);
       const run = await cut.demo([origin, "--steps", steps, "--no-gif", "--json", "--out", path.join(root, `demo-${at.slice(1) || "home"}`)]);
@@ -1899,12 +1911,13 @@ test("a demo's click after one on a mailto: link opens its page with a frame und
 // 155 and 157 do, the next click did nothing while steps.json listed it as
 // done and the demo ended well. The demo now stops at it with its sentence,
 // or, with a browser that still takes input, the click opens its page.
-test("a demo's click after one on a tel: link opens its page, or the demo says the browser took no more clicks, with frames all over the screen", { skip: missing || (process.platform !== "linux" && "the browser starts these programs through PATH and the session bus on Linux only"), timeout: 300_000 }, async () => {
+test("a demo's click after one on a tel: link opens its page, or the demo says the browser took no more clicks, with frames all over the screen", { skip: missing || (process.platform !== "linux" && "the browser starts these programs through PATH and the session bus on Linux only"), timeout: 450_000 }, async () => {
   const html = { "Content-Type": "text/html; charset=utf-8" };
   const call = '<a href="tel:+15551234567">Call us</a>';
   const { server, origin } = await serve((req, res) => {
     if (req.url === "/wall") return res.writeHead(200, html).end(contactPage(call, mapFrame(2400)));
     if (req.url === "/boxed") return res.writeHead(200, html).end(contactPage(call, mapFrame(2400, true)));
+    if (req.url === "/shadow") return res.writeHead(200, html).end(contactPage(call, closedFrame("x-map", mapFrame(2400))));
     if (req.url === "/map") return res.writeHead(200, html).end(page("Map", '<div style="height:2400px;background:rgb(200,200,255)"></div>'));
     if (req.url === "/pricing") return res.writeHead(200, html).end(page("Pricing | Acme", '<h1>Pricing</h1><div style="height:1400px;background:rgb(0,0,220)"></div>'));
     res.writeHead(404).end("not found");
@@ -1912,7 +1925,7 @@ test("a demo's click after one on a tel: link opens its page, or the demo says t
   const root = tempDir();
   const cut = await cutOff(root);
   try {
-    for (const at of ["/wall", "/boxed"]) {
+    for (const at of ["/wall", "/boxed", "/shadow"]) {
       const steps = path.join(root, `steps-${at.slice(1)}.yaml`);
       fs.writeFileSync(steps, `steps:\n  - visit: ${at}\n  - click: "text=Call us"\n    zoom: false\n  - scroll: 500\n  - click: "text=See pricing"\n    zoom: false\n  - wait: 1\n`);
       const out = path.join(root, `demo-${at.slice(1)}`);
@@ -1931,6 +1944,68 @@ test("a demo's click after one on a tel: link opens its page, or the demo says t
     assert.deepEqual(cut.opened, []);
   } finally {
     await cut.close();
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// The frames set aside for the check get their pointer events back after
+// it, also when the page did not answer it in time, as one whose main
+// thread is held: they took none for the rest of the page, a map no more
+// drags and a video no more clicks. The page's answer is let go here as a
+// late one is, after it ran.
+test("the check that a demo's tab still takes clicks gives the frames their pointer events back, also when the page did not answer it in time", { skip: missing, timeout: 150_000 }, async () => {
+  const html = { "Content-Type": "text/html; charset=utf-8" };
+  const write = '<a href="mailto:hello@example.com">Write to us</a>';
+  const { server, origin } = await serve((req, res) => {
+    if (req.url === "/wall") return res.writeHead(200, html).end(contactPage(write, mapFrame(2400)));
+    if (req.url === "/shadow-box") return res.writeHead(200, html).end(contactPage(write, closedFrame("div", mapFrame(2400, true))));
+    if (req.url === "/map") return res.writeHead(200, html).end(page("Map", '<div style="height:2400px;background:rgb(200,200,255)"></div>'));
+    res.writeHead(404).end("not found");
+  });
+  const root = tempDir();
+  const { Recorder } = require("../skills/easyscreenshotkit/scripts/lib/record");
+  const { guardFor } = require("../skills/easyscreenshotkit/scripts/lib/address");
+  setTimeLimit(140_000);
+  const chrome = await launch();
+  try {
+    chrome.guard = await guardFor(`${origin}/`);
+    const recorder = new Recorder(chrome, { dir: root, base: `${origin}/` });
+    await recorder.open();
+    try {
+      for (const at of ["/wall", "/shadow-box"]) {
+        await recorder.run({ action: "visit", url: at });
+        recorder.cursor = { x: 800, y: 600 };
+        const tab = recorder.tab;
+        // What is under the pointer as the browser routes the mouse: the
+        // frame, hit inside or as the element that holds it.
+        const hit = async () => {
+          const [x, y] = (await tab.send("Runtime.evaluate", { expression: "[scrollX, scrollY]", returnByValue: true })).result.value;
+          const at = await tab.send("DOM.getNodeForLocation", { x: 800 + x, y: 600 + y });
+          if (at.frameId !== tab.targetId) return "the frame";
+          const { node } = await tab.send("DOM.describeNode", { backendNodeId: at.backendNodeId });
+          return node.nodeName === "IFRAME" ? "the frame" : node.nodeName;
+        };
+        assert.equal(await hit(), "the frame", at);
+        const style = (await tab.send("Runtime.evaluate", { expression: "String(document.querySelector('iframe') && document.querySelector('iframe').style.cssText)", returnByValue: true })).result.value;
+        const real = recorder.eval.bind(recorder);
+        recorder.eval = async (expression, timeout) => {
+          const value = await real(expression, timeout);
+          return /__easyscreenshotkitMoved = false/.test(expression) ? undefined : value;
+        };
+        try {
+          assert.equal(await recorder.inputReaches(), true, at);
+        } finally {
+          delete recorder.eval;
+        }
+        assert.equal(await hit(), "the frame", at);
+        assert.equal((await tab.send("Runtime.evaluate", { expression: "String(document.querySelector('iframe') && document.querySelector('iframe').style.cssText)", returnByValue: true })).result.value, style, at);
+      }
+    } finally {
+      await recorder.close();
+    }
+  } finally {
+    await chrome.close();
     server.close();
     fs.rmSync(root, { recursive: true, force: true });
   }
