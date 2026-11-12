@@ -20,9 +20,16 @@ const { timeLeft } = require("./time");
 const PROBE = { width: 1600, height: 900, scale: 1, mobile: false, touch: false, agent: "desktop" };
 
 // Opens a candidate in a window of its own and says whether it is a page
-// worth showing: {nav, info, links}, or {rejected: reason}. A view of a
-// single page app is waited for as the screenshots wait for it. links: read
-// the page's links too, for the #routes in its menu.
+// worth showing: {nav, info, links}, or {rejected: reason}. The address it
+// loaded at (nav) decides whether it went to a sign-in page or to the home
+// page, and what it shows a few seconds later (info: its title, canonical
+// link and text) whether it is a page already taken. So one that moves on
+// by itself in those seconds to a sign-in page stays in the tour, and the
+// video shows that page, and one that moves on to a page the tour already
+// has is left out as that page; the screenshots judge such a page by where
+// it went (see shots.js). A view of a single page app is waited for as the
+// screenshots wait for it. links: read the page's links too, for the
+// #routes in its menu.
 async function probe(chrome, url, check, ctx, { links = false } = {}) {
   const tab = await openTab(chrome, PROBE, ctx);
   try {

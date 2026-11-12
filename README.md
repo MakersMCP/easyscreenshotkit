@@ -57,7 +57,7 @@ The tour follows paths only: a link to `/docs/#/install` offers it `/docs/`. The
 
 ## Record a demo
 
-`easyscreenshotkit demo` records a short video of the site instead: a tour of the pages it would take screenshots of, or the steps you write down.
+`easyscreenshotkit demo` records a short video of the site instead: a tour of the pages worth showing, or the steps you write down.
 
 ```bash
 npx easyscreenshotkit@latest demo cal.com
@@ -133,7 +133,7 @@ A `--background` colour is one the browser knows: a name such as `slategray`, or
 
 How a demo is made:
 
-1. A tour takes the pages the screenshots would: the home page, then features, pricing and the like, each opened first to check it. On each page it rests on the first screen, scrolls down to a section or two, and goes on to the next page through the link in the site's own menu, or with a crossfade when the menu has none. Pricing comes last. It follows paths only: the notes in steps.json name the `#/` and `#!` links it finds on the home page, on the address given and on each `--page`, and the `#/` and `#!` addresses the site's sitemap lists, which `--page` can add.
+1. A tour picks its pages as the screenshots do: the home page, then features, pricing and the like, each opened first to check it. It checks a page by the address it loaded at, so one that moves on by itself to a sign-in page stays in the tour and the video shows the sign-in page, where the screenshots leave it out, and one that moves on in its first seconds to a page the tour already has, such as the home page, is left out as that page. On each page it rests on the first screen, scrolls down to a section or two, and goes on to the next page through the link in the site's own menu, or with a crossfade when the menu has none. Pricing comes last. It follows paths only: the notes in steps.json name the `#/` and `#!` links it finds on the home page, on the address given and on each `--page`, and the `#/` and `#!` addresses the site's sitemap lists, which `--page` can add.
 2. Every page loads off camera. The recording pauses while the page opens, scrolls through it once so lazy pictures load, hides what floats over it and waits for its fonts and pictures. Then it comes in with a crossfade.
 3. Chrome draws the page at 1.5 pixels per CSS pixel, so a zoomed-in view stays sharp, and streams its screen. A scroll is taken a frame at a time, the page moved to exactly where each frame of the video needs it, so it is even however slowly the machine draws. A page that draws slowly is recorded in slow motion and played back at speed.
 4. The pointer, the zoom, the rings around clicks and the window are not drawn into the page. They are added afterwards from what was recorded, every frame drawn in a second browser window, and ffmpeg encodes the result.
