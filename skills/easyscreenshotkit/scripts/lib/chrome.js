@@ -728,6 +728,20 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
     // known to have ended.
     for (let i = 0; i < 20 && browser.closed() && !exited; i++) await sleep(100);
   }
+  // What a browser that ended before it answered printed is read to its
+  // end, a second at most, before it is judged: Google Chrome's launcher
+  // on Linux passes it on through cat, which hands over the loader's or
+  // the shell's line a few milliseconds after the browser ended, and a
+  // program a wrapper left running can hold the pipe open.
+  if (exited && !answered && child.stderr && !child.stderr.destroyed) {
+    await new Promise((done) => {
+      const timer = setTimeout(done, 1_000);
+      child.stderr.once("close", () => {
+        clearTimeout(timer);
+        done();
+      });
+    });
+  }
   // Still running, with no answer and its pipe still open: on a busy
   // machine, or a browser that hangs. One that closed its pipe was not slow
   // to answer: Chrome short of threads closes it at once and can go on

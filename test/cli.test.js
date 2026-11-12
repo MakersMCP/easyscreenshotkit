@@ -1174,6 +1174,22 @@ test("a browser or an ffmpeg that cannot be started stops a run before any work 
         }
       });
     }
+    // The same behind a launcher shaped like Google Chrome's own on Linux,
+    // which /usr/bin/google-chrome leads to: it passes what the program, the
+    // loader and the shell print on through cat, which hands it over a few
+    // milliseconds after the program ended, and starts the program under its
+    // own name, so the loader names the launcher. The run had let go of the
+    // pipe by then and said the browser did not start and to try again.
+    const chromeLike = '#!/bin/bash\nexport CHROME_WRAPPER="`readlink -f "$0"`"\nHERE="`dirname "$CHROME_WRAPPER"`"\nexec < /dev/null\nexec > >(exec cat)\nexec 2> >(exec cat >&2)\nexec -a "$0" "$HERE/chrome" "$@"\n';
+    for (const [folder, skip] of [["libmiss", !libmiss && "true links no libc.so.6"], ["arm", (!other && "needs an x86-64 or ARM64 machine") || (emulated && "this system hands a program for another processor to an emulator")]]) {
+      await t.test(`a launcher like Google Chrome's of ${folder === "arm" ? "a program for another processor" : "a program that needs a shared library the machine lacks"}`, { skip: skip || (!fs.existsSync("/bin/bash") && "needs bash") }, () => {
+        const launcher = at(folder, "google-chrome");
+        fs.writeFileSync(launcher, chromeLike, { mode: 0o755 });
+        const line = spawnSync(launcher, { encoding: "utf8" }).stderr.trim().split("\n")[0];
+        const said = folder === "libmiss" ? `CHROME_PATH is ${launcher}, a program that needs the shared library libq.so.6, which is not on this machine. ${FIX.CHROME_PATH}` : `it printed "${line.length > 200 ? `${line.slice(0, 200)}...` : line}". ${advice}`;
+        for (let i = 0; i < 3; i++) refused({ CHROME_PATH: launcher }, SHOTS, `easyscreenshotkit: google-chrome did not start: ${said}`);
+      });
+    }
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
