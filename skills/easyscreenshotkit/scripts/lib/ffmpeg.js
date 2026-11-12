@@ -67,10 +67,9 @@ function findFfmpeg() {
 // version and was then said to have been stopped as it started (SIGKILL),
 // and 20 s to list its encoders and was then said to have no H.264 encoder,
 // each with the advice to get another. Each wait ends with the run's own
-// time (--timeout) too, as every wait of a run does, and one that it cuts
-// short says that time ran out, and to give more: a demo given a minute
-// waited out the two minutes past it, then failed in words about the
-// recording. limit: for a test.
+// time (--timeout) too, and one that it cuts short says that time ran out,
+// and to give more: a demo given a minute waited out the two minutes past
+// it, then failed in words about the recording. limit: for a test.
 const VERSION_MS = 120_000;
 
 // How long ffmpeg is waited for: `limit`, or what is left of the run's time
