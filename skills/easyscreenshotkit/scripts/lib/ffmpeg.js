@@ -8,6 +8,7 @@ const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
 const programs = require("./programs");
+const { timeLeft } = require("./time");
 
 // Where package managers put it, for an agent or app whose PATH is short.
 const PLACES = ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg", "/snap/bin/ffmpeg"];
@@ -65,12 +66,24 @@ function findFfmpeg() {
 // have given none, with the advice to run again. It had a minute to say its
 // version and was then said to have been stopped as it started (SIGKILL),
 // and 20 s to list its encoders and was then said to have no H.264 encoder,
-// each with the advice to get another. limit: for a test.
+// each with the advice to get another. Each wait ends with the run's own
+// time (--timeout) too, as every wait of a run does, and one that it cuts
+// short says that time ran out, and to give more: a demo given a minute
+// waited out the two minutes past it, then failed in words about the
+// recording. limit: for a test.
 const VERSION_MS = 120_000;
 
-// The error for an ffmpeg, found at `place`, that gave no answer in
-// `limit` ms when asked `what`.
-function late(place, what, limit) {
+// How long ffmpeg is waited for: `limit`, or what is left of the run's time
+// when that is less (cut).
+function waitFor(limit) {
+  const left = Math.floor(timeLeft());
+  return left < limit ? { ms: Math.max(1, left), cut: true } : { ms: limit, cut: false };
+}
+
+// The error for an ffmpeg, found at `place`, that gave no answer when asked
+// `what` in the wait it had: `limit` ms, or what was left of the run's time.
+function late(place, what, limit, wait) {
+  if (wait.cut) return new Error(`time ran out while ffmpeg was asked ${what}; give more with --timeout`);
   const time = limit === VERSION_MS ? "two minutes" : `${limit / 1000} s`;
   return new Error(`${NEEDED}, and ${programs.told(place, `a program that gave no answer in ${time} when asked ${what}, as even one that works can on a machine too busy or short of memory`, { fix: false })} Run the demo again.`);
 }
@@ -80,14 +93,15 @@ async function ffmpegReady(limit = VERSION_MS) {
   if (!place) throw new Error(MISSING);
   if (place.problem) throw new Error(`${NEEDED}, and ${programs.told(place, place.problem)}`);
   programs.remember(place);
+  const wait = waitFor(limit);
   let result;
   try {
-    result = await run(place.file, ["-hide_banner", "-version"], { timeout: limit });
+    result = await run(place.file, ["-hide_banner", "-version"], { timeout: wait.ms });
   } catch (err) {
     if (programs.SHORT[err.code]) throw new Error(`${NEEDED}, and ${place.file} could not be started: ${programs.SHORT[err.code]}.`);
     throw new Error(`${NEEDED}, and ${programs.told(place, programs.explain(place.file, { error: err }))}`);
   }
-  if (result.late) throw late(place, "its version", limit);
+  if (result.late) throw late(place, "its version", limit, wait);
   if (!result.signal && result.code === 0 && /^ffmpeg version \S/m.test(result.stdout)) return place.file;
   // A file that is no program of this system, as a text file with no #!
   // line the shell ran to its end, is said to be what it is.
@@ -273,8 +287,9 @@ function mp4Frames(file) {
 // behind an edit list, and a tool that reads frames without it would be
 // two frames off steps.json. Without them the file is about 6% bigger.
 async function pickEncoder(binary, limit = VERSION_MS) {
-  const { stdout, late: slow } = await run(binary, ["-hide_banner", "-encoders"], { timeout: limit });
-  if (slow) throw late(programs.places.get(binary) || { name: "ffmpeg", file: binary, where: "", fix: "" }, "its encoders", limit);
+  const wait = waitFor(limit);
+  const { stdout, late: slow } = await run(binary, ["-hide_banner", "-encoders"], { timeout: wait.ms });
+  if (slow) throw late(programs.places.get(binary) || { name: "ffmpeg", file: binary, where: "", fix: "" }, "its encoders", limit, wait);
   const has = (name) => new RegExp(`^\\s*V\\S*\\s+${name}\\s`, "m").test(stdout);
   if (has("libx264")) return { name: "libx264", args: ["-c:v", "libx264", "-preset", "medium", "-crf", "18", "-profile:v", "high", "-bf", "0"] };
   if (has("h264_videotoolbox")) return { name: "h264_videotoolbox", args: ["-c:v", "h264_videotoolbox", "-b:v", "14M", "-profile:v", "high", "-bf", "0"] };

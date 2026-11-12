@@ -1216,7 +1216,9 @@ test("a run names a program by its role in that run, whatever runs before it in 
 // own holding the output, which is not waited for; the time is cut to half
 // a second for the test. One that answers at once and leaves such a program
 // running answered: it was said to have given no answer, or held the demo
-// as long as that program ran.
+// as long as that program ran. And the run's own time ends the wait too,
+// in words that say so: a demo given a minute waited out the two minutes
+// past it.
 test("an ffmpeg has two minutes to say its version and to list its encoders, and one that gives no answer in that time is said to have given none", { skip: process.platform === "win32" && "the stand-ins are shell scripts", timeout: 60_000 }, async () => {
   const { ffmpegReady, pickEncoder, VERSION_MS } = require("../skills/easyscreenshotkit/scripts/lib/ffmpeg");
   const { setTimeLimit } = require("../skills/easyscreenshotkit/scripts/lib/time");
@@ -1259,7 +1261,17 @@ test("an ffmpeg has two minutes to say its version and to list its encoders, and
       assert.equal((await pickEncoder(leftover, limit)).name, "libx264");
       assert.ok(Date.now() - asked < 3_500, `${limit}: ${Date.now() - asked} ms`);
     }
+    // The run's own time cuts the two minutes short, and says so.
+    const slow = put("slow", '#!/bin/sh\nsleep 3\necho "ffmpeg version 4.4.2"\n');
+    process.env.FFMPEG_PATH = slow;
+    setTimeLimit(800);
+    const cut = Date.now();
+    await assert.rejects(ffmpegReady(), { message: "time ran out while ffmpeg was asked its version; give more with --timeout" });
+    assert.ok(Date.now() - cut < 2_500, `${Date.now() - cut} ms`);
+    setTimeLimit(800);
+    await assert.rejects(pickEncoder(quiet), { message: "time ran out while ffmpeg was asked its encoders; give more with --timeout" });
   } finally {
+    setTimeLimit(600_000);
     if (saved === undefined) delete process.env.FFMPEG_PATH;
     else process.env.FFMPEG_PATH = saved;
     fs.rmSync(root, { recursive: true, force: true });
