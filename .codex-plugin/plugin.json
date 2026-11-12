@@ -6,7 +6,7 @@
     "name": "Emin Budak",
     "url": "https://eminbudak.com"
   },
-  "repository": "https://github.com/EminBudak/easyscreenshotkit",
+  "repository": "https://github.com/MakersMCP/easyscreenshotkit",
   "license": "MIT",
   "keywords": ["screenshot", "website", "launch", "marketing", "design", "demo", "video"],
   "skills": "./skills/",
@@ -17,7 +17,7 @@
     "developerName": "Emin Budak",
     "category": "Creativity",
     "capabilities": ["Read", "Write"],
-    "websiteUrl": "https://github.com/EminBudak/easyscreenshotkit",
+    "websiteUrl": "https://github.com/MakersMCP/easyscreenshotkit",
     "defaultPrompt": ["Take screenshots of linear.app", "Record a short demo video of cal.com"],
     "composerIcon": "./assets/icon.svg",
     "logo": "./assets/icon.svg"

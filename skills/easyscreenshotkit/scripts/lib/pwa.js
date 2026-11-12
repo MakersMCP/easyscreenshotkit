@@ -339,7 +339,7 @@ function planPwa(pages) {
 
 const FETCH_MS = 15_000;
 const MAX_BYTES = 30 * 1024 * 1024;
-const AGENT = `easyscreenshotkit/${version} (+https://github.com/EminBudak/easyscreenshotkit)`;
+const AGENT = `easyscreenshotkit/${version} (+https://github.com/MakersMCP/easyscreenshotkit)`;
 
 function reasonOf(err) {
   if (err && (err.name === "TimeoutError" || err.name === "AbortError")) return `no answer in ${FETCH_MS / 1000} s`;

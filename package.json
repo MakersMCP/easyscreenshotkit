@@ -4,12 +4,12 @@
   "description": "Give it a website and it picks the pages worth showing, hides the cookie banners and chat bubbles, and saves desktop, phone and full-page screenshots your agent can read. It also records a short demo video of the site and takes the screenshots a web app manifest needs.",
   "license": "MIT",
   "author": "Emin Budak",
-  "homepage": "https://github.com/EminBudak/easyscreenshotkit#readme",
+  "homepage": "https://github.com/MakersMCP/easyscreenshotkit#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/EminBudak/easyscreenshotkit.git"
+    "url": "git+https://github.com/MakersMCP/easyscreenshotkit.git"
   },
-  "bugs": "https://github.com/EminBudak/easyscreenshotkit/issues",
+  "bugs": "https://github.com/MakersMCP/easyscreenshotkit/issues",
   "bin": {
     "easyscreenshotkit": "skills/easyscreenshotkit/scripts/easyscreenshotkit.js"
   },

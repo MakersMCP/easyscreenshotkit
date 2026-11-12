@@ -149,20 +149,20 @@ As it records, it keeps the last minute of the run, or a quarter of a run under 
 easyscreenshotkit ships as an [Agent Skill](https://agentskills.io). Install it once and your agent runs it by itself when it needs a product's real screens:
 
 ```bash
-npx skills add EminBudak/easyscreenshotkit
+npx skills add MakersMCP/easyscreenshotkit
 ```
 
 That covers Claude Code, Codex, Cursor and the other agents the [`skills`](https://github.com/vercel-labs/skills) CLI supports. In Claude Code you can add it as a plugin instead:
 
 ```
-/plugin marketplace add EminBudak/easyscreenshotkit
+/plugin marketplace add MakersMCP/easyscreenshotkit
 /plugin install easyscreenshotkit@easyscreenshotkit
 ```
 
 In GitHub Copilot CLI it takes the same two steps:
 
 ```bash
-copilot plugin marketplace add EminBudak/easyscreenshotkit
+copilot plugin marketplace add MakersMCP/easyscreenshotkit
 copilot plugin install easyscreenshotkit@easyscreenshotkit
 ```
 
@@ -319,8 +319,8 @@ It tells you which screenshots a desktop and a phone would show and what to fix.
 
 ## See also
 
-- [easybrandkit](https://github.com/EminBudak/easybrandkit) saves a site's real logo files, colors and fonts as a brand kit.
-- [launch-film](https://github.com/EminBudak/launch-film) turns a site into a short launch film, rendered on your machine.
+- [easybrandkit](https://github.com/MakersMCP/easybrandkit) saves a site's real logo files, colors and fonts as a brand kit.
+- [launch-film](https://github.com/MakersMCP/launch-film) turns a site into a short launch film, rendered on your machine.
 
 ## License
 

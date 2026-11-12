@@ -58,7 +58,7 @@ function sheetHtml(manifest, dir) {
   </style></head><body><main>
   <header><h1>${escape(manifest.site || host)}</h1><span>${escape(host)}</span></header>
   <div class="grid">${cards}</div>
-  <footer>github.com/EminBudak/easyscreenshotkit</footer>
+  <footer>github.com/MakersMCP/easyscreenshotkit</footer>
   </main></body></html>`;
 }
 
