@@ -1152,15 +1152,18 @@ test("a browser or an ffmpeg that cannot be started stops a run before any work 
     // another processor: what the loader or the shell printed is quoted,
     // with what to do, where the run said the browser did not start and to
     // try again. A system that hands a program for another processor to an
-    // emulator of its own (binfmt_misc) runs it there.
+    // emulator of its own (binfmt_misc) runs it there, and so does the
+    // system under a container that cannot list it, as Docker Desktop's runs
+    // one under qemu: the shell does not say "Exec format error" of it then.
     const emulated = (() => {
+      if (!other) return false;
       let names = [];
       try {
         names = fs.readdirSync("/proc/sys/fs/binfmt_misc");
       } catch {
-        return false;
+        // Not there to list, as in a container.
       }
-      return names.some((name) => {
+      const listed = names.some((name) => {
         try {
           return /^enabled\n[\s\S]*magic 7f454c46/.test(fs.readFileSync(path.join("/proc/sys/fs/binfmt_misc", name), "utf8"));
         } catch {
@@ -1168,6 +1171,7 @@ test("a browser or an ffmpeg that cannot be started stops a run before any work 
           return false;
         }
       });
+      return listed || !/Exec format error/.test(spawnSync("/bin/sh", ["-c", 'exec "$0"', at("arm", "chrome")], { encoding: "utf8" }).stderr);
     })();
     const advice = "A library the browser needs is missing, or it is made for another system: reinstall it with its package manager, or point CHROME_PATH at one that runs.";
     // A line over 200 characters is quoted by its first 200 when the words
