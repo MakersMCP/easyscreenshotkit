@@ -1009,11 +1009,12 @@ test("a browser or an ffmpeg that cannot be started stops a run before any work 
   // first words "No Chrome, Chromium, Edge or Brave found" for what is no
   // program this user may run and "<name> did not start" for one that did
   // not start, and an ffmpeg for a demo, which looks at it first.
-  const named = (file, what, { started = false } = {}) => {
+  // fix: what the words end with, in the place of how to point to another.
+  const named = (file, what, { started = false, fix = null } = {}) => {
     const value = (program) => (typeof file === "function" ? file(program) : file);
-    const chrome = `CHROME_PATH is ${value("chrome")}, ${what(value("chrome"), "chrome")}. ${FIX.CHROME_PATH}`;
+    const chrome = `CHROME_PATH is ${value("chrome")}, ${what(value("chrome"), "chrome")}. ${fix || FIX.CHROME_PATH}`;
     refused({ CHROME_PATH: value("chrome") }, SHOTS, `easyscreenshotkit: ${started ? `${path.basename(value("chrome"))} did not start` : "No Chrome, Chromium, Edge or Brave found"}: ${chrome}`);
-    refused({ FFMPEG_PATH: value("ffmpeg") }, DEMO, `easyscreenshotkit demo: The demo needs ffmpeg, and FFMPEG_PATH is ${value("ffmpeg")}, ${what(value("ffmpeg"), "ffmpeg")}. ${FIX.FFMPEG_PATH}`);
+    refused({ FFMPEG_PATH: value("ffmpeg") }, DEMO, `easyscreenshotkit demo: The demo needs ffmpeg, and FFMPEG_PATH is ${value("ffmpeg")}, ${what(value("ffmpeg"), "ffmpeg")}. ${fix || FIX.FFMPEG_PATH}`);
   };
   try {
     const cases = [
@@ -1115,12 +1116,18 @@ test("a browser or an ffmpeg that cannot be started stops a run before any work 
     // A program another process has open for writing, as one an update is
     // writing: the system does not start it (ETXTBSY), which Node throws
     // where it says most errors in an error event, and the run ended in
-    // "spawn ETXTBSY" and left the browser's profile in the temp folder.
+    // "spawn ETXTBSY" and left the browser's profile in the temp folder. It
+    // runs once it has been written, so the words say to run again then,
+    // where they said to point the variable at another program, or to
+    // install one, found on PATH.
     put("busy", bytes);
     const held = NAMES.map((program) => fs.openSync(at("busy", program), "r+"));
     const busy = spawnSync(at("busy", "chrome"));
     await t.test("a program another process has open for writing", { skip: !(busy.error && busy.error.code === "ETXTBSY") && "this system starts a program open for writing" }, () => {
-      named((program) => at("busy", program), () => "a program that another process has open for writing, which the system does not start while it is (text file busy)", { started: true });
+      const what = "a program that another process has open for writing, which the system does not start while it is (text file busy)";
+      const fix = "Run again once it has been written, as when an update has finished.";
+      named((program) => at("busy", program), () => what, { started: true, fix });
+      refused({ PATH: `${at("busy")}${path.delimiter}${base.PATH}` }, DEMO, `easyscreenshotkit demo: The demo needs ffmpeg, and ${at("busy", "ffmpeg")}, the ffmpeg on PATH, is ${what}. ${fix}`);
     });
     for (const fd of held) fs.closeSync(fd);
     // A temp folder this user cannot write in: the browser's profile cannot

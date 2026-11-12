@@ -444,6 +444,12 @@ function unrun(file, { stderr = "" } = {}, { kinds = true, kind = null } = {}) {
 // The signals a program ends by when it crashes.
 const CRASHES = ["SIGSEGV", "SIGBUS", "SIGILL", "SIGABRT", "SIGFPE"];
 
+// A program that another process has open for writing, as an update or a
+// copy does while it writes it, and what to do then: it runs once it has
+// been written, so another program is not what helps.
+const BUSY = "a program that another process has open for writing, which the system does not start while it is (text file busy)";
+const ONCE_WRITTEN = "Run again once it has been written, as when an update has finished.";
+
 // Why `file` did not start, as words that follow it after a comma: from
 // the error the system gave as it was started, `error`, or from how it
 // ended at once, its `code`, `signal` and what it printed, and what the
@@ -465,7 +471,7 @@ function explain(file, { error = null, code = 0, signal = null, stderr = "" } = 
     if (error.code === "ENOEXEC" || error.code === "EFTYPE") return whatItIs(kind) || "not a program this system can run";
     if (error.code === "EACCES" || error.code === "EPERM") return "a file this user may not run";
     // As while it is being written, by an update or a copy under way.
-    if (error.code === "ETXTBSY") return "a program that another process has open for writing, which the system does not start while it is (text file busy)";
+    if (error.code === "ETXTBSY") return BUSY;
     return `a program that cannot be started (${worded(error)})`;
   }
   const not = unrun(file, { stderr }, { kind }) || envTrouble(kind, code);
@@ -519,8 +525,11 @@ function orInstall(place, unset, fix) {
 // `what`, ending with how to point to one that works unless `fix` is
 // false: "FFMPEG_PATH is /opt/ffmpeg, a folder, not a program. Set it
 // ...", or "/usr/bin/ffmpeg, the ffmpeg on PATH, is a program that ...".
+// One that another process has open for writing ends with when to run
+// again: it was told to point to another program, or to install one.
 function told(place, what, { fix = true } = {}) {
-  const end = fix && place.fix ? ` ${place.fix}` : "";
+  const advice = what === BUSY ? ONCE_WRITTEN : place.fix;
+  const end = fix && advice ? ` ${advice}` : "";
   if (place.variable) {
     const at = bare(place.value) && place.file ? `, found on PATH at ${place.file}` : "";
     return `${place.variable} is ${place.value}${at}, ${what}.${end}`;
