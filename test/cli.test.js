@@ -1166,7 +1166,7 @@ test("a browser or an ffmpeg that cannot be started stops a run before any work 
     // A line over 200 characters is quoted by its first 200 when the words
     // that say what is wrong end in them, and by its last 200 otherwise, as
     // the shell names the launcher's path and the program's before them.
-    const WORDS = /error while loading shared libraries|cannot execute binary file|Exec format error/;
+    const WORDS = /error while loading shared libraries|cannot execute binary file|Exec format error|cannot execute: required file not found/;
     const quote = (line) => {
       if (line.length <= 200) return line;
       const found = WORDS.exec(line);
@@ -1201,13 +1201,20 @@ test("a browser or an ffmpeg that cannot be started stops a run before any work 
     }
     for (const [title, folder, skip] of [
       ["a program that needs a shared library the machine lacks", "libmiss", !libmiss && "true links no libc.so.6"],
+      // Built for another libc or bitness: bash 5.2 and later say "cannot
+      // execute: required file not found", which the run did not know, and
+      // it said the browser did not start and to try again.
+      ["a program whose loader the machine lacks", "noloader", !noloader && "true names no loader"],
       ["a program for another processor", "arm", armSkip],
       ["a program for another processor, in a folder about 100 characters deep", deep, armSkip],
     ]) {
-      await t.test(`a launcher like Google Chrome's of ${title}`, { skip: skip || (!fs.existsSync("/bin/bash") && "needs bash") }, () => {
+      await t.test(`a launcher like Google Chrome's of ${title}`, { skip: skip || (!fs.existsSync("/bin/bash") && "needs bash") }, (tt) => {
         const launcher = at(folder, "google-chrome");
         fs.writeFileSync(launcher, chromeLike, { mode: 0o755 });
         const line = spawnSync(launcher, { encoding: "utf8" }).stderr.trim().split("\n")[0];
+        // An older bash says "No such file or directory" of it, which names
+        // no cause, and the run says only that the browser did not start.
+        if (folder === "noloader" && !/cannot execute: required file not found$/.test(line)) return tt.skip("this bash says only that the program is not there, as bash before 5.2 does");
         let printed = quote(line);
         if (folder === deep) {
           assert.match(line, /^.{200,}: cannot execute binary file: Exec format error$/);

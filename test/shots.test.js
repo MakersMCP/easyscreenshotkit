@@ -2046,6 +2046,9 @@ test("a browser that did not start and said why is quoted, with what to do", { s
       // were quoted, the paths alone. Its last 200 are, and a line whose
       // words end in its first 200, as the sandbox's above, keeps those.
       [`${deepLauncher}/google-chrome: line 30: ${deepLauncher}/chrome: cannot execute binary file: Exec format error`, `it printed "...${`${deepLauncher}/google-chrome: line 30: ${deepLauncher}/chrome: cannot execute binary file: Exec format error`.slice(-200)}". A library the browser needs is missing, or it is made for another system: reinstall it with its package manager, or point CHROME_PATH at one that runs.`],
+      // What bash 5.2 and later print of a program whose loader the machine
+      // lacks, as one built for another libc, which the run did not know.
+      ["/usr/bin/google-chrome: line 45: /opt/google/chrome/chrome: cannot execute: required file not found", `it printed "/usr/bin/google-chrome: line 45: /opt/google/chrome/chrome: cannot execute: required file not found". A library the browser needs is missing, or it is made for another system: reinstall it with its package manager, or point CHROME_PATH at one that runs.`],
     ]) {
       fs.writeFileSync(fake, `#!/bin/sh\necho '[1:1:1112/050000.1:ERROR:dbus/bus.cc:408] Failed to connect to the bus: Could not parse server address' >&2\necho '${printed.replace(/'/g, "'\\''")}' >&2\nexit 1\n`, { mode: 0o755 });
       process.env.CHROME_PATH = fake;

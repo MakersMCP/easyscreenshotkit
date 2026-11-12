@@ -417,8 +417,11 @@ async function launch({ lang = "", args = [] } = {}) {
 // And what the loader or the shell printed of a program that a launcher
 // script starts, as google-chrome on PATH is one on Linux, that needs a
 // library the machine lacks or is made for another system: only a program
-// started itself is looked at more closely (see notRun()). Each was said to
-// be a browser that did not start, with the advice to try again.
+// started itself is looked at more closely (see notRun()). Of one whose
+// loader the machine lacks, as one built for another libc, bash 5.2 and
+// later say "cannot execute: required file not found"; an older bash, and
+// dash, say only that the file is not there, which names no cause. Each was
+// said to be a browser that did not start, with the advice to try again.
 const SAID = [
   [/Remote debugging pipe file descriptors are not open/, "A program that starts the browser has to hand it easyscreenshotkit's pipe, its file descriptors 3 and 4: point CHROME_PATH at the browser's own program, or at one that hands those on."],
   [/No usable sandbox|SUID sandbox helper binary was found, but is not configured correctly|setuid sandbox: failed to move to new namespaces|Failed to move to new namespace/, "Its sandbox could not start: on Linux a browser's own package sets the sandbox up, and a container has to let it start, as Docker does with --security-opt seccomp=unconfined."],
@@ -426,7 +429,7 @@ const SAID = [
   [/Too many open files in system/, "The system had as many files open as it may: run fewer jobs at once."],
   [/Too many open files/, "The browser had as many files open as it may: raise that limit, as ulimit -n does, and run again."],
   [/Resource temporarily unavailable/, "The system started no more processes or threads for this user: run fewer jobs at once, or raise that limit (ulimit -u, or a container's pids limit)."],
-  [/error while loading shared libraries|cannot execute binary file|Exec format error/, "A library the browser needs is missing, or it is made for another system: reinstall it with its package manager, or point CHROME_PATH at one that runs."],
+  [/error while loading shared libraries|cannot execute binary file|Exec format error|cannot execute: required file not found/, "A library the browser needs is missing, or it is made for another system: reinstall it with its package manager, or point CHROME_PATH at one that runs."],
 ];
 
 // The line of what the browser printed that holds words of SAID, quoted
