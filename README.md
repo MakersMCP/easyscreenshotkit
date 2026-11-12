@@ -70,11 +70,13 @@ The page plays in a browser window on a backdrop, with a pointer that moves the 
 ```
 easyscreenshotkit-demo-cal.com/
   demo.mp4     1920x1080, H.264, 30 frames a second
-  demo.gif     the same, small enough for a README (8 MB at most)
+  demo.gif     the same, made smaller for a README
   poster.png   the first page at rest, for the video's cover
   steps.json   every step with where it starts and ends, in seconds and in frames
   demo.yaml    the tour as steps, to edit and record again
 ```
+
+The GIF is made smaller, down to 480 px wide at 8 frames a second, until it is 8 MB at most. A long or busy demo's GIF can be larger even then, and the notes in steps.json say so.
 
 A demo saves in its folder the same way as the screenshots: an earlier demo there stays as it was until a new one has ended well, and a demo that fails or is stopped adds nothing. A demo that loses its browser or its tab while it records fails too, as does one whose browser stops answering, and so does one whose video or GIF comes out cut short, as on a full disk: some versions of ffmpeg report success for a file they could not finish, so each file is read back before it replaces the earlier one.
 

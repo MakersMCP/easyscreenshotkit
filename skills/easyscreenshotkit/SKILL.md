@@ -59,7 +59,7 @@ The actions are visit, scroll, click, type, key, hover and wait. A target is a C
 
 What comes back:
 
-1. `demo.mp4` (1920x1080, H.264), `demo.gif` (8 MB at most) and `poster.png`. Show the user the poster or the GIF before you build on the video.
+1. `demo.mp4` (1920x1080, H.264), `demo.gif` (made smaller, down to 480 px wide, until it is 8 MB at most; a long or busy demo's can be larger, and the notes say so) and `poster.png`. Show the user the poster or the GIF before you build on the video.
 2. `steps.json`: every step's start and end in seconds and in frames, and for a click the frame and the pixel where it lands. Time narration, captions, music cuts and click sounds from it instead of guessing.
 3. After a tour, `demo.yaml` holds the steps it took. To change the tour (other pages, a longer pause, one more click), edit that file and record again with `--steps`.
 
