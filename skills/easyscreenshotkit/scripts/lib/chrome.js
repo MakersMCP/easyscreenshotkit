@@ -864,8 +864,10 @@ function standIns(profile) {
       }
     }
   } catch (err) {
-    // Said below: the names do not lead to stand-ins.
-    noLinks = err.syscall === "symlink" && ["EPERM", "EOPNOTSUPP", "ENOSYS"].includes(err.code);
+    // Said below: the names do not lead to stand-ins. A disk that takes no
+    // links answers EPERM, EOPNOTSUPP or ENOSYS; Node calls EOPNOTSUPP
+    // ENOTSUP, as on Linux the two are one number.
+    noLinks = err.syscall === "symlink" && ["EPERM", "ENOTSUP", "ENOSYS"].includes(err.code);
   }
   if ([...HANDED_TO, ...ASKED].every((name) => programs.lookOnPath(name, { within: PATH }).file === path.join(dir, name))) {
     return { PATH, DBUS_SESSION_BUS_ADDRESS: `unix:path=${busPath(path.resolve(profile, "easyscreenshotkit-no-bus"))}` };

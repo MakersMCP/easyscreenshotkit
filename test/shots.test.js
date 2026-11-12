@@ -3917,9 +3917,10 @@ test("a temp folder on a disk that takes no symbolic links is named, and the bro
   process.env.CHROME_PATH = standIns(root)("plain");
   process.env.TMPDIR = tmp;
   try {
-    for (const code of ["EPERM", "EOPNOTSUPP", "ENOSYS"]) {
+    // As Node throws them on Linux, where it calls EOPNOTSUPP ENOTSUP.
+    for (const [code, errno] of [["EPERM", -1], ["ENOTSUP", -95], ["ENOSYS", -38]]) {
       fs.symlinkSync = (target, at) => {
-        throw Object.assign(new Error(`${code}: symlink '${target}' -> '${at}'`), { code, syscall: "symlink" });
+        throw Object.assign(new Error(`${code}: symlink '${target}' -> '${at}'`), { code, errno, syscall: "symlink" });
       };
       setTimeLimit(60_000);
       // A browser that did start is closed again, for the test to fail on.
