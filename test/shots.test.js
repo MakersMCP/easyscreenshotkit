@@ -2162,9 +2162,10 @@ test("a browser that starts gets up to a minute to answer, as the run's time all
 // (slow), one that answers every call but never opens a window
 // (windowless), and one that stops answering once it has opened a window,
 // as a browser stopped right then does (hushed). Each writes <mode>.json in
-// root, with its pid, its profile and what of its environment leads to the
-// desktop, and when root holds wayland-client.py, what that Wayland client
-// said when the stand-in started it, as the browser starts a program.
+// root, with its pid, its profile, what of its environment leads to the
+// desktop and the switches it was started with, and when root holds
+// wayland-client.py, what that Wayland client said when the stand-in started
+// it, as the browser starts a program.
 // Returns the wrapper that starts a mode, for CHROME_PATH.
 function standIns(root) {
   const script = path.join(root, "browser.js");
@@ -2177,7 +2178,7 @@ const profile = args.find((arg) => arg.startsWith("--user-data-dir=")).slice("--
 const env = Object.fromEntries(["DISPLAY", "WAYLAND_DISPLAY", "WAYLAND_SOCKET", "DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR", "PATH"].map((name) => [name, process.env[name] ?? null]));
 const client = path.join(${JSON.stringify(root)}, "wayland-client.py");
 const wayland = fs.existsSync(client) ? String(spawnSync("python3", ["-I", client], { encoding: "utf8", timeout: 10000 }).stdout).trim() : null;
-fs.writeFileSync(path.join(${JSON.stringify(root)}, mode + ".json"), JSON.stringify({ pid: process.pid, profile, env, wayland }));
+fs.writeFileSync(path.join(${JSON.stringify(root)}, mode + ".json"), JSON.stringify({ pid: process.pid, profile, env, wayland, args }));
 const output = fs.createWriteStream(null, { fd: 4 });
 output.on("error", () => {});
 const answer = (message) => output.write(JSON.stringify(message) + "\\0");
@@ -2237,6 +2238,29 @@ function endStandIns(root, modes) {
     }
   }
 }
+
+// Chrome 157 turns HTTPS-First on by itself and then refuses a plain http
+// address of a site on the public internet that answers on no https: the
+// run, or a hosted job, failed with "net::ERR_BLOCKED_BY_CLIENT". The browser
+// is started with that turn-on left off, as Chrome 155 has it.
+test("the browser is started with HTTPS-First's own turn-on left off", { skip: process.platform === "win32" && "the stand-in browser is a shell script", timeout: 60_000 }, async () => {
+  const root = tempDir();
+  const saved = process.env.CHROME_PATH;
+  process.env.CHROME_PATH = standIns(root)("plain");
+  let chrome = null;
+  try {
+    setTimeLimit(60_000);
+    chrome = await launch();
+    const { args } = JSON.parse(fs.readFileSync(path.join(root, "plain.json"), "utf8"));
+    assert.deepEqual(args.filter((arg) => arg.startsWith("--disable-features=")), ["--disable-features=HttpsFirstBalancedModeAutoEnable"]);
+  } finally {
+    if (chrome) await chrome.close();
+    endStandIns(root, ["plain"]);
+    if (saved === undefined) delete process.env.CHROME_PATH;
+    else process.env.CHROME_PATH = saved;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 // The start of a browser, with the run's time spent, as the demo's browser
 // for its frames starts after a long recording. One that does not answer,

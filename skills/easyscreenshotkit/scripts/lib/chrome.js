@@ -548,6 +548,11 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
         "--force-color-profile=srgb",
         "--use-mock-keychain",
         "--password-store=basic",
+        // Chrome 157 turns HTTPS-First on by itself and then refuses a plain
+        // http address of a site on the public internet that answers on no
+        // https (net::ERR_BLOCKED_BY_CLIENT): the run opens the address it
+        // is given. A site that has https is still taken over https.
+        "--disable-features=HttpsFirstBalancedModeAutoEnable",
         ...(lang ? [`--lang=${lang}`] : []),
         ...args,
         // Chrome refuses to start as root without it (a container, a CI box).
