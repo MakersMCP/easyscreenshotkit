@@ -2096,7 +2096,10 @@ test("a demo goes on when an input event is left unanswered as the page moves on
   const root = tempDir();
   const relay = relayBrowser(root, findChrome());
   const steps = path.join(root, "steps.yaml");
-  fs.writeFileSync(steps, 'steps:\n  - visit: /wheel\n  - visit: /\n  - click: "text=Pricing"\n    zoom: false\n  - wait: 1\n');
+  // The page the first visit moved on to is shown a second: with the next
+  // visit at once it was on camera for a millisecond or none, and steps.json,
+  // which lists the pages a frame shows, listed it or not by chance.
+  fs.writeFileSync(steps, 'steps:\n  - visit: /wheel\n  - wait: 1\n  - visit: /\n  - click: "text=Pricing"\n    zoom: false\n  - wait: 1\n');
   try {
     const run = await new Promise((resolve) => {
       const child = spawn(process.execPath, [CLI, "demo", origin, "--steps", steps, "--no-gif", "--json", "--out", path.join(root, "demo")], { env: { ...process.env, CHROME_PATH: relay.browser } });
@@ -2110,7 +2113,7 @@ test("a demo goes on when an input event is left unanswered as the page moves on
     assert.deepEqual(relay.dropped(), [`Input.dispatchMouseEvent mouseWheel as the page moved on to ${origin}/next`, `Input.dispatchMouseEvent mousePressed as the page moved on to ${origin}/pricing`]);
     const { pages, steps: done } = JSON.parse(run.stdout);
     assert.deepEqual(pages.map((p) => new URL(p.url).pathname), ["/next", "/", "/pricing"]);
-    assert.equal(done[2].opened, `${origin}/pricing`);
+    assert.equal(done[3].opened, `${origin}/pricing`);
   } finally {
     server.close();
     fs.rmSync(root, { recursive: true, force: true });
