@@ -2011,6 +2011,7 @@ test("a browser that did not start and said why is quoted, with what to do", { s
   const sandbox = "Its sandbox could not start: on Linux a browser's own package sets the sandbox up, and a container has to let it start, as Docker does with --security-opt seccomp=unconfined.";
   const threads = "[3:3:1112/050000.1:ERROR:base/threading/platform_thread_posix.cc:162] pthread_create: Resource temporarily unavailable (11)";
   const short = "The system started no more processes or threads for this user: run fewer jobs at once, or raise that limit (ulimit -u, or a container's pids limit).";
+  const deepLauncher = `/home/ada/${"browsers/".repeat(9)}chrome`;
   try {
     for (const [printed, said] of [
       ["[123:123:1112/050000.123456:ERROR:chrome/app/chrome_main_delegate.cc:1171] Remote debugging pipe file descriptors are not open.", `it printed "Remote debugging pipe file descriptors are not open.". A program that starts the browser has to hand it easyscreenshotkit's pipe, its file descriptors 3 and 4: point CHROME_PATH at the browser's own program, or at one that hands those on.`],
@@ -2040,6 +2041,11 @@ test("a browser that did not start and said why is quoted, with what to do", { s
       // program started itself was looked at, and the run said to try again.
       ["/opt/google/chrome/chrome: error while loading shared libraries: libnss3.so: cannot open shared object file: No such file or directory", `it printed "/opt/google/chrome/chrome: error while loading shared libraries: libnss3.so: cannot open shared object file: No such file or directory". A library the browser needs is missing, or it is made for another system: reinstall it with its package manager, or point CHROME_PATH at one that runs.`],
       ["/usr/bin/google-chrome: line 45: /opt/google/chrome/chrome: cannot execute binary file: Exec format error", `it printed "/usr/bin/google-chrome: line 45: /opt/google/chrome/chrome: cannot execute binary file: Exec format error". A library the browser needs is missing, or it is made for another system: reinstall it with its package manager, or point CHROME_PATH at one that runs.`],
+      // The same of a launcher in a deep folder: the line names both paths
+      // in more than 200 characters before its words, and its first 200
+      // were quoted, the paths alone. Its last 200 are, and a line whose
+      // words end in its first 200, as the sandbox's above, keeps those.
+      [`${deepLauncher}/google-chrome: line 30: ${deepLauncher}/chrome: cannot execute binary file: Exec format error`, `it printed "...${`${deepLauncher}/google-chrome: line 30: ${deepLauncher}/chrome: cannot execute binary file: Exec format error`.slice(-200)}". A library the browser needs is missing, or it is made for another system: reinstall it with its package manager, or point CHROME_PATH at one that runs.`],
     ]) {
       fs.writeFileSync(fake, `#!/bin/sh\necho '[1:1:1112/050000.1:ERROR:dbus/bus.cc:408] Failed to connect to the bus: Could not parse server address' >&2\necho '${printed.replace(/'/g, "'\\''")}' >&2\nexit 1\n`, { mode: 0o755 });
       process.env.CHROME_PATH = fake;

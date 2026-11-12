@@ -434,14 +434,20 @@ const SAID = [
 // characters and its control characters written out, and what to do: "" for
 // one that printed none. That place can be cut short too, as what is kept of
 // what the browser printed starts in the middle of a line when it printed
-// much, as a browser short of threads does from each of its processes.
+// much, as a browser short of threads does from each of its processes. A
+// line over 200 characters keeps its first 200 when the words of SAID end in
+// them, and its last 200 otherwise: the shell's line of a program that a
+// launcher script in a deep folder starts names both their paths before
+// its words, which the first 200 left out.
 function saidWhy(output) {
   const lines = String(output || "").split("\n").map((line) => line.trim()).filter(Boolean);
   for (const [words, fix] of SAID) {
     const line = lines.find((one) => words.test(one));
     if (!line) continue;
     const bare = line.replace(/^\[?[^\]\s]*\]\s*/, "");
-    const cut = bare.length > 200 ? `${bare.slice(0, 200)}...` : bare;
+    const found = words.exec(bare);
+    const end = found ? found.index + found[0].length : 0;
+    const cut = bare.length <= 200 ? bare : end <= 200 ? `${bare.slice(0, 200)}...` : `...${bare.slice(-200)}`;
     return `it printed "${cut.replace(/[\u0000-\u001f\u007f-\u009f]/g, (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, "0")}`)}". ${fix}`;
   }
   return "";

@@ -1163,14 +1163,22 @@ test("a browser or an ffmpeg that cannot be started stops a run before any work 
       });
     })();
     const advice = "A library the browser needs is missing, or it is made for another system: reinstall it with its package manager, or point CHROME_PATH at one that runs.";
+    // A line over 200 characters is quoted by its first 200 when the words
+    // that say what is wrong end in them, and by its last 200 otherwise, as
+    // the shell names the launcher's path and the program's before them.
+    const WORDS = /error while loading shared libraries|cannot execute binary file|Exec format error/;
+    const quote = (line) => {
+      if (line.length <= 200) return line;
+      const found = WORDS.exec(line);
+      return found.index + found[0].length <= 200 ? `${line.slice(0, 200)}...` : `...${line.slice(-200)}`;
+    };
     for (const [folder, skip] of [["libmiss", !libmiss && "true links no libc.so.6"], ["arm", (!other && "needs an x86-64 or ARM64 machine") || (emulated && "this system hands a program for another processor to an emulator")]]) {
       await t.test(`a launcher script of ${folder === "arm" ? "a program for another processor" : "a program that needs a shared library the machine lacks"}`, { skip }, () => {
         for (const shell of ["/bin/sh", "/bin/bash"].filter((file) => fs.existsSync(file))) {
           const launcher = at(`launch-${folder}-${path.basename(shell)}`);
           fs.writeFileSync(launcher, `#!${shell}\nexec ${at(folder, "chrome")} "$@"\n`, { mode: 0o755 });
           const line = spawnSync(launcher, { encoding: "utf8" }).stderr.trim().split("\n")[0];
-          const cut = line.length > 200 ? `${line.slice(0, 200)}...` : line;
-          refused({ CHROME_PATH: launcher }, SHOTS, `easyscreenshotkit: ${path.basename(launcher)} did not start: it printed "${cut}". ${advice}`);
+          refused({ CHROME_PATH: launcher }, SHOTS, `easyscreenshotkit: ${path.basename(launcher)} did not start: it printed "${quote(line)}". ${advice}`);
         }
       });
     }
@@ -1181,12 +1189,31 @@ test("a browser or an ffmpeg that cannot be started stops a run before any work 
     // own name, so the loader names the launcher. The run had let go of the
     // pipe by then and said the browser did not start and to try again.
     const chromeLike = '#!/bin/bash\nexport CHROME_WRAPPER="`readlink -f "$0"`"\nHERE="`dirname "$CHROME_WRAPPER"`"\nexec < /dev/null\nexec > >(exec cat)\nexec 2> >(exec cat >&2)\nexec -a "$0" "$HERE/chrome" "$@"\n';
-    for (const [folder, skip] of [["libmiss", !libmiss && "true links no libc.so.6"], ["arm", (!other && "needs an x86-64 or ARM64 machine") || (emulated && "this system hands a program for another processor to an emulator")]]) {
-      await t.test(`a launcher like Google Chrome's of ${folder === "arm" ? "a program for another processor" : "a program that needs a shared library the machine lacks"}`, { skip: skip || (!fs.existsSync("/bin/bash") && "needs bash") }, () => {
+    const armSkip = (!other && "needs an x86-64 or ARM64 machine") || (emulated && "this system hands a program for another processor to an emulator");
+    // A launcher in a folder about 100 characters deeper: the shell's line
+    // names its path and the program's in more than 200 characters before
+    // the words that say what is wrong, and the run quoted only its first
+    // 200, the two paths.
+    const deep = path.join("a-folder-of-launchers-whose-path-is-long-enough-to-put", "the-shells-words-past-the-first-200-characters", "arm");
+    if (other) {
+      fs.mkdirSync(at(deep), { recursive: true });
+      fs.copyFileSync(at("arm", "chrome"), at(deep, "chrome"));
+    }
+    for (const [title, folder, skip] of [
+      ["a program that needs a shared library the machine lacks", "libmiss", !libmiss && "true links no libc.so.6"],
+      ["a program for another processor", "arm", armSkip],
+      ["a program for another processor, in a folder about 100 characters deep", deep, armSkip],
+    ]) {
+      await t.test(`a launcher like Google Chrome's of ${title}`, { skip: skip || (!fs.existsSync("/bin/bash") && "needs bash") }, () => {
         const launcher = at(folder, "google-chrome");
         fs.writeFileSync(launcher, chromeLike, { mode: 0o755 });
         const line = spawnSync(launcher, { encoding: "utf8" }).stderr.trim().split("\n")[0];
-        const said = folder === "libmiss" ? `CHROME_PATH is ${launcher}, a program that needs the shared library libq.so.6, which is not on this machine. ${FIX.CHROME_PATH}` : `it printed "${line.length > 200 ? `${line.slice(0, 200)}...` : line}". ${advice}`;
+        let printed = quote(line);
+        if (folder === deep) {
+          assert.match(line, /^.{200,}: cannot execute binary file: Exec format error$/);
+          printed = `...${line.slice(-200)}`;
+        }
+        const said = folder === "libmiss" ? `CHROME_PATH is ${launcher}, a program that needs the shared library libq.so.6, which is not on this machine. ${FIX.CHROME_PATH}` : `it printed "${printed}". ${advice}`;
         for (let i = 0; i < 3; i++) refused({ CHROME_PATH: launcher }, SHOTS, `easyscreenshotkit: google-chrome did not start: ${said}`);
       });
     }
