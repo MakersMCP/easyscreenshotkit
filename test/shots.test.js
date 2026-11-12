@@ -2029,6 +2029,11 @@ test("a browser that did not start and said why is quoted, with what to do", { s
       // last 8,000 characters, starts 12 characters into the line, and the
       // place in Chrome's code it starts with, cut short, was quoted too.
       [`${threads}\n${"y".repeat(8010 - threads.length)}`, `it printed "pthread_create: Resource temporarily unavailable (11)". ${short}`],
+      // And with far more after it, as a browser short of threads prints of
+      // its network service, which it starts again and again: its last
+      // 8,000 characters held none of the line, and the run said only that
+      // it did not start.
+      [`${threads}\n${"[1:1:1112/050000.1:ERROR:content/browser/network_service_instance_impl.cc:653] Network service crashed or was terminated, restarting service.\n".repeat(200)}`, `it printed "pthread_create: Resource temporarily unavailable (11)". ${short}`],
       // What the loader and the shell print of a program that a launcher
       // script starts, as google-chrome on PATH does on Linux, that needs a
       // library the machine lacks or is made for another system: only a

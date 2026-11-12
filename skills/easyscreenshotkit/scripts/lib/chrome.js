@@ -573,10 +573,15 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
   let lost = false;
   let stalled = false;
   let closing = false;
-  // What it said last, and the error a program that could not be started
-  // at all gave: what is wrong with one that did not start.
+  // What it said first and last, and the error a program that could not be
+  // started at all gave: what is wrong with one that did not start. A
+  // browser short of threads says so in its first lines and can then print
+  // many more, of a service it starts again and again.
   let failed = null;
+  let first = "";
   let said = "";
+  let length = 0;
+  const printed = () => (length <= 8_000 ? said : `${first}\n${said}`);
   child.on("exit", () => {
     exited = true;
     if (!closing) lost = true;
@@ -586,7 +591,13 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
     failed = failed || err;
   });
   // Read on, so the browser is never held writing to it.
-  if (child.stderr) child.stderr.on("data", (d) => (said = (said + d).slice(-8_000)));
+  if (child.stderr) {
+    child.stderr.on("data", (d) => {
+      length += d.length;
+      if (first.length < 8_000) first = (first + d).slice(0, 8_000);
+      said = (said + d).slice(-8_000);
+    });
+  }
   // lock: its lock folder, read once it answers (see lockFolderOf).
   const started = { child, profile, lock: "", fetching };
   open.add(started);
@@ -725,7 +736,7 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
   // A program the system could not start, or one that ended before it
   // answered as one the system cannot run does (see programs.js), and
   // what is wrong with it.
-  const unstarted = failed ? whyUnstarted(binary, failed) : exited && !answered ? notRun(binary, said) : "";
+  const unstarted = failed ? whyUnstarted(binary, failed) : exited && !answered ? notRun(binary, printed()) : "";
   // A browser that ends before it answers, as Chrome does in a temp folder
   // whose path leaves no room for its lock's socket, leaves its lock folder
   // there, empty and with no link to it in the profile, and one of its
@@ -735,7 +746,7 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
   await close();
   await sleep(300);
   removeProfile(profile);
-  return { own: inProfile, tooDeep: removeStrayLocks(locksBefore) || deep, silent, refused, unstarted, said: exited && !answered ? said : "" };
+  return { own: inProfile, tooDeep: removeStrayLocks(locksBefore) || deep, silent, refused, unstarted, said: exited && !answered ? printed() : "" };
 }
 
 // Removes a browser's profile, trying again while a helper of the browser
