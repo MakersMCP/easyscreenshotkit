@@ -3374,6 +3374,70 @@ test("an input event left unanswered as the page moves on does not hold the run"
     assert.deepEqual(relay.dropped(), [`Input.dispatchMouseEvent mouseWheel as the page moved on to ${origin}/next`]);
     const report = JSON.parse(run.stdout);
     assert.deepEqual(report.pages.map((p) => p.shots.map((shot) => shot.size)), [["desktop", "full"]]);
+    // The page it moved on to is the one taken, and it is named so: it was
+    // saved as the page asked for, under its title and heading.
+    const [taken] = report.pages;
+    assert.deepEqual([taken.url, taken.title, taken.heading, taken.shots[0].headings.map((h) => h.text)], [`${origin}/next`, "Next | Acme", "Next", ["Next"]]);
+    assert.ok(taken.notes.includes(`opened ${origin}/, which moved on to ${origin}/next once it had loaded`), taken.notes.join("; "));
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A page that moves on by itself to another document once it has loaded,
+// as one that sends the visitor on to a welcome page a second later does,
+// was saved under its own address, title and reason, with no note, while
+// its pictures showed the page it moved to. It is taken as the page it moved
+// to, by that page's own address and words, with a note; a page the run
+// picked itself is judged by where it moved to, as one that redirects is;
+// and one that reloads itself every few seconds is taken as it stands once
+// it has done so twice.
+test("a page that moves on once it has loaded is taken as the page it moved to, and named so", { skip: noBrowser, timeout: 500_000 }, async () => {
+  const html = { "Content-Type": "text/html; charset=utf-8" };
+  const later = (to) => `<script>addEventListener("load", () => setTimeout(() => location.replace("${to}"), 1000));</script>`;
+  const menu = '<header><nav><a href="/pricing">Pricing</a> <a href="/features">Features</a> <a href="/offer">Offer</a></nav></header>';
+  const tall = (rgb) => `<div style="height:1600px;background:rgb(${rgb})"></div>`;
+  const { server, origin } = await serve((req, res) => {
+    if (req.url === "/") return res.writeHead(200, html).end(page("Acme | Home", `${menu}<h1>Acme home</h1>${tall("0,170,0")}${later("/welcome")}`));
+    if (req.url === "/welcome") return res.writeHead(200, html).end(page("Welcome | Acme", `${menu}<h1>Welcome page</h1>${tall("170,0,0")}`));
+    if (req.url === "/pricing") return res.writeHead(200, html).end(page("Pricing | Acme", `${menu}<h1>Pricing</h1>${tall("0,0,170")}`));
+    if (req.url === "/features") return res.writeHead(200, html).end(page("Features | Acme", `${menu}<h1>Features</h1>${tall("0,170,170")}${later("/welcome")}`));
+    if (req.url === "/offer") return res.writeHead(200, html).end(page("Offer | Acme", `${menu}<h1>Offer</h1>${tall("170,170,0")}${later("/login")}`));
+    if (req.url === "/login") return res.writeHead(200, html).end(page("Log in | Acme", `<h1>Log in</h1><form><input name="email"><input type="password" name="password"></form>`));
+    if (req.url === "/live") return res.writeHead(200, html).end(page("Live | Acme", `<h1>Live scores</h1>${tall("170,0,170")}`, { head: '<meta http-equiv="refresh" content="2">' }));
+    if (req.url === "/at-once") return res.writeHead(200, html).end(page("Acme | Start", `<h1>Start</h1>${tall("0,170,0")}<script>addEventListener("load", () => location.replace("/welcome"));</script>`));
+    res.writeHead(404).end("not found");
+  });
+  const root = tempDir();
+  try {
+    const dir = path.join(root, "shots");
+    const { manifest } = await takeShots(`${origin}/`, { dir, pages: 4, sizes: "desktop", timeLimit: 400_000 });
+    const [home, ...rest] = manifest.pages;
+    assert.deepEqual([home.url, home.title, home.heading, home.why], [`${origin}/welcome`, "Welcome | Acme", "Welcome page", "the home page"]);
+    assert.ok(home.notes.includes(`opened ${origin}/, which moved on to ${origin}/welcome once it had loaded`), home.notes.join("; "));
+    const file = fs.readFileSync(path.join(dir, home.shots[0].file));
+    assert.equal(pngText(file).Source, `${origin}/welcome`);
+    assert.ok(near(css(readPng(file), 2, 800, 630), [170, 0, 0]), "the picture shows the page it moved to");
+    assert.deepEqual(rest.map((p) => new URL(p.url).pathname), ["/pricing"]);
+    const reasons = Object.fromEntries(manifest.skipped.map((s) => [new URL(s.url).pathname, s.reason]));
+    assert.equal(reasons["/features"], "redirected to the home page");
+    assert.equal(reasons["/offer"], "redirected to a sign-in page");
+    // One that moves on the moment it has loaded, before the run has read
+    // where it is: it was named by the address it was opened at.
+    const once = path.join(root, "once");
+    const moved = await takeShots(`${origin}/at-once`, { dir: once, pages: 1, sizes: "desktop", timeLimit: 200_000 });
+    const [welcome] = moved.manifest.pages;
+    assert.deepEqual([welcome.url, welcome.title, welcome.heading], [`${origin}/welcome`, "Welcome | Acme", "Welcome page"]);
+    assert.ok(welcome.notes.includes(`opened ${origin}/at-once, which moved on to ${origin}/welcome once it had loaded`), welcome.notes.join("; "));
+    assert.ok(near(css(readPng(fs.readFileSync(path.join(once, welcome.shots[0].file))), 2, 800, 630), [170, 0, 0]));
+    // A page that reloads itself every two seconds is taken as it stands,
+    // under its own address, with no note of a move.
+    const live = path.join(root, "live");
+    const again = await takeShots(`${origin}/live`, { dir: live, pages: 1, sizes: "desktop", timeLimit: 200_000 });
+    const [shown] = again.manifest.pages;
+    assert.deepEqual([shown.url, shown.title, shown.heading], [`${origin}/live`, "Live | Acme", "Live scores"]);
+    assert.ok(!shown.notes.some((note) => /moved on|landed on/.test(note)), shown.notes.join("; "));
   } finally {
     server.close();
     fs.rmSync(root, { recursive: true, force: true });

@@ -711,6 +711,26 @@ function waitNotes(result) {
 // rejectReason); links: read the page's links too, after a walk down it
 // so lazy parts are there; routes: read its links as it stands, for the
 // #routes in its menu.
+//
+// A page can move on by itself to another document once it has loaded, as
+// one that sends the visitor on to a welcome page a second later does, or
+// one that moves on as the run turns the wheel: navigate() follows a page
+// only to its load event. Such a page was saved under its own address, name
+// and reason, with no note, while the pictures showed the page it moved to,
+// or a mix of the two. So the document taken is known by its loader, the one
+// that fired the page's first load event, and the page's commits are heard
+// from before it is opened: a page that commits another document after that,
+// before navigate() has returned, as one that moves on the moment it has
+// loaded does, before it is taken or while it is, is waited for again and
+// taken as the page it moved to, by that page's own address, title and
+// heading, which keep() names in a note (movedFrom: where it was). A page
+// the run picked itself is then judged by where it moved to, as one that
+// redirects is, so a second address for a page already taken is left out. A
+// page that moves on again is followed MOVES times; after that it is taken
+// as it stands, as one that reloads itself every few seconds is, its address
+// and its words read again as it is taken.
+const MOVES = 2;
+
 async function visit(chrome, page, group, theme, ctx, { check = null, links = false, routes = false } = {}) {
   const tab = await openTab(chrome, group.device, { lang: ctx.lang, theme, reducedMotion: ctx.reducedMotion });
   try {
@@ -732,134 +752,206 @@ async function visit(chrome, page, group, theme, ctx, { check = null, links = fa
     tab.on("Page.downloadWillBegin", (p) => {
       if (p.url && !downloads.includes(p.url)) downloads.push(p.url);
     });
-    const nav = await navigate(tab, page.url);
-    // A bot check, an error or a redirect to a sign-in page is known at once:
-    // no need to wait for it to settle.
-    const glance = await readInfo(tab);
-    if (check) {
-      const reason = rejectAtOnce({ asked: page.url, nav, info: glance }, check);
-      if (reason) return { rejected: reason, nav, info: glance };
-    } else if (glance.challenge || nav.status >= 400) {
-      return { nav, info: glance, loaded: false, links: [], shots: [], cleaned: { hidden: 0, signs: 0, unlocked: false, badSelectors: [] } };
-    }
-    const opened = Date.now();
-    let view = await waitForView(tab, nav, page.url, page.busy, opened);
-    let loaded = await waitForContent(tab, 20_000);
-    await settle(tab, 6_000);
-    const info = await readInfo(tab);
-    if (check) {
-      const reason = rejectReason({ asked: page.url, nav, info, loaded }, check);
-      if (reason) return { rejected: reason, nav, info };
-    }
-    const full = group.shots.some((shot) => shot.full);
-    // Lazy parts render, footers load, and boxes that come up on scrolling
-    // come up before the clean-up. A first screen alone needs no walk.
-    if (full || links) await walk(tab, MAX_HEIGHT);
-    else await scrollTo(tab, 0);
-    const found = links || routes ? await readLinks(tab) : null;
-    const m0 = await metrics(tab);
-    // With --no-clean only what --hide names is hidden.
-    const tidy = () => (ctx.clean || ctx.hide.length ? clean(tab, { hide: ctx.hide, viewport: { width: m0.width, height: m0.viewportHeight }, auto: ctx.clean }) : { hidden: 0, signs: 0, unlocked: false, badSelectors: [] });
-    // Whether a view whose wait ended before it was ready shows a loading
-    // sign by then, read before the clean-up: that hides a fixed box that
-    // says Loading as it hides any other.
-    const signAfterWait = async () => view !== "quiet" && (await showsLoadingSign(tab));
-    let sign = await signAfterWait();
-    let cleaned = await tidy();
-    // The loading signs among the boxes the clean-up hid after the sign was
-    // last read: a sign gone since may only be hidden. A box that showed
-    // none, a chat bubble say, says nothing of it, and nor does one hidden
-    // before.
-    let signsHidden = cleaned.signs;
-    await waitForFonts(tab);
-    await scrollTo(tab, 0);
-    await sleep(400);
-    // An app can go to another route of its own after the waits, as one
-    // whose sign-in check answers late does: the address is read again, and
-    // the view it went to is waited for within the same wait.
-    let moved = false;
-    if (routeOf(page.url) || routeOf(nav.url)) {
-      const before = viewKey(nav.url);
-      nav.url = await currentUrl(tab, nav.url);
-      moved = viewKey(nav.url) !== before;
-    }
-    if (moved) {
-      view = await waitForView(tab, nav, page.url, page.busy, opened);
-      await settle(tab, 6_000);
-      sign = await signAfterWait();
-      // The first clean-up's boxes stay hidden, and this one counts only
-      // what came since. The report adds the two up.
-      const again = await tidy();
-      signsHidden = again.signs;
-      cleaned = { ...again, hidden: cleaned.hidden + again.hidden, unlocked: cleaned.unlocked || again.unlocked };
-      await waitForFonts(tab);
-      await scrollTo(tab, 0);
-      await sleep(400);
-    }
-    // A page whose waits ended before it was ready, at their limit or as the
-    // run's time ran short, may have had its data and drawn its content
-    // since. It counts as taken before them when it showed a loading sign
-    // as they ended and that has not gone by itself (with a box that showed
-    // one hidden since, it may only be hidden), or when a request is still
-    // out and, as it is taken, it is a bare loading screen or looks empty.
-    // One that looks drawn with a request still out is only said to have
-    // one. Its title and heading are read again, as it is taken.
-    let short = false;
-    let busy = false;
-    let open = "";
-    if (view !== "quiet" || loaded === null || moved) {
-      if (loaded === null && (await showsContent(tab).catch(() => false))) loaded = true;
-      if (view !== "quiet") {
-        const out = !networkQuiet(tab, 0);
-        if ((sign && (signsHidden > 0 || (await showsLoadingSign(tab)))) || (out && (loaded !== true || (await looksEmpty(tab))))) {
-          short = view === "short";
-          busy = view === "busy";
-        } else if (out) open = view;
-      }
-      const now = await readInfo(tab);
-      Object.assign(info, { title: now.title, heading: now.heading, viewHeading: now.viewHeading });
-    }
-    const shots = [];
-    // One capture of the screen serves every size taken at the device's own
-    // scale: the phone's first screen and the narrow one for a manifest.
-    let screen = null;
-    for (const shot of group.shots) {
-      if (shot.pwa && theme !== ctx.pwaTheme) continue;
-      if (timeLeft() < (shots.length ? ctx.captureMs || CAPTURE_MS : FIRST_CAPTURE_MS)) break;
-      const m = await metrics(tab);
-      // A phone page wider than the screen (no viewport tag, or content that
-      // overflows) is shown zoomed out, as a phone shows it: the first screen
-      // is the screen itself, and a whole page is fitted to its width.
-      const fit = Math.min(1, group.device.width / m.visualWidth);
-      if (!shot.full) {
-        const scale = shot.scale || group.device.scale;
-        let png;
-        if (scale === group.device.scale) {
-          if (!screen) {
-            await clearHover(tab, m.width, m.viewportHeight);
-            screen = Buffer.from((await captureScreen(tab)).data || "", "base64");
-          }
-          png = screen;
-        } else {
-          // The screen at another scale: 1920x1080 from the 2x desktop.
-          await clearHover(tab, m.width, m.viewportHeight);
-          const data = await capture(tab, 0, m.scrollY, group.device.width, group.device.height, scale / group.device.scale);
-          png = Buffer.from(data.data || "", "base64");
+    // The document the main frame shows, by its loader, and the address of
+    // each it committed; the one taken (doc), at first the one that fired
+    // the first load event.
+    let current = "";
+    let doc = "";
+    const urls = new Map();
+    tab.on("Page.frameNavigated", ({ frame }) => {
+      if (!frame || frame.parentId || !frame.loaderId) return;
+      current = frame.loaderId;
+      urls.set(current, `${frame.url}${frame.urlFragment || ""}`);
+    });
+    tab.on("Page.loadEventFired", () => (doc = doc || current));
+    let nav = await navigate(tab, page.url);
+    doc = doc || current;
+    let movedFrom = "";
+    for (let round = 0; ; round++) {
+      const last = round >= MOVES;
+      const taken = doc;
+      const moved = () => !last && current !== taken;
+      const got = await takeOpen(tab, nav, page, group, theme, ctx, { check, links, routes, moved });
+      if (got !== MOVED) {
+        // The last round takes the page as it stands: one that moved on
+        // meanwhile is named as it is now.
+        if (last && current !== taken && got.shots) {
+          got.nav.url = await currentUrl(tab, got.nav.url);
+          const now = await readInfo(tab);
+          Object.assign(got.info, { title: now.title, heading: now.heading, viewHeading: now.viewHeading, description: now.description, lang: now.lang, textHash: now.textHash });
         }
-        if (!pngSize(png)) continue;
-        const headings = await evaluate(tab, `${READ_HEADINGS}(${scale * fit})`, []);
-        shots.push({ size: shot.size, full: false, pwa: shot.pwa, png, scale, cssWidth: m.width, cssHeight: m.viewportHeight, headings });
-      } else {
-        const whole = await capturePage(tab, { scale: (shot.scale / group.device.scale) * fit, maxHeight: MAX_HEIGHT });
-        if (!whole || !pngSize(whole.png)) continue;
-        const sections = await evaluate(tab, `${READ_SECTIONS}(${shot.scale * fit}, ${whole.height})`, []);
-        shots.push({ size: shot.size, full: true, png: whole.png, scale: shot.scale, cssWidth: m.width, cssHeight: whole.height, truncated: whole.truncated, sections });
+        return { ...got, barred, downloads, ...(movedFrom && movedOn(movedFrom, got.nav.url) ? { movedFrom } : {}) };
       }
+      movedFrom = movedFrom || urls.get(taken) || nav.url;
+      // The page it moved to is a new one: none of the waits, the clean-up
+      // or what was drawn of the one before holds for it. It is taken by
+      // the document there is as it is waited for: one it moves on to in
+      // turn makes another round.
+      tab.stopped = null;
+      resetPictureWait(tab);
+      doc = current;
+      nav = await movedTo(tab, nav.url);
     }
-    return { nav, info, loaded, busy, open, waited: page.busy ? BUSY_WAIT_MS : VIEW_WAIT_MS, short, links: found, shots, cleaned, barred, downloads };
   } finally {
     await closeTab(chrome, tab);
   }
+}
+
+// What takeOpen() gives for a page that moved on to another document before
+// it was taken, or while it was.
+const MOVED = Symbol("moved");
+
+// The page a visit's page moved on to once it had loaded, waited for as
+// navigate() waits for a page: until it has loaded, 20 s at most and never
+// into the last minute of the run, and read as navigate() reads one, its
+// address and the HTTP status it came with.
+async function movedTo(tab, fallback) {
+  const until = Date.now() + Math.max(1_000, Math.min(20_000, timeLeft() - 60_000));
+  while (Date.now() < until && !(tab.closed && tab.closed())) {
+    const { result } = await tab.send("Runtime.evaluate", { expression: "document.readyState", returnByValue: true }, 5_000).catch(() => ({ result: {} }));
+    if (result && result.value === "complete") break;
+    await sleep(250);
+  }
+  const url = await currentUrl(tab, fallback);
+  const { result } = await tab.send("Runtime.evaluate", { expression: "(performance.getEntriesByType('navigation')[0] || {}).responseStatus || 0", returnByValue: true }, 5_000).catch(() => ({ result: {} }));
+  return { url, status: Number(result && result.value) || 0 };
+}
+
+// The part of a visit once its page is open: the waits, the clean-up and the
+// captures, and what decides whether a page the run picked is kept.
+// moved(): whether the page has committed another document since this part
+// began, as it is asked before each step whose outcome the page it moved to
+// would change: then MOVED, and the visit starts this part over.
+async function takeOpen(tab, nav, page, group, theme, ctx, { check, links, routes, moved }) {
+  // A bot check, an error or a redirect to a sign-in page is known at once:
+  // no need to wait for it to settle.
+  const glance = await readInfo(tab);
+  if (moved()) return MOVED;
+  if (check) {
+    const reason = rejectAtOnce({ asked: page.url, nav, info: glance }, check);
+    if (reason) return { rejected: reason, nav, info: glance };
+  } else if (glance.challenge || nav.status >= 400) {
+    return { nav, info: glance, loaded: false, links: [], shots: [], cleaned: { hidden: 0, signs: 0, unlocked: false, badSelectors: [] } };
+  }
+  const opened = Date.now();
+  let view = await waitForView(tab, nav, page.url, page.busy, opened);
+  let loaded = await waitForContent(tab, 20_000);
+  await settle(tab, 6_000);
+  const info = await readInfo(tab);
+  if (moved()) return MOVED;
+  if (check) {
+    const reason = rejectReason({ asked: page.url, nav, info, loaded }, check);
+    if (reason) return { rejected: reason, nav, info };
+  }
+  const full = group.shots.some((shot) => shot.full);
+  // Lazy parts render, footers load, and boxes that come up on scrolling
+  // come up before the clean-up. A first screen alone needs no walk.
+  if (full || links) await walk(tab, MAX_HEIGHT);
+  else await scrollTo(tab, 0);
+  const found = links || routes ? await readLinks(tab) : null;
+  const m0 = await metrics(tab);
+  // With --no-clean only what --hide names is hidden.
+  const tidy = () => (ctx.clean || ctx.hide.length ? clean(tab, { hide: ctx.hide, viewport: { width: m0.width, height: m0.viewportHeight }, auto: ctx.clean }) : { hidden: 0, signs: 0, unlocked: false, badSelectors: [] });
+  // Whether a view whose wait ended before it was ready shows a loading
+  // sign by then, read before the clean-up: that hides a fixed box that
+  // says Loading as it hides any other.
+  const signAfterWait = async () => view !== "quiet" && (await showsLoadingSign(tab));
+  let sign = await signAfterWait();
+  let cleaned = await tidy();
+  // The loading signs among the boxes the clean-up hid after the sign was
+  // last read: a sign gone since may only be hidden. A box that showed
+  // none, a chat bubble say, says nothing of it, and nor does one hidden
+  // before.
+  let signsHidden = cleaned.signs;
+  await waitForFonts(tab);
+  await scrollTo(tab, 0);
+  await sleep(400);
+  // An app can go to another route of its own after the waits, as one
+  // whose sign-in check answers late does: the address is read again, and
+  // the view it went to is waited for within the same wait.
+  let routeMoved = false;
+  if (routeOf(page.url) || routeOf(nav.url)) {
+    const before = viewKey(nav.url);
+    nav.url = await currentUrl(tab, nav.url);
+    routeMoved = viewKey(nav.url) !== before;
+  }
+  if (routeMoved) {
+    view = await waitForView(tab, nav, page.url, page.busy, opened);
+    await settle(tab, 6_000);
+    sign = await signAfterWait();
+    // The first clean-up's boxes stay hidden, and this one counts only
+    // what came since. The report adds the two up.
+    const again = await tidy();
+    signsHidden = again.signs;
+    cleaned = { ...again, hidden: cleaned.hidden + again.hidden, unlocked: cleaned.unlocked || again.unlocked };
+    await waitForFonts(tab);
+    await scrollTo(tab, 0);
+    await sleep(400);
+  }
+  // A page whose waits ended before it was ready, at their limit or as the
+  // run's time ran short, may have had its data and drawn its content
+  // since. It counts as taken before them when it showed a loading sign
+  // as they ended and that has not gone by itself (with a box that showed
+  // one hidden since, it may only be hidden), or when a request is still
+  // out and, as it is taken, it is a bare loading screen or looks empty.
+  // One that looks drawn with a request still out is only said to have
+  // one. Its title and heading are read again, as it is taken.
+  if (moved()) return MOVED;
+  let short = false;
+  let busy = false;
+  let open = "";
+  if (view !== "quiet" || loaded === null || routeMoved) {
+    if (loaded === null && (await showsContent(tab).catch(() => false))) loaded = true;
+    if (view !== "quiet") {
+      const out = !networkQuiet(tab, 0);
+      if ((sign && (signsHidden > 0 || (await showsLoadingSign(tab)))) || (out && (loaded !== true || (await looksEmpty(tab))))) {
+        short = view === "short";
+        busy = view === "busy";
+      } else if (out) open = view;
+    }
+    const now = await readInfo(tab);
+    Object.assign(info, { title: now.title, heading: now.heading, viewHeading: now.viewHeading });
+  }
+  const shots = [];
+  // One capture of the screen serves every size taken at the device's own
+  // scale: the phone's first screen and the narrow one for a manifest.
+  let screen = null;
+  for (const shot of group.shots) {
+    if (shot.pwa && theme !== ctx.pwaTheme) continue;
+    if (moved()) return MOVED;
+    if (timeLeft() < (shots.length ? ctx.captureMs || CAPTURE_MS : FIRST_CAPTURE_MS)) break;
+    const m = await metrics(tab);
+    // A phone page wider than the screen (no viewport tag, or content that
+    // overflows) is shown zoomed out, as a phone shows it: the first screen
+    // is the screen itself, and a whole page is fitted to its width.
+    const fit = Math.min(1, group.device.width / m.visualWidth);
+    if (!shot.full) {
+      const scale = shot.scale || group.device.scale;
+      let png;
+      if (scale === group.device.scale) {
+        if (!screen) {
+          await clearHover(tab, m.width, m.viewportHeight);
+          screen = Buffer.from((await captureScreen(tab)).data || "", "base64");
+        }
+        png = screen;
+      } else {
+        // The screen at another scale: 1920x1080 from the 2x desktop.
+        await clearHover(tab, m.width, m.viewportHeight);
+        const data = await capture(tab, 0, m.scrollY, group.device.width, group.device.height, scale / group.device.scale);
+        png = Buffer.from(data.data || "", "base64");
+      }
+      if (!pngSize(png)) continue;
+      const headings = await evaluate(tab, `${READ_HEADINGS}(${scale * fit})`, []);
+      shots.push({ size: shot.size, full: false, pwa: shot.pwa, png, scale, cssWidth: m.width, cssHeight: m.viewportHeight, headings });
+    } else {
+      const whole = await capturePage(tab, { scale: (shot.scale / group.device.scale) * fit, maxHeight: MAX_HEIGHT });
+      if (!whole || !pngSize(whole.png)) continue;
+      const sections = await evaluate(tab, `${READ_SECTIONS}(${shot.scale * fit}, ${whole.height})`, []);
+      shots.push({ size: shot.size, full: true, png: whole.png, scale: shot.scale, cssWidth: m.width, cssHeight: whole.height, truncated: whole.truncated, sections });
+    }
+  }
+  if (moved()) return MOVED;
+  return { nav, info, loaded, busy, open, waited: page.busy ? BUSY_WAIT_MS : VIEW_WAIT_MS, short, links: found, shots, cleaned };
 }
 
 // Writes a visit's captures as files of the page and records them.
@@ -1146,9 +1238,14 @@ async function takeShots(rawUrl, options = {}) {
             try {
               const got = await visit(chrome, { ...page }, group, themeName, ctx);
               if (got.info.challenge || got.nav.status >= 400) page.notes.push(`${label} not taken: ${got.info.challenge ? "the site answered with a bot check" : `the page answered ${got.nav.status}`}`);
-              // What this window's waits saw, by its size and theme: the
-              // page's own notes tell of its first window.
-              else for (const note of waitNotes(got)) page.notes.push(`${label}: ${note}`);
+              // What this window's waits saw, by its size and theme, and
+              // another page it landed on, by a redirect or by moving on
+              // once it had loaded: the page's own notes tell of its first
+              // window.
+              else {
+                for (const note of waitNotes(got)) page.notes.push(`${label}: ${note}`);
+                if (movedOn(page.url, got.nav.url)) page.notes.push(`${label}: opened ${page.url} and landed on ${got.nav.url}`);
+              }
               saveShots(page, got, themeName, run, written);
             } catch (err) {
               if (err.saveFailed) unsaved = unsaved || err;
@@ -1207,7 +1304,9 @@ async function takeShots(rawUrl, options = {}) {
         busy: result.busy || result.open === "busy",
       });
       page.notes.push(...waitNotes(result));
-      if (movedOn(page.asked, result.nav.url)) page.notes.push(`opened ${page.asked} and landed on ${result.nav.url}`);
+      // A page that moved on by itself once it had loaded is the page it
+      // moved to (see visit()), and its note says so.
+      if (movedOn(page.asked, result.nav.url)) page.notes.push(result.movedFrom ? `opened ${page.asked}, which moved on to ${result.nav.url} once it had loaded` : `opened ${page.asked} and landed on ${result.nav.url}`);
       page.notes.push(...barredNotes(result.barred), ...downloadNotes(result.downloads));
       kept.push(page);
       saveShots(page, result, firstTheme, run, written);
