@@ -121,34 +121,54 @@ function killChildren() {
 }
 
 // Runs ffmpeg to its end: { code, signal, stdout, stderr }, and late when
-// it was still running after `timeout` ms and was killed. One killed so is
-// not waited on for a program a wrapper script started, which can hold the
-// output open after it.
+// it was still running after `timeout` ms and was killed. A program that a
+// wrapper script started and left running can hold the output open after
+// the script itself has ended: what was read is taken EXIT_GRACE_MS after
+// the end, or once `timeout` ms are up if that comes first, and the leftover
+// is not waited on. It was, whenever the script ended before the limit, and
+// a script that had answered at once was then said to have given no answer
+// in that time, or held the demo for as long as its leftover ran.
+const EXIT_GRACE_MS = 1_000;
+
 function run(binary, args, { timeout = 600_000 } = {}) {
   return new Promise((resolve, reject) => {
     const child = track(spawn(binary, args, { stdio: ["ignore", "pipe", "pipe"] }));
     let stdout = "";
     let stderr = "";
     let late = false;
+    // { code, signal } once the program itself has ended.
+    let ended = null;
+    let grace = null;
+    let settled = false;
+    const done = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      clearTimeout(grace);
+      resolve(result);
+    };
     // With no file descriptor left for them Node makes no pipes, and the
     // error that says why comes a moment later.
     if (child.stdout) child.stdout.on("data", (d) => (stdout += d));
     if (child.stderr) child.stderr.on("data", (d) => (stderr = (stderr + d).slice(-20_000)));
     const timer = setTimeout(() => {
+      if (ended) return done({ ...ended, stdout, stderr });
       late = true;
       child.kill("SIGKILL");
     }, timeout);
     child.on("error", (err) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
+      clearTimeout(grace);
       reject(err);
     });
     child.on("exit", (code, signal) => {
-      if (late) resolve({ code, signal, stdout, stderr, late });
+      ended = { code, signal };
+      if (late) return done({ code, signal, stdout, stderr, late });
+      grace = setTimeout(() => done({ code, signal, stdout, stderr }), EXIT_GRACE_MS);
     });
-    child.on("close", (code, signal) => {
-      clearTimeout(timer);
-      resolve({ code, signal, stdout, stderr, ...(late ? { late } : {}) });
-    });
+    child.on("close", (code, signal) => done({ ...(ended || { code, signal }), stdout, stderr, ...(late ? { late } : {}) }));
   });
 }
 

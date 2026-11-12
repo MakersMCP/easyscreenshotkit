@@ -1214,9 +1214,13 @@ test("a run names a program by its role in that run, whatever runs before it in 
 // then said to have no H.264 encoder, each with the advice to get another.
 // The stand-ins never answer, answer too late, or leave a program of their
 // own holding the output, which is not waited for; the time is cut to half
-// a second for the test.
+// a second for the test. One that answers at once and leaves such a program
+// running answered: it was said to have given no answer, or held the demo
+// as long as that program ran.
 test("an ffmpeg has two minutes to say its version and to list its encoders, and one that gives no answer in that time is said to have given none", { skip: process.platform === "win32" && "the stand-ins are shell scripts", timeout: 60_000 }, async () => {
   const { ffmpegReady, pickEncoder, VERSION_MS } = require("../skills/easyscreenshotkit/scripts/lib/ffmpeg");
+  const { setTimeLimit } = require("../skills/easyscreenshotkit/scripts/lib/time");
+  setTimeLimit(600_000);
   assert.equal(VERSION_MS, 120_000);
   const readme = fs.readFileSync(path.join(__dirname, "..", "README.md"), "utf8");
   const skill = fs.readFileSync(path.join(__dirname, "..", "skills", "easyscreenshotkit", "SKILL.md"), "utf8");
@@ -1245,6 +1249,16 @@ test("an ffmpeg has two minutes to say its version and to list its encoders, and
     const began = Date.now();
     await assert.rejects(pickEncoder(quiet, 500), { message: words(quiet, "its encoders") });
     assert.ok(Date.now() - began < 2_500, `${Date.now() - began} ms`);
+    // One that answers at once and leaves a program of its own holding the
+    // output, with the half second and with a wait longer than that program.
+    const leftover = put("leftover", '#!/bin/sh\nsleep 4 &\ncase "$*" in *-version*) echo "ffmpeg version 4.4.2";; *) echo " V....D libx264              libx264 H.264 / AVC / MPEG-4 AVC";; esac\n');
+    process.env.FFMPEG_PATH = leftover;
+    for (const limit of [500, 10_000]) {
+      const asked = Date.now();
+      assert.equal(await ffmpegReady(limit), leftover);
+      assert.equal((await pickEncoder(leftover, limit)).name, "libx264");
+      assert.ok(Date.now() - asked < 3_500, `${limit}: ${Date.now() - asked} ms`);
+    }
   } finally {
     if (saved === undefined) delete process.env.FFMPEG_PATH;
     else process.env.FFMPEG_PATH = saved;
