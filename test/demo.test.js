@@ -1203,6 +1203,44 @@ test("a tour does not list a --page it could not take with the #route links to g
   }
 });
 
+// A page whose own script keeps it busy once it has loaded. One busy from
+// the moment it loads does not answer as the tour opens it to check it, and
+// is left out as too slow to answer, as the screenshots leave it out. One
+// that stops answering a moment later is kept, as the tour's check goes on
+// reading it with calls that let a timeout go, and the demo then fails when
+// it records it. That one makes the moment certain: it stops answering as
+// the check first counts its elements, after its first look at the page
+// (settle() counts them with getElementsByTagName), and tells the server so
+// first. The README said a tour left out such a page as the screenshots do.
+test("a tour leaves out a --page that does not answer as it opens it, and can keep one that stops answering a moment later, as the README says", { skip: !findChrome() && "no Chrome, Chromium, Edge or Brave installed", timeout: 180_000 }, async () => {
+  const readme = fs.readFileSync(path.join(__dirname, "..", "README.md"), "utf8");
+  assert.match(readme, /In the screenshots, a `--page` or a page of the tour is left out as too slow to answer, with those words\. A demo's tour leaves out such a page in the same words when the page does not answer as the tour opens it to check it, but can keep one that stops answering a moment later, and the demo then fails in those words when it records it\./);
+  const hang = "setTimeout(() => { const s = Date.now(); while (Date.now() - s < 60000); });";
+  const busy = (title, script) => page(`${title} | Acme`, `<h1>${title}</h1><div style="height:2400px;background:rgb(0,120,255)"></div><script>${script}</script>`);
+  const seen = [];
+  const { server, origin } = await serve((req, res) => {
+    seen.push(req.url);
+    const html = (body) => res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(body);
+    if (req.url === "/") return html(plain("Tools for teams", "rgb(0,160,0)"));
+    if (req.url === "/early") return html(busy("Early", `addEventListener("load", () => { ${hang} });`));
+    if (req.url === "/late") {
+      return html(busy("Late", `const count = document.getElementsByTagName.bind(document); document.getElementsByTagName = (name) => { if (!window.hung) { window.hung = true; navigator.sendBeacon("/late-hangs"); ${hang} } return count(name); };`));
+    }
+    res.writeHead(404).end("not found");
+  });
+  setTimeLimit(170_000);
+  const chrome = await launch();
+  try {
+    const tour = await pickPages(chrome, origin, { pages: 1, extra: ["/early", "/late"] });
+    assert.deepEqual(tour.pages.map((p) => [p.url.slice(origin.length), p.why]), [["/", "the home page"], ["/late", "asked for with --page"]]);
+    assert.deepEqual(tour.skipped, [{ url: `${origin}/early`, reason: "too slow to answer (Page.getLayoutMetrics timed out)" }]);
+    assert.ok(seen.includes("/late-hangs"), seen.join(" "));
+  } finally {
+    await chrome.close();
+    server.close();
+  }
+});
+
 // A link to a #route goes by the query of the page it is on: clicked, a view
 // asked for with a query of its own would open on the page's query.
 test("a tour clicks to a view by its link only when the view has the query of the page before it", async () => {
