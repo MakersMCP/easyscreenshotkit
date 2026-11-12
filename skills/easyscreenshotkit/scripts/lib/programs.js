@@ -464,6 +464,8 @@ function explain(file, { error = null, code = 0, signal = null, stderr = "" } = 
     // macOS refuses such a file where Linux hands it to /bin/sh.
     if (error.code === "ENOEXEC" || error.code === "EFTYPE") return whatItIs(kind) || "not a program this system can run";
     if (error.code === "EACCES" || error.code === "EPERM") return "a file this user may not run";
+    // As while it is being written, by an update or a copy under way.
+    if (error.code === "ETXTBSY") return "a program that another process has open for writing, which the system does not start while it is (text file busy)";
     return `a program that cannot be started (${worded(error)})`;
   }
   const not = unrun(file, { stderr }, { kind }) || envTrouble(kind, code);

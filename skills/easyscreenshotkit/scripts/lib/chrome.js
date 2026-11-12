@@ -490,9 +490,19 @@ function freeInTemp() {
 // tooDeep, silent, refused}: whether its profile was its temp folder,
 // whether it ended because its lock's socket did not fit in that folder,
 // whether it was still running without an answer when the wait ran out,
-// and the error it answered the order to refuse downloads with.
+// and the error it answered the order to refuse downloads with. A profile
+// that cannot be made, as in a temp folder this user cannot write in, and a
+// program the system will not start, as one another process has open for
+// writing or with no memory left to start it, which Node throws where it
+// does not say so in an error event, are said in unstarted, in place of
+// Node's bare words, and the profile goes.
 async function start(binary, { lang, args, own, wait = START_MS }) {
-  const profile = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-chrome-"));
+  let profile;
+  try {
+    profile = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-chrome-"));
+  } catch (err) {
+    return { unstarted: `the temp folder, ${os.tmpdir()}, cannot be written (${programs.worded(err)}). Point TMPDIR at a folder this user can write to.` };
+  }
   // No program of the machine opens what the browser hands out (see
   // standIns): a browser that could not be kept from it is not started.
   const apart = process.platform === "linux" ? standIns(profile) : {};
@@ -509,33 +519,39 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
   // port: a port on 127.0.0.1 is open to every program on the machine, and
   // through it to every job of a service that runs this kit for many
   // people, which could read and drive the pages of another job's browser.
-  const child = spawn(
-    binary,
-    [
-      "--headless=new",
-      "--remote-debugging-pipe",
-      `--user-data-dir=${profile}`,
-      "--window-size=1600,900",
-      "--hide-scrollbars",
-      "--mute-audio",
-      "--no-first-run",
-      "--no-default-browser-check",
-      "--disable-extensions",
-      "--disable-sync",
-      "--disable-background-timer-throttling",
-      "--disable-backgrounding-occluded-windows",
-      "--disable-renderer-backgrounding",
-      "--force-color-profile=srgb",
-      "--use-mock-keychain",
-      "--password-store=basic",
-      ...(lang ? [`--lang=${lang}`] : []),
-      ...args,
-      // Chrome refuses to start as root without it (a container, a CI box).
-      ...(process.getuid && process.getuid() === 0 ? ["--no-sandbox"] : []),
-      "about:blank",
-    ],
-    { stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"], env: browserEnv(profile, { ...configIn(profile), ...(inProfile ? { TMPDIR: profile } : {}), ...apart }) },
-  );
+  let child;
+  try {
+    child = spawn(
+      binary,
+      [
+        "--headless=new",
+        "--remote-debugging-pipe",
+        `--user-data-dir=${profile}`,
+        "--window-size=1600,900",
+        "--hide-scrollbars",
+        "--mute-audio",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-extensions",
+        "--disable-sync",
+        "--disable-background-timer-throttling",
+        "--disable-backgrounding-occluded-windows",
+        "--disable-renderer-backgrounding",
+        "--force-color-profile=srgb",
+        "--use-mock-keychain",
+        "--password-store=basic",
+        ...(lang ? [`--lang=${lang}`] : []),
+        ...args,
+        // Chrome refuses to start as root without it (a container, a CI box).
+        ...(process.getuid && process.getuid() === 0 ? ["--no-sandbox"] : []),
+        "about:blank",
+      ],
+      { stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"], env: browserEnv(profile, { ...configIn(profile), ...(inProfile ? { TMPDIR: profile } : {}), ...apart }) },
+    );
+  } catch (err) {
+    removeProfile(profile);
+    return { unstarted: whyUnstarted(binary, err) };
+  }
   let exited = false;
   // Whether the browser ended, or its connection closed, before close()
   // asked it to quit: it crashed, or something outside the run killed it,

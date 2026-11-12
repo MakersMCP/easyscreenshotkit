@@ -1112,6 +1112,34 @@ test("a browser or an ffmpeg that cannot be started stops a run before any work 
       refused({ CHROME_PATH: findChrome() }, SHOTS, `easyscreenshotkit: ${path.basename(findChrome())} did not start: ${short}`, { spawn: limited });
       refused({ FFMPEG_PATH: findFfmpeg() }, DEMO, `easyscreenshotkit demo: The demo needs ffmpeg, and ${findFfmpeg()} could not be started: ${short}`, { spawn: limited });
     });
+    // A program another process has open for writing, as one an update is
+    // writing: the system does not start it (ETXTBSY), which Node throws
+    // where it says most errors in an error event, and the run ended in
+    // "spawn ETXTBSY" and left the browser's profile in the temp folder.
+    put("busy", bytes);
+    const held = NAMES.map((program) => fs.openSync(at("busy", program), "r+"));
+    const busy = spawnSync(at("busy", "chrome"));
+    await t.test("a program another process has open for writing", { skip: !(busy.error && busy.error.code === "ETXTBSY") && "this system starts a program open for writing" }, () => {
+      named((program) => at("busy", program), () => "a program that another process has open for writing, which the system does not start while it is (text file busy)", { started: true });
+    });
+    for (const fd of held) fs.closeSync(fd);
+    // A temp folder this user cannot write in: the browser's profile cannot
+    // be made, and the run ended in Node's "EACCES: permission denied,
+    // mkdtemp".
+    await t.test("a temp folder that cannot be written", { skip: asRoot && "root writes in any folder" }, () => {
+      const folder = at("runs", "readonly");
+      const tmp = path.join(folder, "tmp");
+      fs.mkdirSync(tmp, { recursive: true });
+      fs.chmodSync(tmp, 0o555);
+      try {
+        const r = spawnSync(process.execPath, [CLI, ...SHOTS, "--out", path.join(folder, "out")], { env: { ...base, CHROME_PATH: at("locked", "chrome"), TMPDIR: tmp }, encoding: "utf8", timeout: 120_000 });
+        assert.equal(r.stderr, `easyscreenshotkit: chrome did not start: the temp folder, ${tmp}, cannot be written (permission denied). Point TMPDIR at a folder this user can write to.\n`);
+        assert.equal(r.status, 1);
+        assert.deepEqual(fs.readdirSync(folder), ["tmp"]);
+      } finally {
+        fs.chmodSync(tmp, 0o755);
+      }
+    });
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
