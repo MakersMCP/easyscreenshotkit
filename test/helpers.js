@@ -1,10 +1,11 @@
 "use strict";
 
-// Test helpers: a minimal PNG reader and writer, a local web server and a
-// browser behind a relay of its pipe.
+// Test helpers: a minimal PNG reader and writer, a local web server, a
+// browser behind a relay of its pipe and the command line run to its end.
 
 const fs = require("node:fs");
 const http = require("node:http");
+const { spawn } = require("node:child_process");
 const path = require("node:path");
 const zlib = require("node:zlib");
 
@@ -231,4 +232,30 @@ child.on("exit", (code) => process.exit(code === null ? 1 : code));
   return { browser: wrapper, dropped: () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8").split("\n").filter(Boolean) : []) };
 }
 
-module.exports = { readPng, pngOf, serve, near, descendants, relayBrowser };
+// Runs the command line with args and resolves to how it ended: { status,
+// stdout, stderr } once it has, or { stdout, stderr, held: true } when it had
+// printed its whole JSON (--json) holdMs before and still had not exited, as
+// a run held by a program left running did; it is killed then.
+function runUntilOver(cli, args, { env = process.env, holdMs = 20_000 } = {}) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [cli, ...args], { env });
+    let stdout = "";
+    let stderr = "";
+    let timer = null;
+    child.stdout.on("data", (d) => {
+      stdout += d;
+      if (timer || !/\n\}\n$/.test(stdout)) return;
+      timer = setTimeout(() => {
+        resolve({ stdout, stderr, held: true });
+        child.kill("SIGKILL");
+      }, holdMs);
+    });
+    child.stderr.on("data", (d) => (stderr += d));
+    child.on("close", (status) => {
+      clearTimeout(timer);
+      resolve({ status, stdout, stderr });
+    });
+  });
+}
+
+module.exports = { readPng, pngOf, serve, near, descendants, relayBrowser, runUntilOver };

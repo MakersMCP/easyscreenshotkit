@@ -141,7 +141,9 @@ function killChildren() {
 // the end, or once `timeout` ms are up if that comes first, and the leftover
 // is not waited on. It was, whenever the script ended before the limit, and
 // a script that had answered at once was then said to have given no answer
-// in that time, or held the demo for as long as its leftover ran.
+// in that time, or held the demo for as long as its leftover ran. The
+// output is let go of then, so the leftover does not hold the run's own
+// process either.
 const EXIT_GRACE_MS = 1_000;
 
 function run(binary, args, { timeout = 600_000 } = {}) {
@@ -159,6 +161,9 @@ function run(binary, args, { timeout = 600_000 } = {}) {
       settled = true;
       clearTimeout(timer);
       clearTimeout(grace);
+      // The result taken, the pipes go: a leftover holding them kept the
+      // run's process from exiting until it ended, the run over.
+      for (const stream of [child.stdout, child.stderr]) if (stream) stream.destroy();
       resolve(result);
     };
     // With no file descriptor left for them Node makes no pipes, and the

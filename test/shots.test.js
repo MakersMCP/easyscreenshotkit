@@ -20,7 +20,7 @@ const { watchRequests, networkQuiet, showsLoadingSign, looksEmpty, waitForConten
 const { LOCATE, Recorder } = require("../skills/easyscreenshotkit/scripts/lib/record");
 const { pngText } = require("../skills/easyscreenshotkit/scripts/lib/png");
 const programs = require("../skills/easyscreenshotkit/scripts/lib/programs");
-const { readPng, serve, near, descendants, relayBrowser } = require("./helpers");
+const { readPng, serve, near, descendants, relayBrowser, runUntilOver } = require("./helpers");
 const { noBus, privateBus, fakePortal } = require("./bus");
 
 const CLI = path.resolve(__dirname, "../skills/easyscreenshotkit/scripts/easyscreenshotkit.js");
@@ -2046,6 +2046,34 @@ test("a program that starts the browser without the kit's pipe is named so, befo
     assert.equal(fs.existsSync(path.join(root, "shots")), false);
     assert.deepEqual(fs.readdirSync(tmp), []);
   } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A program that CHROME_PATH names and that starts the browser can leave a
+// program of its own running, which holds the other ends of the browser's
+// pipes: the run's process waited for it to end before it exited, its
+// files saved and its summary printed, where 0.1.1 exited at once.
+test("a run exits once it is over, while a program the browser's wrapper left running goes on", { skip: noBrowser || (process.platform === "win32" && "the wrapper is a shell script"), timeout: 120_000 }, async () => {
+  const { server, origin } = await serve((req, res) => res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Acme | Tools", "<h1>Acme</h1>")));
+  const root = tempDir();
+  const pid = path.join(root, "leftover.pid");
+  const wrapper = path.join(root, "chrome-leftover");
+  fs.writeFileSync(wrapper, `#!/bin/sh\nsleep 600 &\necho $! > ${JSON.stringify(pid)}\nexec ${JSON.stringify(findChrome())} "$@"\n`, { mode: 0o755 });
+  try {
+    const run = await runUntilOver(CLI, [origin, "--pages", "1", "--sizes", "desktop", "--json", "--out", path.join(root, "shots")], { env: { ...process.env, CHROME_PATH: wrapper } });
+    assert.equal(run.held, undefined, `the run printed its manifest and had not exited 20 s later\n${run.stderr}`);
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(JSON.parse(run.stdout).pages.length, 1);
+    // Not waited for: it is still running.
+    assert.doesNotThrow(() => process.kill(Number(fs.readFileSync(pid, "utf8")), 0));
+  } finally {
+    try {
+      process.kill(Number(fs.readFileSync(pid, "utf8")), "SIGKILL");
+    } catch {
+      // Not started, or ended already.
+    }
+    server.close();
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

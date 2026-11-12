@@ -19,7 +19,7 @@ const { readSteps } = require("../skills/easyscreenshotkit/scripts/lib/steps");
 const { findChrome, launch, openTab, closeTab, navigate } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
 const { findFfmpeg, makeGif, startVideo, gifIsWhole, mp4Frames } = require("../skills/easyscreenshotkit/scripts/lib/ffmpeg");
 const { checkBackdrop } = require("../skills/easyscreenshotkit/scripts/lib/compose");
-const { readPng, pngOf, serve, near, descendants, relayBrowser } = require("./helpers");
+const { readPng, pngOf, serve, near, descendants, relayBrowser, runUntilOver } = require("./helpers");
 const { noBus, privateBus, fakePortal } = require("./bus");
 
 const CLI = path.resolve(__dirname, "../skills/easyscreenshotkit/scripts/easyscreenshotkit.js");
@@ -407,6 +407,41 @@ test("a demo given a minute records its steps", { skip: missing, timeout: 200_00
     assert.deepEqual(manifest.steps.map((step) => step.action), ["visit", "wait", "scroll"]);
     assert.ok(fs.existsSync(path.join(root, "out", "demo.mp4")));
   } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// An ffmpeg that a wrapper script starts, which leaves a program of its own
+// running as it is asked its version and its encoders: that program holds
+// the other ends of the pipes the demo read them on, and the demo's process
+// waited for it to end before it exited, its files saved and its summary
+// printed, where 0.1.1 waited for it before it recorded.
+test("a demo exits once it is over, while a program an ffmpeg wrapper left running goes on", { skip: missing || (process.platform === "win32" && "the wrapper is a shell script"), timeout: 200_000 }, async () => {
+  const { server, origin } = await fixture();
+  const root = tempDir();
+  const steps = path.join(root, "steps.yaml");
+  fs.writeFileSync(steps, "steps:\n  - visit: /\n  - wait: 0.5\n");
+  const pids = path.join(root, "leftovers.pid");
+  const wrapper = path.join(root, "ffmpeg-leftover");
+  fs.writeFileSync(wrapper, `#!/bin/sh\ncase " $* " in *" -version "*|*" -encoders "*) sleep 600 & echo $! >> ${JSON.stringify(pids)};; esac\nexec ${JSON.stringify(ffmpeg)} "$@"\n`, { mode: 0o755 });
+  const leftovers = () => (fs.existsSync(pids) ? fs.readFileSync(pids, "utf8").trim().split("\n").filter(Boolean).map(Number) : []);
+  try {
+    const run = await runUntilOver(CLI, ["demo", origin, "--steps", steps, "--no-gif", "--json", "--out", path.join(root, "out")], { env: { ...process.env, FFMPEG_PATH: wrapper } });
+    assert.equal(run.held, undefined, `the demo printed steps.json and had not exited 20 s later\n${run.stderr}`);
+    assert.equal(run.status, 0, run.stderr);
+    assert.ok(fs.existsSync(path.join(root, "out", "demo.mp4")));
+    // Not waited for: both are still running.
+    assert.equal(leftovers().length, 2);
+    for (const pid of leftovers()) assert.doesNotThrow(() => process.kill(pid, 0));
+  } finally {
+    for (const pid of leftovers()) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // Ended already.
+      }
+    }
     server.close();
     fs.rmSync(root, { recursive: true, force: true });
   }

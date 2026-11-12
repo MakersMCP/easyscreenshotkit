@@ -607,6 +607,14 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
       child.kill("SIGKILL");
     }
     for (let i = 0; i < 20 && !exited; i++) await sleep(100);
+    // A program that a wrapper script left running beside the browser holds
+    // the other ends of its pipes, and the run's process waited for that
+    // program to end before it exited, the run over: they are let go of
+    // once the browser has ended. One that could not be started for want of
+    // file descriptors has none.
+    const letGo = () => (child.stdio || []).forEach((stream) => stream && stream.destroy());
+    if (exited) letGo();
+    else child.once("exit", letGo);
     open.delete(started);
     const lock = started.lock || lockFolderOf(profile);
     const remove = () => {
