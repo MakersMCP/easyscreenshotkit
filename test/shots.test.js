@@ -1962,6 +1962,37 @@ test("a browser that did not start with a nearly full temp folder says so", { sk
   }
 });
 
+// The profile of a browser that did not start is removed a second time, as
+// its helpers can make it again a moment after it went: a removal that
+// failed then, as one a helper writing in it can make fail, gave the run
+// Node's bare words in place of why the browser did not start. Here every
+// removal of a profile fails.
+test("a profile that cannot be removed after a browser that did not start leaves the reason as it was", { skip: process.platform === "win32" && "the stand-in browser is a shell script", timeout: 60_000 }, async () => {
+  const root = tempDir();
+  const tmp = path.join(root, "tmp");
+  fs.mkdirSync(tmp);
+  const fake = path.join(root, "browser");
+  fs.writeFileSync(fake, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+  const saved = { CHROME_PATH: process.env.CHROME_PATH, TMPDIR: process.env.TMPDIR };
+  const remove = fs.rmSync;
+  Object.assign(process.env, { CHROME_PATH: fake, TMPDIR: tmp });
+  try {
+    fs.rmSync = (file, ...rest) => {
+      if (path.basename(String(file)).startsWith("easyscreenshotkit-chrome-")) throw Object.assign(new Error(`ENOTEMPTY: directory not empty, rmdir '${file}'`), { code: "ENOTEMPTY", syscall: "rmdir" });
+      return remove(file, ...rest);
+    };
+    setTimeLimit(60_000);
+    await assert.rejects(launch(), { message: "browser did not start. Try again, or point CHROME_PATH at another browser." });
+  } finally {
+    fs.rmSync = remove;
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // A browser that ended before it answered and printed why, in words that
 // trying again or another browser would not help with, was told to try
 // again or to get another: Chrome's line is quoted, with what to do. A

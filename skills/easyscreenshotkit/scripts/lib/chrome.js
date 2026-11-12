@@ -497,7 +497,7 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
   // standIns): a browser that could not be kept from it is not started.
   const apart = process.platform === "linux" ? standIns(profile) : {};
   if (apart.problem) {
-    fs.rmSync(profile, { recursive: true, force: true });
+    removeProfile(profile);
     return { unguarded: apart.problem };
   }
   const inProfile = own && process.platform === "linux" && roomIn(profile);
@@ -594,11 +594,7 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
     open.delete(started);
     const lock = started.lock || lockFolderOf(profile);
     const remove = () => {
-      try {
-        fs.rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-      } catch {
-        // Left for the system's temp clean-up.
-      }
+      removeProfile(profile);
       removeLockFolder(lock);
       removeFetchFolders(fetching);
     };
@@ -698,8 +694,20 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
   const deep = inProfile && removeStrayLocks(new Set(), { dir: profile });
   await close();
   await sleep(300);
-  fs.rmSync(profile, { recursive: true, force: true });
+  removeProfile(profile);
   return { own: inProfile, tooDeep: removeStrayLocks(locksBefore) || deep, silent, refused, unstarted, said: exited && !answered ? said : "" };
+}
+
+// Removes a browser's profile, trying again while a helper of the browser
+// still writes in it, and leaves what cannot be removed for the system's
+// temp clean-up: a removal that fails is no reason to lose a run, nor to
+// say why a browser did not start in other words.
+function removeProfile(profile) {
+  try {
+    fs.rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  } catch {
+    // Left for the system's temp clean-up.
+  }
 }
 
 // What is wrong with a browser the system could not start, from the error
