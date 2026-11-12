@@ -400,7 +400,41 @@ async function launch({ lang = "", args = [] } = {}) {
   const free = freeInTemp();
   if (free !== null && free < TEMP_NEEDED) throw new Error(`${name} did not start: the temp folder, ${os.tmpdir()}, has only ${Math.round(free / 1024)} KB free. Free some space there, or point TMPDIR at another disk.`);
   if (tried.silent) throw new Error(`${name} started but did not answer in ${Math.round(wait.ms / 1000)} s. ${busy(wait.cut)}`);
+  const said = saidWhy(tried.said);
+  if (said) throw new Error(`${name} did not start: ${said}`);
   throw new Error(`${name} did not start. Try again, or point CHROME_PATH at another browser.`);
+}
+
+// What a browser that ended before it answered printed, in Chrome's own
+// words, of why, when trying again or another browser would not help, with
+// what to do: it was not handed the kit's pipe, as by a program that
+// CHROME_PATH names and that starts the browser with its file descriptors 3
+// and 4 closed, which 0.1.1 did not need as it read a port; its sandbox
+// could not start, as in a container that does not let it, for a user who
+// is not root; or it, or the system, had as many files open as they may.
+// Each was said to be a browser that did not start, with the advice to try
+// again.
+const SAID = [
+  [/Remote debugging pipe file descriptors are not open/, "A program that starts the browser has to hand it easyscreenshotkit's pipe, its file descriptors 3 and 4: point CHROME_PATH at the browser's own program, or at one that hands those on."],
+  [/No usable sandbox|SUID sandbox helper binary was found, but is not configured correctly|setuid sandbox: failed to move to new namespaces|Failed to move to new namespace/, "Its sandbox could not start: on Linux a browser's own package sets the sandbox up, and a container has to let it start, as Docker does with --security-opt seccomp=unconfined."],
+  [/Too many open files in system/, "The system had as many files open as it may: run fewer jobs at once."],
+  [/Too many open files/, "The browser had as many files open as it may: raise that limit, as ulimit -n does, and run again."],
+];
+
+// The line of what the browser printed that holds words of SAID, quoted
+// without the place in Chrome's code it starts with, cut to about 200
+// characters and its control characters written out, and what to do: "" for
+// one that printed none.
+function saidWhy(output) {
+  const lines = String(output || "").split("\n").map((line) => line.trim()).filter(Boolean);
+  for (const [words, fix] of SAID) {
+    const line = lines.find((one) => words.test(one));
+    if (!line) continue;
+    const bare = line.replace(/^\[[^\]]*\]\s*/, "");
+    const cut = bare.length > 200 ? `${bare.slice(0, 200)}...` : bare;
+    return `it printed "${cut.replace(/[\u0000-\u001f\u007f-\u009f]/g, (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, "0")}`)}". ${fix}`;
+  }
+  return "";
 }
 
 // A browser that started has START_MS to answer, or up to START_MAX_MS when
@@ -663,7 +697,7 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
   await close();
   await sleep(300);
   fs.rmSync(profile, { recursive: true, force: true });
-  return { own: inProfile, tooDeep: removeStrayLocks(locksBefore) || deep, silent, refused, unstarted };
+  return { own: inProfile, tooDeep: removeStrayLocks(locksBefore) || deep, silent, refused, unstarted, said: exited && !answered ? said : "" };
 }
 
 // What is wrong with a browser the system could not start, from the error

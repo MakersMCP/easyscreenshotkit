@@ -1962,6 +1962,60 @@ test("a browser that did not start with a nearly full temp folder says so", { sk
   }
 });
 
+// A browser that ended before it answered and printed why, in words that
+// trying again or another browser would not help with, was told to try
+// again or to get another: Chrome's line is quoted, with what to do. A
+// program CHROME_PATH names that starts the browser with its file
+// descriptors 3 and 4 closed worked with 0.1.1, which read a port; the
+// browser takes its pipe on them now. A sandbox that cannot start, as in a
+// container that does not let it for a user who is not root, failed every
+// run the same way. Lines of Chrome's that say nothing of it, as its D-Bus
+// lines, are not quoted.
+test("a browser that did not start and said why is quoted, with what to do", { skip: process.platform === "win32" && "the stand-in browser is a shell script", timeout: 60_000 }, async () => {
+  const root = tempDir();
+  const before = process.env.CHROME_PATH;
+  const fake = path.join(root, "browser");
+  const sandbox = "Its sandbox could not start: on Linux a browser's own package sets the sandbox up, and a container has to let it start, as Docker does with --security-opt seccomp=unconfined.";
+  try {
+    for (const [printed, said] of [
+      ["[123:123:1112/050000.123456:ERROR:chrome/app/chrome_main_delegate.cc:1171] Remote debugging pipe file descriptors are not open.", `it printed "Remote debugging pipe file descriptors are not open.". A program that starts the browser has to hand it easyscreenshotkit's pipe, its file descriptors 3 and 4: point CHROME_PATH at the browser's own program, or at one that hands those on.`],
+      ["[1:1:1112/050000.1:FATAL:zygote_host_impl_linux.cc(127)] No usable sandbox! If you are running on Ubuntu 23.10+ or another Linux distro that has disabled unprivileged user namespaces with AppArmor, see https://chromium.googlesource.com/chromium/src/+/main/docs/security/apparmor-userns-restrictions.md.", `it printed "${"No usable sandbox! If you are running on Ubuntu 23.10+ or another Linux distro that has disabled unprivileged user namespaces with AppArmor, see https://chromium.googlesource.com/chromium/src/+/main/docs/security/apparmor-userns-restrictions.md".slice(0, 200)}...". ${sandbox}`],
+      ["Failed to move to new namespace: PID namespaces supported, Network namespace supported, but failed: errno = Operation not permitted", `it printed "Failed to move to new namespace: PID namespaces supported, Network namespace supported, but failed: errno = Operation not permitted". ${sandbox}`],
+      ["[1:1:1112/050000.1:ERROR:base/files/file_util_posix.cc(612)] mkstemp: Too many open files (24)", 'it printed "mkstemp: Too many open files (24)". The browser had as many files open as it may: raise that limit, as ulimit -n does, and run again.'],
+    ]) {
+      fs.writeFileSync(fake, `#!/bin/sh\necho '[1:1:1112/050000.1:ERROR:dbus/bus.cc:408] Failed to connect to the bus: Could not parse server address' >&2\necho '${printed.replace(/'/g, "'\\''")}' >&2\nexit 1\n`, { mode: 0o755 });
+      process.env.CHROME_PATH = fake;
+      await assert.rejects(launch(), { message: `browser did not start: ${said}` });
+    }
+    fs.writeFileSync(fake, "#!/bin/sh\necho '[1:1:1112/050000.1:ERROR:dbus/bus.cc:408] Failed to connect to the bus: Could not parse server address' >&2\nexit 1\n", { mode: 0o755 });
+    await assert.rejects(launch(), { message: "browser did not start. Try again, or point CHROME_PATH at another browser." });
+  } finally {
+    if (before === undefined) delete process.env.CHROME_PATH;
+    else process.env.CHROME_PATH = before;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// The same with Chrome itself behind a program that closes the pipe's file
+// descriptors before it starts it: the run stops before any work, makes no
+// folder and leaves nothing in the temp folder.
+test("a program that starts the browser without the kit's pipe is named so, before any work", { skip: noBrowser || (process.platform === "win32" && "the wrapper is a shell script"), timeout: 90_000 }, async () => {
+  const root = tempDir();
+  const wrapper = path.join(root, "chrome-closefds");
+  fs.writeFileSync(wrapper, `#!/bin/sh\nexec 3<&- 4<&-\nexec ${JSON.stringify(findChrome())} "$@"\n`, { mode: 0o755 });
+  const tmp = path.join(root, "tmp");
+  fs.mkdirSync(tmp);
+  try {
+    const run = await runCli(["http://127.0.0.1:9/", "--pages", "1", "--out", path.join(root, "shots")], { env: { ...process.env, CHROME_PATH: wrapper, TMPDIR: tmp } });
+    assert.equal(run.status, 1, run.stderr);
+    assert.equal(run.stderr.trim().split("\n").pop(), `easyscreenshotkit: chrome-closefds did not start: it printed "Remote debugging pipe file descriptors are not open.". A program that starts the browser has to hand it easyscreenshotkit's pipe, its file descriptors 3 and 4: point CHROME_PATH at the browser's own program, or at one that hands those on.`);
+    assert.equal(fs.existsSync(path.join(root, "shots")), false);
+    assert.deepEqual(fs.readdirSync(tmp), []);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // A browser that is slow to answer, as one is on a busy machine, has more
 // time when the run has it, and says what did not answer and what to do.
 // Its start, its address and its connection ended in a browser that "did
