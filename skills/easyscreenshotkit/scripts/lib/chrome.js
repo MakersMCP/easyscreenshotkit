@@ -518,9 +518,7 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
   try {
     profile = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-chrome-"));
   } catch (err) {
-    // A full disk quota has no name in Node: errno -122 on Linux.
-    const why = err.errno === -122 ? "your disk quota is full" : programs.worded(err);
-    return { unstarted: `the temp folder, ${os.tmpdir()}, cannot be written (${why}). Point TMPDIR at a folder this user can write to.` };
+    return { unstarted: `${unwritten(err)}.` };
   }
   // No program of the machine opens what the browser hands out (see
   // standIns): a browser that could not be kept from it is not started.
@@ -774,6 +772,14 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
   return { own: inProfile, tooDeep: removeStrayLocks(locksBefore) || deep, silent, refused, unstarted, said: exited && !answered ? printed() : "" };
 }
 
+// Why the temp folder could not take the browser's profile or its stand-ins
+// (see standIns), from the error the system gave, and what to do. A full
+// disk quota has no name in Node: errno -122 on Linux.
+function unwritten(err) {
+  const why = err.errno === -122 ? "your disk quota is full" : programs.worded(err);
+  return `the temp folder, ${os.tmpdir()}, cannot be written (${why}). Point TMPDIR at a folder this user can write to`;
+}
+
 // Removes a browser's profile, trying again while a helper of the browser
 // still writes in it, and leaves what cannot be removed for the system's
 // temp clean-up: a removal that fails is no reason to lose a run, nor to
@@ -845,10 +851,11 @@ function browserEnv(profile, more) {
 // of PATH stays as it was. Returns the browser's PATH and bus, once each
 // of those names on that PATH leads to its stand-in, or { problem }: why it
 // cannot, as the temp folder is on a disk that takes no symbolic links,
-// where the browser could not make the lock of its profile either, no
-// program may run from the temp folder (one mounted noexec, with no true or
-// false to link to), or the temp folder's path has in it the character that
-// parts the folders of PATH, which led the browser to the real programs.
+// where the browser could not make the lock of its profile either, it
+// cannot be written, as on a disk or a quota that is full, no program may
+// run from the temp folder (one mounted noexec, with no true or false to
+// link to), or the temp folder's path has in it the character that parts
+// the folders of PATH, which led the browser to the real programs.
 const HANDED_TO = ["xdg-open", "xdg-email", "x-www-browser", "www-browser", "sensible-browser"];
 const ASKED = ["xdg-settings", "xdg-mime"];
 
@@ -863,7 +870,7 @@ function standIns(profile) {
       return false;
     }
   };
-  let noLinks = false;
+  let failed = null;
   try {
     fs.mkdirSync(dir);
     for (const [names, ends] of [[HANDED_TO, 0], [ASKED, 1]]) {
@@ -875,17 +882,21 @@ function standIns(profile) {
       }
     }
   } catch (err) {
-    // Said below: the names do not lead to stand-ins. A disk that takes no
-    // links answers EPERM, EOPNOTSUPP or ENOSYS; Node calls EOPNOTSUPP
-    // ENOTSUP, as on Linux the two are one number.
-    noLinks = err.syscall === "symlink" && ["EPERM", "ENOTSUP", "ENOSYS"].includes(err.code);
+    // Said below: the names do not lead to stand-ins.
+    failed = err;
   }
   if ([...HANDED_TO, ...ASKED].every((name) => programs.lookOnPath(name, { within: PATH }).file === path.join(dir, name))) {
     return { PATH, DBUS_SESSION_BUS_ADDRESS: `unix:path=${busPath(path.resolve(profile, "easyscreenshotkit-no-bus"))}` };
   }
   const tmp = os.tmpdir();
-  if (noLinks) return { problem: `the temp folder, ${tmp}, is on a disk that takes no symbolic links, which the browser's profile needs. Point TMPDIR at a folder on another disk` };
+  // A disk that takes no links answers EPERM, EOPNOTSUPP or ENOSYS; Node
+  // calls EOPNOTSUPP ENOTSUP, as on Linux the two are one number.
+  if (failed && failed.syscall === "symlink" && ["EPERM", "ENOTSUP", "ENOSYS"].includes(failed.code)) return { problem: `the temp folder, ${tmp}, is on a disk that takes no symbolic links, which the browser's profile needs. Point TMPDIR at a folder on another disk` };
   if (dir.includes(path.delimiter)) return { problem: `the temp folder's path, ${tmp}, has a ${path.delimiter} in it, which parts the folders of PATH. Point TMPDIR at a folder whose path has none` };
+  // Any other error, as a disk or a quota that filled after the profile was
+  // made, is said in the system's words, as one that kept the profile from
+  // being made is: it was said that no program may run from the temp folder.
+  if (failed) return { problem: unwritten(failed) };
   return { problem: `no program may run from the temp folder, ${tmp}. Point TMPDIR at a folder where programs may run` };
 }
 

@@ -3950,6 +3950,50 @@ test("a temp folder on a disk that takes no symbolic links is named, and the bro
   }
 });
 
+// A disk or a quota that fills once the browser's profile is made: its
+// stand-ins cannot be made, and the run said that no program may run from
+// the temp folder. It says the temp folder cannot be written, with the
+// system's words, as for the profile, and the browser is not started.
+test("a temp folder that fills before the browser's stand-ins are made is said to be one that cannot be written", { skip: process.platform !== "linux" && "the stand-ins are made on Linux only", timeout: 60_000 }, async () => {
+  const root = tempDir();
+  const tmp = path.join(root, "tmp");
+  fs.mkdirSync(tmp);
+  const saved = { CHROME_PATH: process.env.CHROME_PATH, TMPDIR: process.env.TMPDIR };
+  const { mkdirSync, symlinkSync } = fs;
+  process.env.CHROME_PATH = standIns(root)("plain");
+  process.env.TMPDIR = tmp;
+  const full = (code, errno, syscall, at) => Object.assign(new Error(`${code}: ${syscall} '${at}'`), { code, errno, syscall });
+  try {
+    for (const [code, errno, syscall, why] of [["ENOSPC", -28, "mkdir", "no space left on device"], ["Unknown system error -122", -122, "mkdir", "your disk quota is full"], ["ENOSPC", -28, "symlink", "no space left on device"]]) {
+      if (syscall === "mkdir") {
+        fs.mkdirSync = (at, ...rest) => {
+          if (path.basename(String(at)) === "easyscreenshotkit-handlers") throw full(code, errno, syscall, at);
+          return mkdirSync(at, ...rest);
+        };
+      } else {
+        fs.symlinkSync = (target, at) => {
+          throw full(code, errno, syscall, at);
+        };
+      }
+      setTimeLimit(60_000);
+      // A browser that did start is closed again, for the test to fail on.
+      const refused = await launch().then((chrome) => chrome.close().then(() => null), (err) => err);
+      Object.assign(fs, { mkdirSync, symlinkSync });
+      assert.equal(refused && refused.message, `plain was not started: it hands addresses such as mailto: to programs of this machine, and none could be put in their place, as the temp folder, ${tmp}, cannot be written (${why}). Point TMPDIR at a folder this user can write to.`, `${code} ${syscall}`);
+      assert.deepEqual(fs.readdirSync(tmp), [], `${code} ${syscall}`);
+      assert.equal(fs.existsSync(path.join(root, "plain.json")), false, `${code} ${syscall}`);
+    }
+  } finally {
+    Object.assign(fs, { mkdirSync, symlinkSync });
+    endStandIns(root, ["plain"]);
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // A temp folder whose disk quota is full: the browser's profile cannot be
 // made there, and Node has no name for that error on Linux (errno -122),
 // which the run quoted as "Unknown system error -122".
