@@ -3380,6 +3380,43 @@ test("an input event left unanswered as the page moves on does not hold the run"
   }
 });
 
+// The same over a frame that runs in a process of its own, as another
+// site's frame or a sandboxed one does, as an ad is: a turn of the wheel
+// over it went unanswered at times as the frame moved on to another
+// document, which the tab's own session never hears, and the run failed
+// after 30 s in the words "Input.dispatchMouseEvent timed out". The frame
+// here is sandboxed, so the run's address rule lets it in, and moves on
+// from its own first wheel event; the relay holds each answer a moment and
+// drops the one under way as the browser says the frame has moved.
+test("an input event left unanswered as a frame in a process of its own moves on does not hold the run", { skip: noBrowser || (process.platform === "win32" && "the relay is started by a shell script"), timeout: 200_000 }, async () => {
+  const html = { "Content-Type": "text/html; charset=utf-8" };
+  const { server, origin } = await serve((req, res) => {
+    if (req.url === "/") return res.writeHead(200, html).end(page("Acme | Tools", `<h1>Acme</h1><div style="height:2000px;background:rgb(0,160,0)"></div><iframe sandbox="allow-scripts" src="/ad" style="position:fixed;left:25%;top:25%;width:50%;height:50%;border:0"></iframe>`));
+    if (req.url === "/ad") return res.writeHead(200, html).end(page("Ad", `<div style="height:100vh;background:rgb(255,200,0)"></div><script>addEventListener("wheel", () => location.replace("/ad-next"), { once: true });</script>`));
+    if (req.url === "/ad-next") return res.writeHead(200, html).end(page("Ad", '<div style="height:100vh;background:rgb(255,120,0)"></div>'));
+    res.writeHead(404).end();
+  });
+  const root = tempDir();
+  const relay = relayBrowser(root, findChrome(), { holdMs: 2_000 });
+  try {
+    const run = await new Promise((resolve) => {
+      const child = spawn(process.execPath, [CLI, `${origin}/`, "--pages", "1", "--sizes", "desktop,full", "--json", "--out", path.join(root, "shots")], { env: { ...process.env, CHROME_PATH: relay.browser } });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (d) => (stdout += d));
+      child.stderr.on("data", (d) => (stderr += d));
+      child.on("close", (status) => resolve({ status, stdout, stderr }));
+    });
+    assert.equal(run.status, 0, run.stderr);
+    assert.deepEqual(relay.dropped(), [`Input.dispatchMouseEvent mouseWheel as a frame of the page moved on to ${origin}/ad-next`]);
+    const report = JSON.parse(run.stdout);
+    assert.deepEqual(report.pages.map((p) => [new URL(p.url).pathname, p.title, p.shots.map((shot) => shot.size)]), [["/", "Acme | Tools", ["desktop", "full"]]]);
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // Stand-ins on PATH for the programs the browser hands an address of
 // another kind to (mailto:, news:), and for xdg-settings and xdg-mime,
 // which it asks first which program opens one, each writing down that it

@@ -937,9 +937,29 @@ function guardBrowser(chrome, timeoutMs) {
       const from = owners.get(t.type === "page" ? t.openerId || "" : t.parentFrameId || "");
       if (from) owners.set(t.targetId, { tab: from.tab, own: from.own, window: t.type === "page" || from.window });
     };
+    // Such a frame is a target of its own, and what it commits never
+    // reaches its tab's session, where sendInput() hears the tab's page
+    // move on. An input event on its way to it, as a turn of the wheel
+    // over another site's frame or a sandboxed one, as an ad is, went
+    // unanswered at times as the frame moved on to another document, and
+    // the run, or a demo's step, waited 30 s and failed in the words
+    // "Input.dispatchMouseEvent timed out". So the tab's input events under
+    // way are told when the browser says such a frame has changed, which
+    // it does as the frame commits another document, the same address
+    // again included, and when it goes or crashes.
+    const frameMoved = (targetId) => {
+      const known = owners.get(targetId);
+      if (!known || known.window || !known.tab || known.tab.targetId === targetId || !known.tab.inputs) return;
+      for (const moved of [...known.tab.inputs]) moved();
+    };
     browser.on("Target.targetCreated", adopt);
-    browser.on("Target.targetInfoChanged", adopt);
+    browser.on("Target.targetInfoChanged", (p) => {
+      adopt(p);
+      if (p.targetInfo && p.targetInfo.type === "iframe") frameMoved(p.targetInfo.targetId);
+    });
+    browser.on("Target.targetCrashed", ({ targetId }) => frameMoved(targetId));
     browser.on("Target.targetDestroyed", ({ targetId }) => {
+      frameMoved(targetId);
       const known = owners.get(targetId);
       if (known && known.tab.targetId !== targetId) owners.delete(targetId);
     });
@@ -1114,11 +1134,12 @@ async function closeTab(chrome, cdp) {
 // pagehide holds it a little. Such a call waited out its whole time, 30 s,
 // and then failed the run, or the demo's step, in the words
 // "Input.dispatchMouseEvent timed out". So once the tab's page has
-// committed another document, a call still under way is waited for
+// committed another document, or a frame of it that runs in a process of
+// its own has (see guardBrowser()), a call still under way is waited for
 // MOVED_MS more and then let go, resolving to { unanswered: true }: the
-// page it was for is gone, and the run goes on with the one that came, as
-// after any move. A tab that has not moved waits for the answer as long as
-// before.
+// document it was for is gone, and the run goes on with the one that
+// came, as after any move. A tab that has not moved waits for the answer
+// as long as before.
 const MOVED_MS = 1_000;
 
 function sendInput(tab, method, params, timeoutMs = 30_000) {

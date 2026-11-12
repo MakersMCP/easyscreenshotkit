@@ -144,11 +144,16 @@ function descendants(pid) {
 // A browser for CHROME_PATH that is the real one, `browser`, behind a relay
 // of the DevTools pipe (file descriptors 3 and 4) that drops the answer to
 // an input event under way as the page's main frame starts to move on to
-// another document, as Chrome does at times: it can drop such an event with
-// the page it was for, and then the call that sent it never hears back. A
-// tab's main frame is the target it was attached by. Returns the wrapper
-// to set CHROME_PATH to, and dropped(): what it dropped, a line each.
-function relayBrowser(root, browser) {
+// another document, or as a frame of it that runs in a process of its own
+// commits another (the browser says so of the frame's target), as Chrome
+// does at times: it can drop such an event with the document it was for,
+// and then the call that sent it never hears back. A tab's main frame is
+// the target it was attached by. holdMs: how long the answer to each input
+// event is held before it goes on, so that a frame's move a moment after
+// the answer came, which the browser tells only once the frame has moved,
+// still drops it. Returns the wrapper to set CHROME_PATH to, and dropped():
+// what it dropped, a line each.
+function relayBrowser(root, browser, { holdMs = 0 } = {}) {
   const script = path.join(root, "relay.js");
   const log = path.join(root, "dropped.log");
   fs.writeFileSync(
@@ -164,6 +169,14 @@ const inputs = new Map();
 const attaching = new Map();
 const mainOf = new Map();
 const dropped = new Set();
+const frameUrls = new Map();
+const dropFor = (session, why) => {
+  for (const [id, call] of inputs) {
+    if (call.session !== session || dropped.has(id)) continue;
+    dropped.add(id);
+    fs.appendFileSync(${JSON.stringify(log)}, call.what + " as " + why + "\\n");
+  }
+};
 const split = (stream, take) => {
   let held = Buffer.alloc(0);
   stream.on("data", (chunk) => {
@@ -189,16 +202,23 @@ split(child.stdio[4], (text) => {
     attaching.delete(msg.id);
   }
   const moving = msg.method === "Page.frameRequestedNavigation" || (msg.method === "Page.frameStartedNavigating" && !/sameDocument/i.test(msg.params.navigationType || ""));
-  if (moving && msg.sessionId && msg.params.frameId === mainOf.get(msg.sessionId)) {
-    for (const [id, call] of inputs) {
-      if (call.session !== msg.sessionId || dropped.has(id)) continue;
-      dropped.add(id);
-      fs.appendFileSync(${JSON.stringify(log)}, call.what + " as the page moved on to " + msg.params.url + "\\n");
-    }
+  if (moving && msg.sessionId && msg.params.frameId === mainOf.get(msg.sessionId)) dropFor(msg.sessionId, "the page moved on to " + msg.params.url);
+  const frame = /^Target\\.target(Created|InfoChanged)$/.test(msg.method || "") && msg.params.targetInfo.type === "iframe" ? msg.params.targetInfo : null;
+  if (frame) {
+    const was = frameUrls.get(frame.targetId);
+    frameUrls.set(frame.targetId, frame.url);
+    if (was !== undefined && was !== frame.url) for (const [session, main] of mainOf) if (main === frame.parentFrameId) dropFor(session, "a frame of the page moved on to " + frame.url);
   }
   if (inputs.has(msg.id)) {
+    if (dropped.has(msg.id)) return void inputs.delete(msg.id);
+    if (${Number(holdMs)} > 0) {
+      setTimeout(() => {
+        inputs.delete(msg.id);
+        if (!dropped.has(msg.id)) toKit.write(text + "\\0");
+      }, ${Number(holdMs)});
+      return;
+    }
     inputs.delete(msg.id);
-    if (dropped.has(msg.id)) return;
   }
   toKit.write(text + "\\0");
 });

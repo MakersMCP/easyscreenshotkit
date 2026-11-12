@@ -2117,6 +2117,43 @@ test("a demo goes on when an input event is left unanswered as the page moves on
   }
 });
 
+// The same over a frame that runs in a process of its own, as a sandboxed
+// one or another site's does: its move to another document never reaches
+// the tab's session, and a demo's visit, whose walk turns the wheel over
+// it, waited 30 s and failed in the words "Input.dispatchMouseEvent timed
+// out". The relay holds each answer a moment and drops the one under way
+// as the browser says the frame has moved.
+test("a demo goes on when an input event is left unanswered as a frame in a process of its own moves on", { skip: missing || (process.platform === "win32" && "the relay is started by a shell script"), timeout: 200_000 }, async () => {
+  const html = { "Content-Type": "text/html; charset=utf-8" };
+  const { server, origin } = await serve((req, res) => {
+    if (req.url === "/") return res.writeHead(200, html).end(page("Acme | Tools", `<h1>Acme</h1><div style="height:2000px;background:rgb(0,160,0)"></div><iframe sandbox="allow-scripts" src="/ad" style="position:fixed;left:25%;top:25%;width:50%;height:50%;border:0"></iframe>`));
+    if (req.url === "/ad") return res.writeHead(200, html).end(page("Ad", `<div style="height:100vh;background:rgb(255,200,0)"></div><script>addEventListener("wheel", () => location.replace("/ad-next"), { once: true });</script>`));
+    if (req.url === "/ad-next") return res.writeHead(200, html).end(page("Ad", '<div style="height:100vh;background:rgb(255,120,0)"></div>'));
+    res.writeHead(404).end("not found");
+  });
+  const root = tempDir();
+  const relay = relayBrowser(root, findChrome(), { holdMs: 2_000 });
+  const steps = path.join(root, "steps.yaml");
+  fs.writeFileSync(steps, "steps:\n  - visit: /\n  - wait: 1\n");
+  try {
+    const run = await new Promise((resolve) => {
+      const child = spawn(process.execPath, [CLI, "demo", origin, "--steps", steps, "--no-gif", "--json", "--out", path.join(root, "demo")], { env: { ...process.env, CHROME_PATH: relay.browser } });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (d) => (stdout += d));
+      child.stderr.on("data", (d) => (stderr += d));
+      child.on("close", (status) => resolve({ status, stdout, stderr }));
+    });
+    assert.equal(run.status, 0, run.stderr);
+    assert.deepEqual(relay.dropped(), [`Input.dispatchMouseEvent mouseWheel as a frame of the page moved on to ${origin}/ad-next`]);
+    const { pages } = JSON.parse(run.stdout);
+    assert.deepEqual(pages.map((p) => [new URL(p.url).pathname, p.title]), [["/", "Acme | Tools"]]);
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // A page that thanks for a download and sends the browser to the file once
 // it is drawn, from the end of its body, is shown as it is drawn, by a
 // click on a link to it and by a visit, with a note that no file was saved,
