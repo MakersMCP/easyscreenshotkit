@@ -51,6 +51,11 @@ test("sign-in, legal and other pages are left out with a reason", () => {
   // though it often needs one: it was said to be one, of an app with none.
   for (const at of ["/app/", "/dashboard", "/account/settings", "/my-account"]) assert.equal(reason(at), "the app itself or an account page, which often needs a sign-in", at);
   assert.equal(reason("/account/login"), "sign-in or sign-up page");
+  // The same in the languages the sign-in words are read in, where an
+  // account page was still said to be a sign-in page and a page of one's
+  // own account was taken.
+  for (const at of ["/konto", "/mein-konto/bestellungen", "/compte", "/mon-compte", "/cuenta", "/mi-cuenta", "/conta", "/minha-conta", "/hesap", "/hesabim/siparislerim"]) assert.equal(reason(at), "the app itself or an account page, which often needs a sign-in", at);
+  for (const at of ["/konto/anmelden", "/compte/connexion", "/cuenta/iniciar-sesion", "/conta/entrar", "/hesap/giris"]) assert.equal(reason(at), "sign-in or sign-up page", at);
   assert.equal(reason("/privacy-policy"), "legal page");
   assert.equal(reason("/kvkk"), "legal page");
   assert.equal(reason("/impressum"), "legal page");
