@@ -497,13 +497,13 @@ function freeInTemp() {
 // downloads both within it. Returns {chrome} once it answers, else {own,
 // tooDeep, silent, refused}: whether its profile was its temp folder,
 // whether it ended because its lock's socket did not fit in that folder,
-// whether it was still running without an answer when the wait ran out,
-// and the error it answered the order to refuse downloads with. A profile
-// that cannot be made, as in a temp folder this user cannot write in, and a
-// program the system will not start, as one another process has open for
-// writing or with no memory left to start it, which Node throws where it
-// does not say so in an error event, are said in unstarted, in place of
-// Node's bare words, and the profile goes.
+// whether it was still running, its pipe open, without an answer when the
+// wait ran out, and the error it answered the order to refuse downloads
+// with. A profile that cannot be made, as in a temp folder this user cannot
+// write in, and a program the system will not start, as one another
+// process has open for writing or with no memory left to start it, which
+// Node throws where it does not say so in an error event, are said in
+// unstarted, in place of Node's bare words, and the profile goes.
 async function start(binary, { lang, args, own, wait = START_MS }) {
   let profile;
   try {
@@ -717,8 +717,11 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
     // known to have ended.
     for (let i = 0; i < 20 && browser.closed() && !exited; i++) await sleep(100);
   }
-  // Still running, with no answer: on a busy machine, or a browser that hangs.
-  const silent = !exited && !refused;
+  // Still running, with no answer and its pipe still open: on a busy
+  // machine, or a browser that hangs. One that closed its pipe was not slow
+  // to answer: Chrome short of threads closes it at once and can go on
+  // running for seconds, and what it printed says why it did not start.
+  const silent = !exited && !refused && !browser.closed();
   // A program the system could not start, or one that ended before it
   // answered as one the system cannot run does (see programs.js), and
   // what is wrong with it.

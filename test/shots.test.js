@@ -2049,6 +2049,30 @@ test("a browser that did not start and said why is quoted, with what to do", { s
   }
 });
 
+// Chrome short of threads, under a limit of processes or threads, closes
+// its pipe at once and can still be running seconds later. It did not
+// answer because it could not start, not because the machine was slow:
+// the line it printed is quoted, where the run said it started but did not
+// answer in 60 s, a few seconds in.
+test("a browser that closes its pipe and goes on running is quoted, not said to be slow to answer", { skip: process.platform === "win32" && "the stand-in browser is a shell script", timeout: 60_000 }, async () => {
+  const root = tempDir();
+  const before = process.env.CHROME_PATH;
+  const fake = path.join(root, "browser");
+  fs.writeFileSync(fake, "#!/bin/sh\nexec 3<&- 4>&-\necho '[3:3:1112/050000.1:ERROR:base/threading/platform_thread_posix.cc:162] pthread_create: Resource temporarily unavailable (11)' >&2\nexec sleep 5\n", { mode: 0o755 });
+  process.env.CHROME_PATH = fake;
+  try {
+    setTimeLimit(120_000);
+    const started = Date.now();
+    await assert.rejects(launch(), { message: 'browser did not start: it printed "pthread_create: Resource temporarily unavailable (11)". The system started no more processes or threads for this user: run fewer jobs at once, or raise that limit (ulimit -u, or a container\'s pids limit).' });
+    const seconds = (Date.now() - started) / 1000;
+    assert.ok(seconds < 15, `${seconds} s`);
+  } finally {
+    if (before === undefined) delete process.env.CHROME_PATH;
+    else process.env.CHROME_PATH = before;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // The same with Chrome itself behind a program that closes the pipe's file
 // descriptors before it starts it: the run stops before any work, makes no
 // folder and leaves nothing in the temp folder.
