@@ -509,7 +509,9 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
   try {
     profile = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-chrome-"));
   } catch (err) {
-    return { unstarted: `the temp folder, ${os.tmpdir()}, cannot be written (${programs.worded(err)}). Point TMPDIR at a folder this user can write to.` };
+    // A full disk quota has no name in Node: errno -122 on Linux.
+    const why = err.errno === -122 ? "your disk quota is full" : programs.worded(err);
+    return { unstarted: `the temp folder, ${os.tmpdir()}, cannot be written (${why}). Point TMPDIR at a folder this user can write to.` };
   }
   // No program of the machine opens what the browser hands out (see
   // standIns): a browser that could not be kept from it is not started.

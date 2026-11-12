@@ -3941,6 +3941,32 @@ test("a temp folder on a disk that takes no symbolic links is named, and the bro
   }
 });
 
+// A temp folder whose disk quota is full: the browser's profile cannot be
+// made there, and Node has no name for that error on Linux (errno -122),
+// which the run quoted as "Unknown system error -122".
+test("a temp folder whose disk quota is full is said so", { skip: process.platform === "win32" && "the stand-in browser is a shell script", timeout: 60_000 }, async () => {
+  const root = tempDir();
+  const saved = process.env.CHROME_PATH;
+  const make = fs.mkdtempSync;
+  process.env.CHROME_PATH = standIns(root)("plain");
+  fs.mkdtempSync = (prefix) => {
+    throw Object.assign(new Error(`Unknown system error -122: Unknown system error -122, mkdtemp '${prefix}XXXXXX'`), { code: "Unknown system error -122", errno: -122, syscall: "mkdtemp" });
+  };
+  try {
+    setTimeLimit(60_000);
+    const refused = await launch().then((chrome) => chrome.close().then(() => null), (err) => err);
+    fs.mkdtempSync = make;
+    assert.equal(refused && refused.message, `plain did not start: the temp folder, ${os.tmpdir()}, cannot be written (your disk quota is full). Point TMPDIR at a folder this user can write to.`);
+    assert.equal(fs.existsSync(path.join(root, "plain.json")), false);
+  } finally {
+    fs.mkdtempSync = make;
+    endStandIns(root, ["plain"]);
+    if (saved === undefined) delete process.env.CHROME_PATH;
+    else process.env.CHROME_PATH = saved;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // A page's version in another language that a link names at an address
 // that is no web address, as file://127.0.0.1/... names a file of a site
 // on this machine, is not opened: the browser showed the file, and the run
