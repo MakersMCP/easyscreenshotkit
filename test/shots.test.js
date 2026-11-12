@@ -2000,13 +2000,17 @@ test("a profile that cannot be removed after a browser that did not start leaves
 // descriptors 3 and 4 closed worked with 0.1.1, which read a port; the
 // browser takes its pipe on them now. A sandbox that cannot start, as in a
 // container that does not let it for a user who is not root, failed every
-// run the same way. Lines of Chrome's that say nothing of it, as its D-Bus
-// lines, are not quoted.
+// run the same way. So do the lock of its profile, the files, processes and
+// threads it may have, and what the loader or the shell said of the program
+// a launcher script starts. Lines of Chrome's that say nothing of it, as
+// its D-Bus lines, are not quoted.
 test("a browser that did not start and said why is quoted, with what to do", { skip: process.platform === "win32" && "the stand-in browser is a shell script", timeout: 60_000 }, async () => {
   const root = tempDir();
   const before = process.env.CHROME_PATH;
   const fake = path.join(root, "browser");
   const sandbox = "Its sandbox could not start: on Linux a browser's own package sets the sandbox up, and a container has to let it start, as Docker does with --security-opt seccomp=unconfined.";
+  const threads = "[3:3:1112/050000.1:ERROR:base/threading/platform_thread_posix.cc:162] pthread_create: Resource temporarily unavailable (11)";
+  const short = "The system started no more processes or threads for this user: run fewer jobs at once, or raise that limit (ulimit -u, or a container's pids limit).";
   try {
     for (const [printed, said] of [
       ["[123:123:1112/050000.123456:ERROR:chrome/app/chrome_main_delegate.cc:1171] Remote debugging pipe file descriptors are not open.", `it printed "Remote debugging pipe file descriptors are not open.". A program that starts the browser has to hand it easyscreenshotkit's pipe, its file descriptors 3 and 4: point CHROME_PATH at the browser's own program, or at one that hands those on.`],
@@ -2016,6 +2020,21 @@ test("a browser that did not start and said why is quoted, with what to do", { s
       // Chrome's two lines in a temp folder on a disk that takes no
       // symbolic links, which the run said nothing of: the first is quoted.
       ["[3762707:3762707:1112/073448.953915:ERROR:chrome/browser/process_singleton_posix.cc:347] Failed to create /tmp/t/easyscreenshotkit-chrome-a1b2c3/SingletonLock: Operation not permitted (1)\n[3762707:3762707:1112/073448.954745:ERROR:chrome/app/chrome_main_delegate.cc:569] Failed to create a ProcessSingleton for your profile directory. This means that running multiple instances would start multiple browser processes rather than opening a new window in the existing process. Aborting now to avoid profile corruption.", `it printed "Failed to create /tmp/t/easyscreenshotkit-chrome-a1b2c3/SingletonLock: Operation not permitted (1)". The lock of the browser's profile, a symbolic link in the temp folder, could not be made: point TMPDIR at a folder on another disk, one that takes symbolic links.`],
+      // A user with as many processes and threads as it may have, as ulimit
+      // -u or a container's pids limit allows, which the run told to try
+      // again or to get another browser.
+      [threads, `it printed "pthread_create: Resource temporarily unavailable (11)". ${short}`],
+      // The same line in the middle of much more, as a browser short of
+      // threads prints from each of its processes: what is kept of it, its
+      // last 8,000 characters, starts 12 characters into the line, and the
+      // place in Chrome's code it starts with, cut short, was quoted too.
+      [`${threads}\n${"y".repeat(8010 - threads.length)}`, `it printed "pthread_create: Resource temporarily unavailable (11)". ${short}`],
+      // What the loader and the shell print of a program that a launcher
+      // script starts, as google-chrome on PATH does on Linux, that needs a
+      // library the machine lacks or is made for another system: only a
+      // program started itself was looked at, and the run said to try again.
+      ["/opt/google/chrome/chrome: error while loading shared libraries: libnss3.so: cannot open shared object file: No such file or directory", `it printed "/opt/google/chrome/chrome: error while loading shared libraries: libnss3.so: cannot open shared object file: No such file or directory". A library the browser needs is missing, or it is made for another system: reinstall it with its package manager, or point CHROME_PATH at one that runs.`],
+      ["/usr/bin/google-chrome: line 45: /opt/google/chrome/chrome: cannot execute binary file: Exec format error", `it printed "/usr/bin/google-chrome: line 45: /opt/google/chrome/chrome: cannot execute binary file: Exec format error". A library the browser needs is missing, or it is made for another system: reinstall it with its package manager, or point CHROME_PATH at one that runs.`],
     ]) {
       fs.writeFileSync(fake, `#!/bin/sh\necho '[1:1:1112/050000.1:ERROR:dbus/bus.cc:408] Failed to connect to the bus: Could not parse server address' >&2\necho '${printed.replace(/'/g, "'\\''")}' >&2\nexit 1\n`, { mode: 0o755 });
       process.env.CHROME_PATH = fake;

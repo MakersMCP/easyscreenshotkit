@@ -412,27 +412,35 @@ async function launch({ lang = "", args = [] } = {}) {
 // and 4 closed, which 0.1.1 did not need as it read a port; its sandbox
 // could not start, as in a container that does not let it, for a user who
 // is not root; it could not make the lock of its profile, a symbolic link,
-// as on a disk that takes none; or it, or the system, had as many files open
-// as they may. Each was said to be a browser that did not start, with the
-// advice to try again.
+// as on a disk that takes none; it, or the system, had as many files open
+// as they may; or the system started no more processes or threads for it.
+// And what the loader or the shell printed of a program that a launcher
+// script starts, as google-chrome on PATH is one on Linux, that needs a
+// library the machine lacks or is made for another system: only a program
+// started itself is looked at more closely (see notRun()). Each was said to
+// be a browser that did not start, with the advice to try again.
 const SAID = [
   [/Remote debugging pipe file descriptors are not open/, "A program that starts the browser has to hand it easyscreenshotkit's pipe, its file descriptors 3 and 4: point CHROME_PATH at the browser's own program, or at one that hands those on."],
   [/No usable sandbox|SUID sandbox helper binary was found, but is not configured correctly|setuid sandbox: failed to move to new namespaces|Failed to move to new namespace/, "Its sandbox could not start: on Linux a browser's own package sets the sandbox up, and a container has to let it start, as Docker does with --security-opt seccomp=unconfined."],
   [/Failed to create .*SingletonLock|Failed to create a ProcessSingleton/, "The lock of the browser's profile, a symbolic link in the temp folder, could not be made: point TMPDIR at a folder on another disk, one that takes symbolic links."],
   [/Too many open files in system/, "The system had as many files open as it may: run fewer jobs at once."],
   [/Too many open files/, "The browser had as many files open as it may: raise that limit, as ulimit -n does, and run again."],
+  [/Resource temporarily unavailable/, "The system started no more processes or threads for this user: run fewer jobs at once, or raise that limit (ulimit -u, or a container's pids limit)."],
+  [/error while loading shared libraries|cannot execute binary file|Exec format error/, "A library the browser needs is missing, or it is made for another system: reinstall it with its package manager, or point CHROME_PATH at one that runs."],
 ];
 
 // The line of what the browser printed that holds words of SAID, quoted
 // without the place in Chrome's code it starts with, cut to about 200
 // characters and its control characters written out, and what to do: "" for
-// one that printed none.
+// one that printed none. That place can be cut short too, as what is kept of
+// what the browser printed starts in the middle of a line when it printed
+// much, as a browser short of threads does from each of its processes.
 function saidWhy(output) {
   const lines = String(output || "").split("\n").map((line) => line.trim()).filter(Boolean);
   for (const [words, fix] of SAID) {
     const line = lines.find((one) => words.test(one));
     if (!line) continue;
-    const bare = line.replace(/^\[[^\]]*\]\s*/, "");
+    const bare = line.replace(/^\[?[^\]\s]*\]\s*/, "");
     const cut = bare.length > 200 ? `${bare.slice(0, 200)}...` : bare;
     return `it printed "${cut.replace(/[\u0000-\u001f\u007f-\u009f]/g, (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, "0")}`)}". ${fix}`;
   }

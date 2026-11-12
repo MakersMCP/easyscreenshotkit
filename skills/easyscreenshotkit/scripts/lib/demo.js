@@ -129,7 +129,7 @@ was and adds nothing.
 
 Needs Node 22 or newer, Chrome, Chromium, Edge or Brave, and ffmpeg. Set
 CHROME_PATH or FFMPEG_PATH to pick them, as a path or a name on PATH; one
-that cannot be started stops the demo before any work, with what is wrong
+the system cannot start stops the demo before any work, with what is wrong
 with it. The demo drives the browser over a pipe, so it opens no port.`;
 
 function parseDemo(argv) {

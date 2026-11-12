@@ -1140,6 +1140,40 @@ test("a browser or an ffmpeg that cannot be started stops a run before any work 
         fs.chmodSync(tmp, 0o755);
       }
     });
+    // The program that a launcher script starts, as google-chrome on PATH
+    // is one on Linux, that needs a library the machine lacks or is made for
+    // another processor: what the loader or the shell printed is quoted,
+    // with what to do, where the run said the browser did not start and to
+    // try again. A system that hands a program for another processor to an
+    // emulator of its own (binfmt_misc) runs it there.
+    const emulated = (() => {
+      let names = [];
+      try {
+        names = fs.readdirSync("/proc/sys/fs/binfmt_misc");
+      } catch {
+        return false;
+      }
+      return names.some((name) => {
+        try {
+          return /^enabled\n[\s\S]*magic 7f454c46/.test(fs.readFileSync(path.join("/proc/sys/fs/binfmt_misc", name), "utf8"));
+        } catch {
+          // register, which may only be written.
+          return false;
+        }
+      });
+    })();
+    const advice = "A library the browser needs is missing, or it is made for another system: reinstall it with its package manager, or point CHROME_PATH at one that runs.";
+    for (const [folder, skip] of [["libmiss", !libmiss && "true links no libc.so.6"], ["arm", (!other && "needs an x86-64 or ARM64 machine") || (emulated && "this system hands a program for another processor to an emulator")]]) {
+      await t.test(`a launcher script of ${folder === "arm" ? "a program for another processor" : "a program that needs a shared library the machine lacks"}`, { skip }, () => {
+        for (const shell of ["/bin/sh", "/bin/bash"].filter((file) => fs.existsSync(file))) {
+          const launcher = at(`launch-${folder}-${path.basename(shell)}`);
+          fs.writeFileSync(launcher, `#!${shell}\nexec ${at(folder, "chrome")} "$@"\n`, { mode: 0o755 });
+          const line = spawnSync(launcher, { encoding: "utf8" }).stderr.trim().split("\n")[0];
+          const cut = line.length > 200 ? `${line.slice(0, 200)}...` : line;
+          refused({ CHROME_PATH: launcher }, SHOTS, `easyscreenshotkit: ${path.basename(launcher)} did not start: it printed "${cut}". ${advice}`);
+        }
+      });
+    }
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
