@@ -411,12 +411,14 @@ async function launch({ lang = "", args = [] } = {}) {
 // CHROME_PATH names and that starts the browser with its file descriptors 3
 // and 4 closed, which 0.1.1 did not need as it read a port; its sandbox
 // could not start, as in a container that does not let it, for a user who
-// is not root; or it, or the system, had as many files open as they may.
-// Each was said to be a browser that did not start, with the advice to try
-// again.
+// is not root; it could not make the lock of its profile, a symbolic link,
+// as on a disk that takes none; or it, or the system, had as many files open
+// as they may. Each was said to be a browser that did not start, with the
+// advice to try again.
 const SAID = [
   [/Remote debugging pipe file descriptors are not open/, "A program that starts the browser has to hand it easyscreenshotkit's pipe, its file descriptors 3 and 4: point CHROME_PATH at the browser's own program, or at one that hands those on."],
   [/No usable sandbox|SUID sandbox helper binary was found, but is not configured correctly|setuid sandbox: failed to move to new namespaces|Failed to move to new namespace/, "Its sandbox could not start: on Linux a browser's own package sets the sandbox up, and a container has to let it start, as Docker does with --security-opt seccomp=unconfined."],
+  [/Failed to create .*SingletonLock|Failed to create a ProcessSingleton/, "The lock of the browser's profile, a symbolic link in the temp folder, could not be made: point TMPDIR at a folder on another disk, one that takes symbolic links."],
   [/Too many open files in system/, "The system had as many files open as it may: run fewer jobs at once."],
   [/Too many open files/, "The browser had as many files open as it may: raise that limit, as ulimit -n does, and run again."],
 ];
@@ -758,10 +760,11 @@ function browserEnv(profile, more) {
 // or scripts that exit at once where there is no true or false. The rest
 // of PATH stays as it was. Returns the browser's PATH and bus, once each
 // of those names on that PATH leads to its stand-in, or { problem }: why it
-// cannot, as no program may run from the temp folder (one mounted noexec,
-// with no true or false to link to), or the temp folder's path has in it
-// the character that parts the folders of PATH, which led the browser to
-// the real programs.
+// cannot, as the temp folder is on a disk that takes no symbolic links,
+// where the browser could not make the lock of its profile either, no
+// program may run from the temp folder (one mounted noexec, with no true or
+// false to link to), or the temp folder's path has in it the character that
+// parts the folders of PATH, which led the browser to the real programs.
 const HANDED_TO = ["xdg-open", "xdg-email", "x-www-browser", "www-browser", "sensible-browser"];
 const ASKED = ["xdg-settings", "xdg-mime"];
 
@@ -776,6 +779,7 @@ function standIns(profile) {
       return false;
     }
   };
+  let noLinks = false;
   try {
     fs.mkdirSync(dir);
     for (const [names, ends] of [[HANDED_TO, 0], [ASKED, 1]]) {
@@ -786,13 +790,15 @@ function standIns(profile) {
         else fs.writeFileSync(at, `#!/bin/sh\nexit ${ends}\n`, { mode: 0o700 });
       }
     }
-  } catch {
+  } catch (err) {
     // Said below: the names do not lead to stand-ins.
+    noLinks = err.syscall === "symlink" && ["EPERM", "EOPNOTSUPP", "ENOSYS"].includes(err.code);
   }
   if ([...HANDED_TO, ...ASKED].every((name) => programs.lookOnPath(name, { within: PATH }).file === path.join(dir, name))) {
     return { PATH, DBUS_SESSION_BUS_ADDRESS: `unix:path=${busPath(path.resolve(profile, "easyscreenshotkit-no-bus"))}` };
   }
   const tmp = os.tmpdir();
+  if (noLinks) return { problem: `the temp folder, ${tmp}, is on a disk that takes no symbolic links, which the browser's profile needs. Point TMPDIR at a folder on another disk` };
   if (dir.includes(path.delimiter)) return { problem: `the temp folder's path, ${tmp}, has a ${path.delimiter} in it, which parts the folders of PATH. Point TMPDIR at a folder whose path has none` };
   return { problem: `no program may run from the temp folder, ${tmp}. Point TMPDIR at a folder where programs may run` };
 }

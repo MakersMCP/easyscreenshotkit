@@ -1982,6 +1982,9 @@ test("a browser that did not start and said why is quoted, with what to do", { s
       ["[1:1:1112/050000.1:FATAL:zygote_host_impl_linux.cc(127)] No usable sandbox! If you are running on Ubuntu 23.10+ or another Linux distro that has disabled unprivileged user namespaces with AppArmor, see https://chromium.googlesource.com/chromium/src/+/main/docs/security/apparmor-userns-restrictions.md.", `it printed "${"No usable sandbox! If you are running on Ubuntu 23.10+ or another Linux distro that has disabled unprivileged user namespaces with AppArmor, see https://chromium.googlesource.com/chromium/src/+/main/docs/security/apparmor-userns-restrictions.md".slice(0, 200)}...". ${sandbox}`],
       ["Failed to move to new namespace: PID namespaces supported, Network namespace supported, but failed: errno = Operation not permitted", `it printed "Failed to move to new namespace: PID namespaces supported, Network namespace supported, but failed: errno = Operation not permitted". ${sandbox}`],
       ["[1:1:1112/050000.1:ERROR:base/files/file_util_posix.cc(612)] mkstemp: Too many open files (24)", 'it printed "mkstemp: Too many open files (24)". The browser had as many files open as it may: raise that limit, as ulimit -n does, and run again.'],
+      // Chrome's two lines in a temp folder on a disk that takes no
+      // symbolic links, which the run said nothing of: the first is quoted.
+      ["[3762707:3762707:1112/073448.953915:ERROR:chrome/browser/process_singleton_posix.cc:347] Failed to create /tmp/t/easyscreenshotkit-chrome-a1b2c3/SingletonLock: Operation not permitted (1)\n[3762707:3762707:1112/073448.954745:ERROR:chrome/app/chrome_main_delegate.cc:569] Failed to create a ProcessSingleton for your profile directory. This means that running multiple instances would start multiple browser processes rather than opening a new window in the existing process. Aborting now to avoid profile corruption.", `it printed "Failed to create /tmp/t/easyscreenshotkit-chrome-a1b2c3/SingletonLock: Operation not permitted (1)". The lock of the browser's profile, a symbolic link in the temp folder, could not be made: point TMPDIR at a folder on another disk, one that takes symbolic links.`],
     ]) {
       fs.writeFileSync(fake, `#!/bin/sh\necho '[1:1:1112/050000.1:ERROR:dbus/bus.cc:408] Failed to connect to the bus: Could not parse server address' >&2\necho '${printed.replace(/'/g, "'\\''")}' >&2\nexit 1\n`, { mode: 0o755 });
       process.env.CHROME_PATH = fake;
@@ -3761,6 +3764,43 @@ test("the browser starts with no display, a session bus where nothing listens, a
     endStandIns(root, ["plain"]);
     bus.close();
     display.close();
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// The stand-ins are links to true and false, and so is the lock of the
+// browser's profile: in a temp folder on a disk that takes no symbolic
+// links, as some mounted ones are, the browser cannot start either, and the
+// run said that no program may run from the temp folder. It names the disk,
+// and the browser is not started.
+test("a temp folder on a disk that takes no symbolic links is named, and the browser is not started", { skip: process.platform !== "linux" && "the stand-ins are made on Linux only", timeout: 60_000 }, async () => {
+  const root = tempDir();
+  const tmp = path.join(root, "tmp");
+  fs.mkdirSync(tmp);
+  const saved = { CHROME_PATH: process.env.CHROME_PATH, TMPDIR: process.env.TMPDIR };
+  const link = fs.symlinkSync;
+  process.env.CHROME_PATH = standIns(root)("plain");
+  process.env.TMPDIR = tmp;
+  try {
+    for (const code of ["EPERM", "EOPNOTSUPP", "ENOSYS"]) {
+      fs.symlinkSync = (target, at) => {
+        throw Object.assign(new Error(`${code}: symlink '${target}' -> '${at}'`), { code, syscall: "symlink" });
+      };
+      setTimeLimit(60_000);
+      // A browser that did start is closed again, for the test to fail on.
+      const refused = await launch().then((chrome) => chrome.close().then(() => null), (err) => err);
+      fs.symlinkSync = link;
+      assert.equal(refused && refused.message, `plain was not started: it hands addresses such as mailto: to programs of this machine, and none could be put in their place, as the temp folder, ${tmp}, is on a disk that takes no symbolic links, which the browser's profile needs. Point TMPDIR at a folder on another disk.`, code);
+      assert.deepEqual(fs.readdirSync(tmp), [], code);
+      assert.equal(fs.existsSync(path.join(root, "plain.json")), false, code);
+    }
+  } finally {
+    fs.symlinkSync = link;
+    endStandIns(root, ["plain"]);
     for (const [name, value] of Object.entries(saved)) {
       if (value === undefined) delete process.env[name];
       else process.env[name] = value;
