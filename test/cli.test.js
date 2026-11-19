@@ -15,9 +15,14 @@ const { sheetHtml } = require("../skills/easyscreenshotkit/scripts/lib/sheet");
 
 const CLI = path.resolve(__dirname, "../skills/easyscreenshotkit/scripts/easyscreenshotkit.js");
 
-test("the skill folder carries its own version, the same as the package's and every plugin manifest's", () => {
+// The lockfile's own version and its root package's count too: a version
+// commit that missed one of them passed the test while it read the others.
+test("the skill folder carries its own version, the same as the package's, the lockfile's and every plugin manifest's", () => {
   const version = require("../skills/easyscreenshotkit/scripts/lib/version");
   assert.equal(version, require("../package.json").version);
+  const lock = require("../package-lock.json");
+  assert.equal(version, lock.version);
+  assert.equal(version, lock.packages[""].version);
   assert.equal(version, require("../.claude-plugin/marketplace.json").plugins[0].version);
   assert.equal(version, require("../.codex-plugin/plugin.json").version);
   assert.equal(version, require("../plugin.json").version);
