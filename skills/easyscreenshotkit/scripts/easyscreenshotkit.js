@@ -6,6 +6,7 @@ const { takeShots, normalizeUrl } = require("./lib/shots");
 const { pathOf, readable, printable } = require("./lib/pick");
 const { stopOnSignals } = require("./lib/outdir");
 const { checkManifest, describeCheck } = require("./lib/pwa");
+const { refusalsProblem } = require("./lib/address");
 const version = require("./lib/version");
 
 const USAGE = `Usage: easyscreenshotkit <url> [options]
@@ -78,6 +79,13 @@ another port than 80 and 443. The rule is for the pages the run opens and
 the files it reads itself: a page's own pictures, styles, scripts and the
 data it fetches are left to the browser's own rules, and on a site you run
 on your machine they can come from other ports of it.
+
+MAKERSMCP_REFUSE_ADDRESSES, a comma list of IP addresses and CIDR ranges,
+names addresses the machine refuses besides, as a service that runs the
+kit for others names its own: no page is opened and no file read at one,
+the address given included, which then stops the run. Empty or unset, it
+refuses nothing more; a value that does not parse stops every command
+before any work, with exit code 2.
 
 An address of another kind that a page goes to, such as mailto:, is no
 page to open, and its notes say so: on Linux the browser hands it to no
@@ -253,6 +261,14 @@ async function main() {
   }
   if (options.help) return void process.stdout.write(`${USAGE}\n`);
   if (options.version) return void process.stdout.write(`${version}\n`);
+  // A MAKERSMCP_REFUSE_ADDRESSES that does not parse is refused as an
+  // argument is, before any work.
+  const unread = refusalsProblem();
+  if (unread) {
+    if (options.json) process.stdout.write(JSON.stringify({ ok: false, error: unread }) + "\n");
+    process.stderr.write(`easyscreenshotkit: ${printable(unread)}\n`);
+    process.exit(2);
+  }
   if (options.pwaCheck) return pwaCheck(options);
   stopOnSignals({ name: "easyscreenshotkit", json: options.json });
   try {

@@ -67,6 +67,59 @@ test("a run looks at its folder before the browser, and at the browser before th
   }
 });
 
+// MAKERSMCP_REFUSE_ADDRESSES, the addresses the host that runs the kit
+// refuses besides: a value that does not parse stops every command before
+// any work, with exit code 2 as an argument the kit refuses and words that
+// name the setting, so no folder is made and no browser or ffmpeg is
+// started; --help and --version still answer. An address given that the
+// setting names stops a run as one on a host that cannot be looked up
+// does, once the folder and the browser have been looked at, and the
+// browser is not started.
+test("a MAKERSMCP_REFUSE_ADDRESSES that does not parse stops every command before any work, and an address given that it names stops a run before the browser starts", { skip: process.platform === "win32" && "the stand-ins are shell scripts", timeout: 60_000 }, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-refuse-"));
+  const { CHROME_PATH, FFMPEG_PATH, MAKERSMCP_REFUSE_ADDRESSES, ...base } = process.env;
+  try {
+    const started = path.join(root, "started");
+    const ffmpeg = path.join(root, "ffmpeg");
+    fs.writeFileSync(ffmpeg, `#!/bin/sh\necho ffmpeg >> ${JSON.stringify(started)}\ncase "$*" in *-version*) echo 'ffmpeg version 4.4.2-stand-in';; *) printf '%s\\n' ' V....D libx264  libx264 H.264';; esac\n`, { mode: 0o755 });
+    const chrome = path.join(root, "chrome");
+    fs.writeFileSync(chrome, `#!/bin/sh\necho chrome >> ${JSON.stringify(started)}\nexit 1\n`, { mode: 0o755 });
+    const manifest = path.join(root, "manifest.json");
+    fs.writeFileSync(manifest, JSON.stringify({ screenshots: [] }));
+    const run = (setting, ...args) => spawnSync(process.execPath, [CLI, ...args], { env: { ...base, CHROME_PATH: chrome, FFMPEG_PATH: ffmpeg, MAKERSMCP_REFUSE_ADDRESSES: setting }, encoding: "utf8", timeout: 30_000 });
+    const out = path.join(root, "out");
+    const said = (entry) => `MAKERSMCP_REFUSE_ADDRESSES takes IP addresses and CIDR ranges, separated by commas, such as 192.0.2.7,198.51.100.0/24, and "${entry}" is neither. Correct it, or leave it empty to refuse no more addresses.`;
+    for (const [name, args] of [["easyscreenshotkit", ["https://acme.com/", "--out", out]], ["easyscreenshotkit demo", ["demo", "https://acme.com/", "--out", out]], ["easyscreenshotkit", ["--pwa-check", manifest]]]) {
+      const unread = run("185.137.215.163, 10.0.0.0/33", ...args);
+      assert.deepEqual([unread.status, unread.stdout, unread.stderr], [2, "", `${name}: ${said("10.0.0.0/33")}\n`], args.join(" "));
+      const json = run("10.0.0.0/33", ...args, "--json");
+      assert.deepEqual([json.status, JSON.parse(json.stdout)], [2, { ok: false, error: said("10.0.0.0/33") }], args.join(" "));
+      // A line break in the value is shown escaped, on the message's line.
+      const broken = run("10.0.0.1\nSaved 12 pages", ...args);
+      assert.deepEqual([broken.status, broken.stderr], [2, `${name}: ${said("10.0.0.1%0ASaved 12 pages")}\n`], args.join(" "));
+      assert.equal(fs.existsSync(out), false, args.join(" "));
+    }
+    assert.equal(fs.existsSync(started), false, "a program was started");
+    for (const args of [["--help"], ["--version"], ["demo", "--help"]]) assert.equal(run("nonsense", ...args).status, 0, args.join(" "));
+    // Empty, it refuses nothing more: the manifest is checked.
+    assert.equal(run("", "--pwa-check", manifest).status, 1);
+    assert.equal(run(" , ", "--pwa-check", manifest).status, 1);
+    // The address given, which the setting names.
+    for (const [name, args] of [["easyscreenshotkit", ["http://127.0.0.1:9/", "--out", out]], ["easyscreenshotkit demo", ["demo", "http://127.0.0.1:9/", "--out", out]]]) {
+      const refused = run("127.0.0.0/8", ...args);
+      assert.deepEqual([refused.status, refused.stderr], [1, `${name}: Could not open http://127.0.0.1:9/: it is at 127.0.0.1, an address MAKERSMCP_REFUSE_ADDRESSES refuses.\n`], args.join(" "));
+      assert.equal(fs.existsSync(out), false, args.join(" "));
+    }
+    const checked = run("127.0.0.0/8", "--pwa-check", "http://127.0.0.1:9/");
+    assert.deepEqual([checked.status, checked.stderr], [1, "easyscreenshotkit: Could not read http://127.0.0.1:9/: it is at 127.0.0.1, an address MAKERSMCP_REFUSE_ADDRESSES refuses\n"]);
+    // The demo asks ffmpeg its version and encoders before the address is
+    // judged, as before; no browser started at all.
+    assert.equal(fs.existsSync(started) ? fs.readFileSync(started, "utf8").split("\n").filter((line) => line === "chrome").length : 0, 0);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("the CLI explains itself and refuses a missing address or a bad option", () => {
   const help = spawnSync(process.execPath, [CLI, "--help"], { encoding: "utf8" });
   assert.equal(help.status, 0);

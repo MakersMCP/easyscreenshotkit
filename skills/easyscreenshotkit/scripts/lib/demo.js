@@ -27,7 +27,7 @@ const { cameraAt } = require("./motion");
 const { ffmpegReady, pickEncoder, startVideo, makeGif } = require("./ffmpeg");
 const { tagPng, pngSize, pngFileIsWhole } = require("./png");
 const { setTimeLimit, timeLeft } = require("./time");
-const { guardFor, unresolvedError } = require("./address");
+const { guardFor, hostRefusals, refusalsProblem, unresolvedError, refusedError } = require("./address");
 const { begin, checkDir, stopOnSignals } = require("./outdir");
 const programs = require("./programs");
 const version = require("./version");
@@ -98,6 +98,13 @@ address given on one stops the demo. The rule is for the pages the demo
 opens: a page's own pictures, styles, scripts and the data it fetches are
 left to the browser's own rules, and on a site you run on your machine
 they can come from other ports of it.
+
+MAKERSMCP_REFUSE_ADDRESSES, a comma list of IP addresses and CIDR ranges,
+names addresses the machine refuses besides, as a service that runs the
+kit for others names its own: no page is opened at one, the address given
+included, which then stops the demo. Empty or unset, it refuses nothing
+more; a value that does not parse stops the demo before any work, with
+exit code 2.
 
 A click on a link to an address of another kind, such as mailto:, or to
 a page that redirects to one, or a page that goes to one, leaves the page
@@ -420,6 +427,9 @@ async function makeDemo(rawUrl, options = {}) {
     log = () => {},
   } = options;
   setTimeLimit(timeLimit);
+  // The addresses the host that runs the kit refuses: a setting that does
+  // not parse stops the demo before any work (see address.js).
+  hostRefusals();
   // The programs an earlier run in this process found are found again.
   programs.forget();
   // Read without holding the process: a named pipe that nothing writes to
@@ -473,10 +483,12 @@ async function makeDemo(rawUrl, options = {}) {
     if (noBrowser) throw new Error(noBrowser);
     // The pages the demo opens, by a step, a click or the tour, are of the
     // address given or on the public internet, on port 80 or 443 away from
-    // it (see address.js). One whose host's name cannot be looked up here
-    // opens nothing, and the demo stops before it starts the browser.
+    // it (see address.js). One whose host's name cannot be looked up here,
+    // or that MAKERSMCP_REFUSE_ADDRESSES refuses, opens nothing, and the demo
+    // stops before it starts the browser.
     const guard = await guardFor(asked);
     if (guard.unresolved) throw unresolvedError(asked, guard);
+    if (guard.refused) throw refusedError(asked, guard);
     fs.mkdirSync(frames);
     chrome = await launch({ lang, args: [`--force-device-scale-factor=${density}`] });
     chrome.guard = guard;
@@ -654,6 +666,14 @@ async function main(argv) {
   }
   if (options.help) return void process.stdout.write(`${USAGE}\n`);
   if (options.version) return void process.stdout.write(`${version}\n`);
+  // A MAKERSMCP_REFUSE_ADDRESSES that does not parse is refused as an
+  // argument is, before any work.
+  const unread = refusalsProblem();
+  if (unread) {
+    if (options.json) process.stdout.write(JSON.stringify({ ok: false, error: unread }) + "\n");
+    process.stderr.write(`easyscreenshotkit demo: ${printable(unread)}\n`);
+    process.exit(2);
+  }
   stopOnSignals({ name: "easyscreenshotkit demo", json: options.json });
   try {
     const result = await makeDemo(options.url, {

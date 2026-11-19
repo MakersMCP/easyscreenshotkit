@@ -2,9 +2,10 @@
 
 // Which addresses a run opens and reads (lib/address.js): only web
 // addresses, and from a site on the public internet only addresses on it,
-// on port 80 or 443 away from the address given, so a site, a steps file
-// or a manifest cannot send the kit to this machine, its network or another
-// program of a host. No browser here.
+// on port 80 or 443 away from the address given, and none the host's
+// MAKERSMCP_REFUSE_ADDRESSES names, so a site, a steps file or a manifest
+// cannot send the kit to this machine, its network or another program of a
+// host. No browser here.
 
 const assert = require("node:assert/strict");
 const dns = require("node:dns");
@@ -12,13 +13,15 @@ const http = require("node:http");
 const https = require("node:https");
 const { EventEmitter } = require("node:events");
 const test = require("node:test");
-const { guardFor, getChecked, notPublicIp, unresolvedError, UNRESOLVED } = require("../skills/easyscreenshotkit/scripts/lib/address");
+const { guardFor, getChecked, notPublicIp, hostRefusals, refusalsProblem, unresolvedError, refusedError, UNRESOLVED } = require("../skills/easyscreenshotkit/scripts/lib/address");
 const { alternateFor } = require("../skills/easyscreenshotkit/scripts/lib/pick");
 const CASES = require("./address-cases.json");
 
 const NOT_PUBLIC = "not on the public internet";
 const NOT_GIVEN = "not on the public internet, and not on the host and port given";
+const SETTING = "MAKERSMCP_REFUSE_ADDRESSES";
 const port = (n) => `on port ${n}, not 80 or 443, and not on the scheme, host and port given`;
+const here = (address) => `at ${address}, an address ${SETTING} refuses`;
 
 // Names as a DNS server of the site's own would answer them, for the run's
 // rule: by name, an address, a list of them, or none for no such name.
@@ -35,6 +38,20 @@ async function withNames(names, body) {
     return await body();
   } finally {
     dns.lookup = lookup;
+  }
+}
+
+// The run with MAKERSMCP_REFUSE_ADDRESSES set to value, or unset for
+// undefined; put back as it was, deleted when it was unset.
+async function withSetting(value, body) {
+  const saved = process.env[SETTING];
+  if (value === undefined) delete process.env[SETTING];
+  else process.env[SETTING] = value;
+  try {
+    return await body();
+  } finally {
+    if (saved === undefined) delete process.env[SETTING];
+    else process.env[SETTING] = saved;
   }
 }
 
@@ -349,6 +366,143 @@ test("a file the kit reads itself is not read from an address the run does not o
   } finally {
     site.close();
     other.close();
+  }
+});
+
+// MAKERSMCP_REFUSE_ADDRESSES: a comma list of IP addresses and CIDR ranges
+// that the host which runs the kit refuses besides, as a service names its
+// own public addresses, which lead back into its network. Empty or missing,
+// it refuses nothing more; a value that does not parse is said so, naming
+// the setting, so a run stops over it before any work: a run that went on
+// would open what the host meant to refuse.
+test("MAKERSMCP_REFUSE_ADDRESSES takes IP addresses and CIDR ranges separated by commas, and a value that does not parse is said so, naming it", async () => {
+  for (const [value, size] of [
+    [undefined, 0],
+    ["", 0],
+    ["  ", 0],
+    [" , ,", 0],
+    ["185.137.215.163", 1],
+    [" 185.137.215.163 , 185.137.215.165 ", 2],
+    ["185.137.215.163,", 1],
+    ["10.0.0.0/8,192.168.0.0/16", 2],
+    ["185.137.215.163/24", 1],
+    ["2001:db8::/32,::1", 2],
+    ["::ffff:185.137.215.163,0.0.0.0/0,::/0", 3],
+  ]) {
+    assert.equal(refusalsProblem(value), "", String(value));
+    assert.equal(hostRefusals(value).size, size, String(value));
+  }
+  const said = (entry) => `${SETTING} takes IP addresses and CIDR ranges, separated by commas, such as 192.0.2.7,198.51.100.0/24, and "${entry}" is neither. Correct it, or leave it empty to refuse no more addresses.`;
+  for (const entry of ["foo", "localhost", "127.1", "0x7f000001", "1.2.3", "1.2.3.4.5", "1.2.3.4/33", "::1/129", "1.2.3.4/", "/24", "1.2.3.4/-1", "1.2.3.4/+8", "1.2.3.4/ 8", "1.2.3.4/0x8", "1.2.3.4 5.6.7.8", "1.2.3.4;5.6.7.8", "[::1]", "fe80::1%eth0", "300.1.2.3", "01.2.3.4"]) {
+    assert.equal(refusalsProblem(entry), said(entry), entry);
+    assert.equal(refusalsProblem(`185.137.215.163,${entry}`), said(entry), entry);
+    assert.throws(() => hostRefusals(entry), { message: said(entry) });
+  }
+  const long = `${"1".repeat(80)}`;
+  assert.equal(refusalsProblem(long), said(`${"1".repeat(57)}...`));
+  // What is no printable ASCII is shown escaped, a line break and a lone
+  // surrogate too, so the message stays on its line.
+  assert.equal(refusalsProblem("10.0.0.1\nSaved 12 pages, 1.2.3.4"), said("10.0.0.1%0ASaved 12 pages"));
+  assert.equal(refusalsProblem("10.0.0.1 ‮x\ud800"), said("10.0.0.1%E2%80%A8%E2%80%AEx%EF%BF%BD"));
+  assert.equal(refusalsProblem(`${"é".repeat(70)}`), said(`${"%C3%A9".repeat(57)}...`));
+  // A run's rule reads the setting as the run starts.
+  await withSetting("not an address", () => assert.rejects(guardFor("https://acme.com/"), { message: said("not an address") }));
+});
+
+// What MAKERSMCP_REFUSE_ADDRESSES names is refused for every address the run
+// opens, the address given included, whatever the rule would let through:
+// a site on this machine given, a name that resolves to it among other
+// addresses, and each IPv6 form that holds an IPv4 address it names. The
+// words name the setting and the address.
+test("the addresses MAKERSMCP_REFUSE_ADDRESSES names are refused wherever they come from, the address given included", () =>
+  withNames(
+    {
+      "public.example": "93.184.215.14",
+      "vm.example": "185.137.215.163",
+      "mixed.example": ["93.184.215.14", "185.137.215.165"],
+      "v6.example": "2a00:1450:4001::1",
+      "devbox.example": "10.0.0.7",
+    },
+    async () => {
+      await withSetting("185.137.215.163, 185.137.215.165,2a00:1450::/32", async () => {
+        const guard = await guardFor("https://public.example/");
+        assert.equal(guard.refused, "");
+        for (const [url, why] of [
+          ["https://public.example/", ""],
+          ["https://vm.example/", here("185.137.215.163")],
+          ["http://185.137.215.165/", here("185.137.215.165")],
+          ["https://185.137.215.163:443/x", here("185.137.215.163")],
+          ["https://mixed.example/", here("185.137.215.165")],
+          ["https://v6.example/", here("2a00:1450:4001::1")],
+          ["http://[::ffff:185.137.215.163]/", here("::ffff:b989:d7a3")],
+          ["http://[::185.137.215.163]/", here("::b989:d7a3")],
+          ["http://[::ffff:0:185.137.215.163]/", here("::ffff:0:b989:d7a3")],
+          ["http://[2002:b989:d7a3::1]/", here("2002:b989:d7a3::1")],
+          ["http://[64:ff9b::185.137.215.165]/", here("64:ff9b::b989:d7a5")],
+          // Before the port's rule, and with the scheme, host and port given.
+          ["https://vm.example:8443/", here("185.137.215.163")],
+        ]) {
+          assert.equal(await guard.refuses(url), why, url);
+        }
+        // The address given on such a host: the run stops over it.
+        const given = await guardFor("https://vm.example/app/");
+        assert.equal(given.refused, here("185.137.215.163"));
+        assert.equal(await given.refuses("https://vm.example/app/"), here("185.137.215.163"));
+        assert.equal(refusedError("https://vm.example/app/", given).message, `Could not open https://vm.example/app/: it is ${here("185.137.215.163")}.`);
+        // A name that cannot be looked up is refused as such.
+        assert.equal(await guard.refuses("https://nowhere.example/"), UNRESOLVED);
+      });
+      // A site on this machine or its network given, which the setting names.
+      await withSetting("127.0.0.0/8", async () => {
+        const local = await guardFor("http://localhost:3000/");
+        assert.equal(local.refused, here("127.0.0.1"));
+        assert.equal(await local.refuses("http://localhost:3000/pricing"), here("127.0.0.1"));
+        assert.equal((await guardFor("http://127.0.0.1:3000/")).refused, here("127.0.0.1"));
+      });
+      await withSetting("::1", async () => assert.equal((await guardFor("http://app.localhost:3000/")).refused, here("::1")));
+      await withSetting("10.0.0.0/8", async () => assert.equal((await guardFor("http://devbox.example:8080/")).refused, here("10.0.0.7")));
+      // Empty or missing, it refuses nothing more.
+      for (const value of ["", undefined, " , "]) {
+        await withSetting(value, async () => {
+          const guard = await guardFor("https://vm.example/");
+          assert.equal(guard.refused, "");
+          assert.equal(await guard.refuses("https://vm.example/x"), "");
+          assert.equal(await (await guardFor("http://localhost:3000/")).refuses("http://localhost:3000/x"), "");
+        });
+      }
+    },
+  ));
+
+// A file the kit reads itself is held to the setting too, on the host and
+// port given on this machine, whose lookup the run otherwise leaves to the
+// system: no request is sent to an address it names.
+test("a file the kit reads itself is not read at an address MAKERSMCP_REFUSE_ADDRESSES names, from the address given either", async () => {
+  const seen = [];
+  const site = http.createServer((req, res) => {
+    seen.push(req.url);
+    res.end("here");
+  });
+  await new Promise((resolve) => site.listen(0, "127.0.0.1", resolve));
+  const origin = `http://127.0.0.1:${site.address().port}`;
+  try {
+    await withSetting("127.0.0.1", async () => {
+      const guard = await guardFor(`${origin}/`);
+      assert.equal(guard.refused, here("127.0.0.1"));
+      await assert.rejects(getChecked(`${origin}/robots.txt`, { guard }), { refused: `it is ${here("127.0.0.1")}` });
+      // The lookup for the host and port given on this machine refuses the
+      // addresses the setting names, a name under localhost included.
+      const lookup = (await guardFor("http://localhost:3000/")).lookupFor("http://localhost:3000/robots.txt");
+      assert.equal(typeof lookup, "function");
+      const err = await new Promise((resolve) => lookup("localhost", { all: true }, resolve));
+      assert.deepEqual([err.code, err.message], ["ENOTPUBLIC", `localhost is ${here("127.0.0.1")}`]);
+    });
+    await withSetting(undefined, async () => {
+      const got = await getChecked(`${origin}/robots.txt`, { guard: await guardFor(`${origin}/`) });
+      assert.equal(got.body.toString(), "here");
+    });
+    assert.deepEqual(seen, ["/robots.txt"]);
+  } finally {
+    site.close();
   }
 });
 

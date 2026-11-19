@@ -31,7 +31,7 @@ const { PWA_SHOTS, LOOKED_AT, planPwa, checkManifest } = require("./pwa");
 const { renderSheet } = require("./sheet");
 const { begin, checkDir, realFolder } = require("./outdir");
 const { setTimeLimit, timeLeft, sleep } = require("./time");
-const { guardFor, unresolvedError } = require("./address");
+const { guardFor, hostRefusals, unresolvedError, refusedError } = require("./address");
 const programs = require("./programs");
 const version = require("./version");
 
@@ -1154,6 +1154,9 @@ async function takeShots(rawUrl, options = {}) {
     log = () => {},
   } = options;
   setTimeLimit(timeLimit);
+  // The addresses the host that runs the kit refuses: a setting that does
+  // not parse stops the run before any work (see address.js).
+  hostRefusals();
   // The programs an earlier run in this process found are found again.
   programs.forget();
   const pageMs = reserveOf(PAGE_MS, timeLimit);
@@ -1209,10 +1212,12 @@ async function takeShots(rawUrl, options = {}) {
     if (noBrowser) throw new Error(noBrowser);
     // The pages the run opens, and the sitemaps it reads, are of the address
     // given or on the public internet, on port 80 or 443 away from it (see
-    // address.js). One whose host's name cannot be looked up here opens
-    // nothing, and the run stops before it starts the browser.
+    // address.js). One whose host's name cannot be looked up here, or that
+    // MAKERSMCP_REFUSE_ADDRESSES refuses, opens nothing, and the run stops
+    // before it starts the browser.
     const guard = await guardFor(asked);
     if (guard.unresolved) throw unresolvedError(asked, guard);
+    if (guard.refused) throw refusedError(asked, guard);
     chrome = await launch({ lang });
     chrome.guard = guard;
     const [first] = groups;

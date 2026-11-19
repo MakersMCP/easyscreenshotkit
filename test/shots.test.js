@@ -3449,11 +3449,16 @@ test("from a public site the browser opens no other port than 80 and 443 away fr
 }));
 
 // A run goes on without what it does not open, and says why: a --page on
-// another port of the site's host, and a frame there. The browser takes
+// another port of the site's host, a frame there, and a frame at an address
+// MAKERSMCP_REFUSE_ADDRESSES names, on port 80, which the rule would let
+// through otherwise. An address given that the setting names, and a setting
+// that does not parse, stop the run before any work. The browser takes
 // public.example to this machine, as its CHROME_PATH starts it with
 // --host-resolver-rules, and the other server, another program of the
 // site's host, sees no request.
-test("a run takes no --page or frame on another port than 80 and 443 away from the address given, and goes on with a note", { skip: noBrowser || (process.platform === "win32" && "the wrapper is a shell script"), timeout: 150_000 }, () => withNames({ "public.example": "93.184.215.14" }, async () => {
+const REFUSED_HERE = "at 93.184.215.99, an address MAKERSMCP_REFUSE_ADDRESSES refuses";
+
+test("a run takes no --page or frame on another port than 80 and 443 away from the address given, nor at an address MAKERSMCP_REFUSE_ADDRESSES names, and goes on with a note", { skip: noBrowser || (process.platform === "win32" && "the wrapper is a shell script"), timeout: 150_000 }, () => withNames({ "public.example": "93.184.215.14", "refused.example": "93.184.215.99" }, async () => {
   const seen = [];
   const other = await serve((req, res) => {
     seen.push(req.url);
@@ -3462,15 +3467,16 @@ test("a run takes no --page or frame on another port than 80 and 443 away from t
   const otherPort = new URL(other.origin).port;
   const html = { "Content-Type": "text/html; charset=utf-8" };
   const { server, origin } = await serve((req, res) => {
-    if (req.url === "/framed") return res.writeHead(200, html).end(page("Framed | Acme", `<h1>Framed</h1><iframe src="http://public.example:${otherPort}/frame"></iframe><div style="height:1400px"></div>`));
+    if (req.url === "/framed") return res.writeHead(200, html).end(page("Framed | Acme", `<h1>Framed</h1><iframe src="http://public.example:${otherPort}/frame"></iframe><iframe src="http://refused.example/frame"></iframe><div style="height:1400px"></div>`));
     res.writeHead(200, html).end(page("Acme | Tools for teams", '<h1>Acme</h1><div style="height:1400px"></div>'));
   });
   const site = `http://public.example:${new URL(origin).port}`;
   const root = tempDir();
   const browser = path.join(root, "mapped-chrome");
   fs.writeFileSync(browser, `#!/bin/sh\nexec ${JSON.stringify(findChrome())} --host-resolver-rules="MAP public.example 127.0.0.1" "$@"\n`, { mode: 0o755 });
-  const saved = process.env.CHROME_PATH;
+  const saved = { CHROME_PATH: process.env.CHROME_PATH, MAKERSMCP_REFUSE_ADDRESSES: process.env.MAKERSMCP_REFUSE_ADDRESSES };
   process.env.CHROME_PATH = browser;
+  process.env.MAKERSMCP_REFUSE_ADDRESSES = "93.184.215.99";
   try {
     const asked = `http://public.example:${otherPort}/asked`;
     const { manifest } = await takeShots(`${site}/`, { dir: path.join(root, "shots"), pages: 1, extra: [asked, "/framed"], sizes: "desktop", timeLimit: 120_000 });
@@ -3479,10 +3485,27 @@ test("a run takes no --page or frame on another port than 80 and 443 away from t
     assert.deepEqual(manifest.skipped.map(({ url, reason }) => [url, reason]), [[asked, OTHER_PORT(otherPort)]]);
     const framed = manifest.pages[1].notes;
     assert.ok(framed.includes(`a frame of it tried to open http://public.example:${otherPort}/frame, which is ${OTHER_PORT(otherPort)}: it was not opened`), framed.join("\n"));
+    assert.ok(framed.includes(`a frame of it tried to open http://refused.example/frame, which is ${REFUSED_HERE}: it was not opened`), framed.join("\n"));
     assert.deepEqual(seen, []);
+    // The address given on such a host stops the run before any work.
+    await assert.rejects(takeShots("http://refused.example/", { dir: path.join(root, "refused"), pages: 1, sizes: "desktop", timeLimit: 60_000 }), { message: `Could not open http://refused.example/: it is ${REFUSED_HERE}.` });
+    assert.equal(fs.existsSync(path.join(root, "refused")), false);
+    process.env.MAKERSMCP_REFUSE_ADDRESSES = "93.184.215.99/40";
+    const unread = /^MAKERSMCP_REFUSE_ADDRESSES takes IP addresses and CIDR ranges, separated by commas, such as 192\.0\.2\.7,198\.51\.100\.0\/24, and "93\.184\.215\.99\/40" is neither\./;
+    await assert.rejects(takeShots(`${site}/`, { dir: path.join(root, "unread"), pages: 1, sizes: "desktop", timeLimit: 60_000 }), { message: unread });
+    assert.equal(fs.existsSync(path.join(root, "unread")), false);
+    // Before the folder too: one that holds someone else's files is not
+    // looked at.
+    const mine = path.join(root, "mine");
+    fs.mkdirSync(mine);
+    fs.writeFileSync(path.join(mine, "notes.txt"), "mine");
+    await assert.rejects(takeShots(`${site}/`, { dir: mine, pages: 1, sizes: "desktop", timeLimit: 60_000 }), { message: unread });
+    assert.deepEqual(fs.readdirSync(mine), ["notes.txt"]);
   } finally {
-    if (saved === undefined) delete process.env.CHROME_PATH;
-    else process.env.CHROME_PATH = saved;
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
     server.close();
     other.server.close();
     fs.rmSync(root, { recursive: true, force: true });

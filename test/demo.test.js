@@ -2408,8 +2408,10 @@ test("a demo opens no address on a host whose name it cannot look up", { skip: m
 
 // Away from the address given a demo opens port 80 and 443 only: a visit
 // step, or a window a click opens, on another port of a host on the public
-// internet is not opened, and the demo says why, where 0.1.3 opened it.
-test("a demo opens no other port than 80 and 443 away from the address given", { skip: missing, timeout: 200_000 }, () => withNames({ "public.example": "93.184.215.14" }, async () => {
+// internet is not opened, and the demo says why, where 0.1.3 opened it. A
+// demo given an address MAKERSMCP_REFUSE_ADDRESSES names, or with a setting
+// that does not parse, stops before any work.
+test("a demo opens no other port than 80 and 443 away from the address given, and no address MAKERSMCP_REFUSE_ADDRESSES names", { skip: missing, timeout: 200_000 }, () => withNames({ "public.example": "93.184.215.14" }, async () => {
   const OTHER_PORT = "on port 8080, not 80 or 443, and not on the scheme, host and port given";
   const { server, origin } = await serve((req, res) => {
     if (req.url !== "/") return res.writeHead(404).end("not found");
@@ -2417,13 +2419,29 @@ test("a demo opens no other port than 80 and 443 away from the address given", {
   });
   const root = tempDir();
   const steps = path.join(root, "steps.yaml");
+  const saved = process.env.MAKERSMCP_REFUSE_ADDRESSES;
+  const savedFfmpeg = process.env.FFMPEG_PATH;
   try {
     fs.writeFileSync(steps, 'steps:\n  - visit: /\n  - click: "text=Open a window"\n    zoom: false\n  - wait: 1\n');
     const { manifest } = await makeDemo(origin, { dir: path.join(root, "demo"), steps, gif: false, timeLimit: 150_000 });
     assert.ok(manifest.notes.includes(`The page tried to open a window at http://public.example:8080/window, which is ${OTHER_PORT}: it was not opened.`), manifest.notes.join("\n"));
     fs.writeFileSync(steps, "steps:\n  - visit: /\n  - visit: http://public.example:8080/visited\n");
     await assert.rejects(makeDemo(origin, { dir: path.join(root, "visit"), steps, gif: false, timeLimit: 100_000 }), { message: `step 2 (visit): Could not open http://public.example:8080/visited: it is ${OTHER_PORT}.` });
+    process.env.MAKERSMCP_REFUSE_ADDRESSES = "127.0.0.1";
+    await assert.rejects(makeDemo(origin, { dir: path.join(root, "refused"), pages: 1, gif: false, timeLimit: 100_000 }), { message: `Could not open ${origin}/: it is at 127.0.0.1, an address MAKERSMCP_REFUSE_ADDRESSES refuses.` });
+    assert.equal(fs.existsSync(path.join(root, "refused")), false);
+    process.env.MAKERSMCP_REFUSE_ADDRESSES = "127.0.0.1;10.0.0.1";
+    const unread = 'MAKERSMCP_REFUSE_ADDRESSES takes IP addresses and CIDR ranges, separated by commas, such as 192.0.2.7,198.51.100.0/24, and "127.0.0.1;10.0.0.1" is neither. Correct it, or leave it empty to refuse no more addresses.';
+    await assert.rejects(makeDemo(origin, { dir: path.join(root, "unread"), pages: 1, gif: false, timeLimit: 100_000 }), { message: unread });
+    assert.equal(fs.existsSync(path.join(root, "unread")), false);
+    // Before ffmpeg is looked at too.
+    process.env.FFMPEG_PATH = path.join(root, "no-ffmpeg");
+    await assert.rejects(makeDemo(origin, { dir: path.join(root, "unread"), pages: 1, gif: false, timeLimit: 100_000 }), { message: unread });
   } finally {
+    if (saved === undefined) delete process.env.MAKERSMCP_REFUSE_ADDRESSES;
+    else process.env.MAKERSMCP_REFUSE_ADDRESSES = saved;
+    if (savedFfmpeg === undefined) delete process.env.FFMPEG_PATH;
+    else process.env.FFMPEG_PATH = savedFfmpeg;
     server.close();
     fs.rmSync(root, { recursive: true, force: true });
   }

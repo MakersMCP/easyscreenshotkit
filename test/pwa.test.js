@@ -372,18 +372,19 @@ test("--pwa-check: a site's address leads to the manifest its page links", async
 // only that host and port, from a manifest file only the public internet.
 // It read every address it was given there, and told an open port from a
 // closed one by what it said of each screenshot.
-// Away from the address given the check reads port 80 and 443 only: a
-// manifest a page links there, a screenshot there or a redirect to one is
-// not read, and nothing connects there, where 0.1.3 read a screenshot on any
-// port of a host on the public internet. From a manifest file, the web ports
-// only. Here a host on the public internet is a name that resolves to a
-// public address for the check's rule, and the check's own requests there go
-// to a stand-in that notes them, so nothing leaves this machine.
-test("--pwa-check reads no manifest or screenshot on another port than 80 and 443 away from the address given", async () => {
+// Away from the address given the check reads port 80 and 443 only, and
+// nothing MAKERSMCP_REFUSE_ADDRESSES names: a manifest a page links there, a
+// screenshot there or a redirect to one is not read, and nothing connects
+// there, where 0.1.3 read a screenshot on any port of a host on the public
+// internet. From a manifest file, the web ports only. Here a host on the
+// public internet is a name that resolves to a public address for the
+// check's rule, and the check's own requests there go to a stand-in that
+// notes them, so nothing leaves this machine.
+test("--pwa-check reads no manifest or screenshot on another port than 80 and 443 away from the address given, nor at an address MAKERSMCP_REFUSE_ADDRESSES names", async () => {
   const dns = require("node:dns");
   const http = require("node:http");
   const https = require("node:https");
-  const names = { "cdn.example": "93.184.215.15" };
+  const names = { "cdn.example": "93.184.215.15", "refused.example": "93.184.215.99" };
   const lookup = dns.lookup;
   dns.lookup = (host, options, callback) => {
     if (typeof options === "function") [options, callback] = [{}, options];
@@ -391,7 +392,7 @@ test("--pwa-check reads no manifest or screenshot on another port than 80 and 44
     process.nextTick(callback, null, options && options.all ? [{ address: names[host], family: 4 }] : names[host], 4);
   };
   const outside = [];
-  const saved = { http: http.get, https: https.get };
+  const saved = { http: http.get, https: https.get, setting: process.env.MAKERSMCP_REFUSE_ADDRESSES };
   for (const [module, get] of [[http, saved.http], [https, saved.https]]) {
     module.get = (url, options, done) => {
       if (new URL(url).hostname === "127.0.0.1") return get(url, options, done);
@@ -406,6 +407,7 @@ test("--pwa-check reads no manifest or screenshot on another port than 80 and 44
       const screenshots = [
         { src: "https://cdn.example:8443/wide.png", sizes: "1920x1080", type: "image/png", form_factor: "wide", label: "Home" },
         { src: "/moved.png", sizes: "1920x1080", type: "image/png", form_factor: "wide", label: "Plans" },
+        { src: "https://refused.example/wide.png", sizes: "1920x1080", type: "image/png", form_factor: "wide", label: "Docs" },
         { src: "/here.png", sizes: "1920x1080", type: "image/png", form_factor: "wide", label: "Team" },
       ];
       return res.writeHead(200, { "Content-Type": "application/manifest+json" }).end(JSON.stringify({ name: "Acme", screenshots }));
@@ -416,6 +418,7 @@ test("--pwa-check reads no manifest or screenshot on another port than 80 and 44
   });
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-pwa-"));
   try {
+    process.env.MAKERSMCP_REFUSE_ADDRESSES = "93.184.215.99";
     await assert.rejects(checkManifest({ url: `${origin}/` }), { message: `Could not read http://cdn.example:8443/app.webmanifest, the manifest ${origin}/ links: it is ${PORT_8443}` });
     const report = await checkManifest({ url: `${origin}/app.webmanifest` });
     assert.deepEqual(
@@ -423,18 +426,24 @@ test("--pwa-check reads no manifest or screenshot on another port than 80 and 44
       [
         [1, `it is ${PORT_8443}`, false],
         [2, `it leads to https://cdn.example:8443/moved.png, which is ${PORT_8443}`, false],
-        [3, "", true],
+        [3, "it is at 93.184.215.99, an address MAKERSMCP_REFUSE_ADDRESSES refuses", false],
+        [4, "", true],
       ],
     );
     const file = path.join(dir, "manifest.json");
     fs.writeFileSync(file, JSON.stringify({ name: "Acme", screenshots: [{ src: "https://cdn.example:8443/wide.png", sizes: "1920x1080", type: "image/png", form_factor: "wide" }] }));
     const fromFile = await checkManifest({ file });
     assert.deepEqual(fromFile.screenshots.map((shot) => shot.error), ["it is on port 8443, not 80 or 443"]);
+    // The address given is refused too when the setting names it.
+    process.env.MAKERSMCP_REFUSE_ADDRESSES = "127.0.0.0/8";
+    await assert.rejects(checkManifest({ url: `${origin}/app.webmanifest` }), { message: `Could not read ${origin}/app.webmanifest: it is at 127.0.0.1, an address MAKERSMCP_REFUSE_ADDRESSES refuses` });
     assert.deepEqual(outside, []);
   } finally {
     dns.lookup = lookup;
     http.get = saved.http;
     https.get = saved.https;
+    if (saved.setting === undefined) delete process.env.MAKERSMCP_REFUSE_ADDRESSES;
+    else process.env.MAKERSMCP_REFUSE_ADDRESSES = saved.setting;
     server.close();
     fs.rmSync(dir, { recursive: true, force: true });
   }

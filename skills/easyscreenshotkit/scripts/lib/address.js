@@ -16,6 +16,12 @@
 // address of a site on their own machine, opens that host and port and no
 // other address of the kind.
 //
+// The host that runs the kit can refuse more addresses with
+// MAKERSMCP_REFUSE_ADDRESSES, a comma list of IP addresses and CIDR ranges,
+// as a service that runs it for others names its own public addresses,
+// which lead back into its network: those are refused wherever they come
+// from, the address given included (see hostRefusals()).
+//
 // The rule is held for the documents the browser loads for the run's pages
 // (see guardBrowser() in chrome.js) and for the files the kit reads itself.
 // What a page asks for itself, its pictures, styles, scripts and data, and
@@ -47,6 +53,10 @@ const UNRESOLVED = "on a host whose name could not be looked up";
 // given, whether the run has an address given, as --pwa-check of a
 // manifest file has none.
 const otherPort = (port, given) => `on port ${port}, not 80 or 443${given ? ", and not on the scheme, host and port given" : ""}`;
+// An address that MAKERSMCP_REFUSE_ADDRESSES names, by the address of its
+// host that the setting refuses.
+const REFUSE_SETTING = "MAKERSMCP_REFUSE_ADDRESSES";
+const refusedHere = (address) => `at ${address}, an address ${REFUSE_SETTING} refuses`;
 
 // The ports a run opens on any host on the public internet: those of the
 // web. Any other is opened only on the scheme, host and port of the address
@@ -114,10 +124,14 @@ function heldIpv4(groups) {
   return "";
 }
 
+// An IP address as written in a URL's host or by a lookup, without the
+// brackets and the zone (%eth0) that are no part of it.
+const bareIp = (address) => String(address || "").replace(/^\[|\]$/g, "").replace(/%.*$/, "");
+
 // Whether an IP address is not on the public internet. Anything that is no
 // IP address counts as not on it.
 function notPublicIp(address) {
-  const ip = String(address || "").replace(/^\[|\]$/g, "").replace(/%.*$/, "");
+  const ip = bareIp(address);
   const family = net.isIP(ip);
   if (family === 4) return blocked4.check(ip, "ipv4");
   if (family !== 6) return true;
@@ -128,8 +142,83 @@ function notPublicIp(address) {
   return blocked6.check(ip, "ipv6");
 }
 
-// A name every browser takes for this machine without asking the DNS.
+// The addresses the host that runs the kit refuses besides those, from
+// MAKERSMCP_REFUSE_ADDRESSES: a comma list of IP addresses and CIDR ranges,
+// as 185.137.215.163,10.20.0.0/16, spaces around each allowed. A service
+// that runs the kit for others names its own public addresses there, which
+// lead back into its network. An IPv4 entry refuses that address in every
+// IPv6 form that holds it too (see heldIpv4()); an IPv6 entry refuses the
+// IPv6 addresses it covers. An empty or missing value refuses nothing more.
+// A value that does not parse throws, naming the setting, so that a run
+// stops before any work: a run that went on would open what the host meant
+// to refuse. has(address): whether an address, as a URL or a lookup gives
+// it, is one of those. Read again for each run, and parsed once a value.
+const ENTRY = /^([0-9A-Fa-f:.]+)(?:\/(\d{1,3}))?$/;
+const settings = new Map();
+
+function hostRefusals(value = process.env[REFUSE_SETTING]) {
+  const text = value === undefined || value === null ? "" : String(value);
+  if (settings.has(text)) return settings.get(text);
+  const v4 = new net.BlockList();
+  const v6 = new net.BlockList();
+  let size = 0;
+  for (const part of text.split(",")) {
+    const entry = part.trim();
+    if (!entry) continue;
+    const match = ENTRY.exec(entry);
+    const family = match ? net.isIP(match[1]) : 0;
+    const bits = match && match[2] !== undefined ? Number(match[2]) : family === 4 ? 32 : 128;
+    if (!family || bits > (family === 4 ? 32 : 128)) {
+      // Shown cut, and with every character but printable ASCII escaped,
+      // as no address holds one: a line break in it starts no line.
+      const chars = [...entry];
+      const cut = chars.length > 60 ? `${chars.slice(0, 57).join("")}...` : entry;
+      const shown = cut.replace(/[^\x20-\x7e]/gu, (c) => {
+        try {
+          return encodeURIComponent(c);
+        } catch {
+          return "%EF%BF%BD";
+        }
+      });
+      throw new Error(`${REFUSE_SETTING} takes IP addresses and CIDR ranges, separated by commas, such as 192.0.2.7,198.51.100.0/24, and "${shown}" is neither. Correct it, or leave it empty to refuse no more addresses.`);
+    }
+    (family === 4 ? v4 : v6).addSubnet(match[1], bits, family === 4 ? "ipv4" : "ipv6");
+    size++;
+  }
+  const has = (address) => {
+    if (!size) return false;
+    const ip = bareIp(address);
+    const family = net.isIP(ip);
+    if (family === 4) return v4.check(ip, "ipv4");
+    if (family !== 6) return false;
+    if (v6.check(ip, "ipv6")) return true;
+    const groups = groupsOf(ip);
+    const held = groups ? heldIpv4(groups) : "";
+    return Boolean(held) && v4.check(held, "ipv4");
+  };
+  const refusals = { size, has };
+  settings.set(text, refusals);
+  return refusals;
+}
+
+// Why MAKERSMCP_REFUSE_ADDRESSES cannot be read, for a run to stop over
+// before any work, or "".
+function refusalsProblem(value = process.env[REFUSE_SETTING]) {
+  try {
+    hostRefusals(value);
+    return "";
+  } catch (err) {
+    return err.message;
+  }
+}
+
+// A name every browser takes for this machine without asking the DNS, and
+// the addresses it takes it for.
 const localName = (host) => /(^|\.)localhost\.?$/i.test(host);
+const LOOPBACK = [
+  { address: "127.0.0.1", family: 4 },
+  { address: "::1", family: 6 },
+];
 
 // What a host name resolves to here: {list} of {address, family}, or
 // {error}. Each name is asked once in a run, for 10 s at most.
@@ -182,14 +271,29 @@ async function lookupWhy(hostname) {
 
 const portOf = (url) => url.port || (url.protocol === "https:" ? "443" : "80");
 
+// The addresses a host, as a URL gives it, stands for here: an IP address
+// itself, the browser's own for a name under localhost, or what the name
+// resolves to (see addressesOf). {list} of {address, family}, or {error}.
+function addressesFor(hostname) {
+  const host = String(hostname || "").replace(/^\[|\]$/g, "").replace(/\.$/, "");
+  const family = net.isIP(bareIp(host));
+  if (family) return Promise.resolve({ list: [{ address: bareIp(host), family }] });
+  if (localName(host)) return Promise.resolve({ list: LOOPBACK });
+  return addressesOf(host);
+}
+
 // The rule for a run that starts at `start`, the address it was given, or
 // at no address ("", for a manifest read from a file). refuses(url)
 // resolves to "" for an address the run may open, else to what it is, as
-// said after "it is": not a web address, not on the public internet, on a
-// host whose name could not be looked up, or on a port other than 80 and
-// 443 away from the address given. unresolved: why the host of the address
+// said after "it is": not a web address, at an address the host's
+// MAKERSMCP_REFUSE_ADDRESSES refuses, not on the public internet, on a host
+// whose name could not be looked up, or on a port other than 80 and 443
+// away from the address given. unresolved: why the host of the address
 // given could not be looked up, or "": a run given it opens nothing.
+// refused: why MAKERSMCP_REFUSE_ADDRESSES refuses the address given, or ""
+// likewise. Throws when MAKERSMCP_REFUSE_ADDRESSES does not parse.
 async function guardFor(start) {
+  const refusals = hostRefusals();
   let from = null;
   try {
     from = start ? new URL(start) : null;
@@ -211,12 +315,25 @@ async function guardFor(start) {
       return null;
     }
   };
+  // The first address of a host that the host's setting refuses, or "".
+  // A name that cannot be looked up has none to judge: it is refused as
+  // such.
+  const refusedAt = async (hostname) => {
+    if (!refusals.size) return "";
+    const { list } = await addressesFor(hostname);
+    const hit = (list || []).find((answer) => refusals.has(answer.address));
+    return hit ? hit.address : "";
+  };
+  const firstRefused = web ? await refusedAt(from.hostname) : "";
   return {
     local,
     unresolved: at === "unknown" ? await lookupWhy(from.hostname) : "",
+    refused: firstRefused ? refusedHere(firstRefused) : "",
     async refuses(raw) {
       const url = parse(raw);
       if (!url || !/^https?:$/.test(url.protocol)) return NOT_WEB;
+      const hit = await refusedAt(url.hostname);
+      if (hit) return refusedHere(hit);
       const port = portOf(url);
       const anyPort = own(url) || WEB_PORTS.has(port);
       if (given(url)) return anyPort ? "" : otherPort(port, web);
@@ -229,12 +346,15 @@ async function guardFor(start) {
     // the addresses refuses() judged, undefined where any address goes.
     lookupFor(raw) {
       const url = parse(raw);
-      if (!url || given(url)) return undefined;
+      if (!url || (given(url) && !refusals.size)) return undefined;
+      const inside = given(url);
       return (hostname, options, callback) => {
         const host = String(hostname).replace(/\.$/, "");
-        addressesOf(host).then(({ list, error }) => {
+        addressesFor(host).then(({ list, error }) => {
           if (error) return callback(error);
-          if (list.some((answer) => notPublicIp(answer.address))) {
+          const hit = list.find((answer) => refusals.has(answer.address));
+          if (hit) return callback(Object.assign(new Error(`${host} is ${refusedHere(hit.address)}`), { code: "ENOTPUBLIC", hostname: host }));
+          if (!inside && list.some((answer) => notPublicIp(answer.address))) {
             return callback(Object.assign(new Error(`${host} is ${local ? NOT_GIVEN : NOT_PUBLIC}`), { code: "ENOTPUBLIC", hostname: host }));
           }
           const family = options && options.family;
@@ -309,4 +429,10 @@ function unresolvedError(url, guard) {
   return new Error(`Could not open ${url}: it is ${UNRESOLVED} (${guard.unresolved}).`);
 }
 
-module.exports = { guardFor, getChecked, notPublicIp, hostNotPublic, unresolvedError, otherPort, NOT_WEB, NOT_PUBLIC, NOT_GIVEN, UNRESOLVED };
+// The error for an address given that MAKERSMCP_REFUSE_ADDRESSES refuses,
+// before any work, likewise.
+function refusedError(url, guard) {
+  return new Error(`Could not open ${url}: it is ${guard.refused}.`);
+}
+
+module.exports = { guardFor, getChecked, notPublicIp, hostNotPublic, hostRefusals, refusalsProblem, unresolvedError, refusedError, otherPort, refusedHere, NOT_WEB, NOT_PUBLIC, NOT_GIVEN, UNRESOLVED, REFUSE_SETTING };
