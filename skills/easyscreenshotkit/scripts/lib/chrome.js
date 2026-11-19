@@ -562,6 +562,11 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
         // https (net::ERR_BLOCKED_BY_CLIENT): the run opens the address it
         // is given. A site that has https is still taken over https.
         "--disable-features=HttpsFirstBalancedModeAutoEnable",
+        // No HTTP/3: with it, a site's Alt-Svc answer sends the browser's
+        // next requests for an address of the site to another port, or to
+        // another host, over UDP, past the address the run judged (see
+        // address.js); over TCP each goes to the host and port it names.
+        "--disable-quic",
         ...(lang ? [`--lang=${lang}`] : []),
         ...args,
         // Chrome refuses to start as root without it (a container, a CI box).

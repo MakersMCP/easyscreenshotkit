@@ -2300,6 +2300,30 @@ test("the browser is started with HTTPS-First's own turn-on left off", { skip: p
   }
 });
 
+// With HTTP/3 a site's Alt-Svc answer sends the browser's next requests for
+// an address of the site to another port, or another host, over UDP, past
+// the host and port the run judged the address by. The browser is started
+// with no HTTP/3, so each request goes over TCP to the host and port its
+// address names.
+test("the browser is started with no HTTP/3", { skip: process.platform === "win32" && "the stand-in browser is a shell script", timeout: 60_000 }, async () => {
+  const root = tempDir();
+  const saved = process.env.CHROME_PATH;
+  process.env.CHROME_PATH = standIns(root)("plain");
+  let chrome = null;
+  try {
+    setTimeLimit(60_000);
+    chrome = await launch();
+    const { args } = JSON.parse(fs.readFileSync(path.join(root, "plain.json"), "utf8"));
+    assert.deepEqual(args.filter((arg) => /quic/i.test(arg)), ["--disable-quic"]);
+  } finally {
+    if (chrome) await chrome.close();
+    endStandIns(root, ["plain"]);
+    if (saved === undefined) delete process.env.CHROME_PATH;
+    else process.env.CHROME_PATH = saved;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // The start of a browser, with the run's time spent, as the demo's browser
 // for its frames starts after a long recording. One that does not answer,
 // or will not refuse downloads, is said so and left running nowhere, and so
