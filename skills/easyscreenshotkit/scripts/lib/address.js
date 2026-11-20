@@ -67,16 +67,20 @@ const refusedHere = (address) => `at ${address}, an address ${REFUSE_SETTING} re
 const WEB_PORTS = new Set(["80", "443"]);
 
 // The ranges that are not on the public internet: this machine, private and
-// shared networks, link-local, and the ranges kept for documentation,
-// benchmarks, multicast and later use. MakersMCP's worker refuses the same
-// ones for a link (helpers/kits/fetch-input.js), and NAT64's well known
-// prefix whole besides. An IPv6 address that holds an IPv4 one is judged by
-// that address (see heldIpv4()), and Teredo's 2001::/32 is not public at
-// all: such an address carries the IPv4 addresses of a Teredo server and of
-// a client, either of which can be this machine (2001:0:7f00:1::1 names the
-// server 127.0.0.1), and a machine with a Teredo client reaches it through
-// them. NAT64's local use prefix, 64:ff9b:1::/48, is not public whatever
-// IPv4 address it holds. test/address-cases.json holds the cases.
+// shared networks, link-local, and in IPv4 the ranges kept for
+// documentation, benchmarks, multicast and later use; in IPv6 the
+// documentation range 2001:db8::/32, the discard range 100::/64, the old
+// site local range and multicast, and not the newer documentation prefix
+// 3fff::/20 nor the benchmarking one, 2001:2::/48, which MakersMCP's worker
+// takes for public too. The worker refuses the same ones for a link
+// (helpers/kits/fetch-input.js), and NAT64's well known prefix whole
+// besides. An IPv6 address that holds an IPv4 one is judged by that address
+// (see heldIpv4()), and Teredo's 2001::/32 is not public at all: such an
+// address carries the IPv4 addresses of a Teredo server and of a client,
+// either of which can be this machine (2001:0:7f00:1::1 names the server
+// 127.0.0.1), and a machine with a Teredo client reaches it through them.
+// NAT64's local use prefix, 64:ff9b:1::/48, is not public whatever IPv4
+// address it holds. test/address-cases.json holds the cases.
 const V4 = [
   ["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8], ["169.254.0.0", 16],
   ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.0.2.0", 24], ["192.88.99.0", 24], ["192.168.0.0", 16],
