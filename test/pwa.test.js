@@ -356,6 +356,12 @@ test("--pwa-check of a manifest file with a screenshot it does not read says so,
     assert.match(run.stdout, /\nNot checked:\n {2}- Desktops: the check did not read screenshot 1, so it cannot say whether they get the richer install dialog\.\n {2}- Screenshot 1 \(http:\/\/127\.0\.0\.1:9\/wide\.png\): not read, as it is not on the public internet: the check cannot say whether Chrome shows it\.\n {2}- To have a screenshot on http:\/\/127\.0\.0\.1:9 read, give the check the manifest's own address on its host and port/);
     assert.match(run.stdout, /\nNothing to fix in the screenshots the check read\.$/m);
     assert.doesNotMatch(run.stdout, /plain install dialog/);
+    // The skill has an agent give the check such an address of the machine
+    // or its network only when the user says the manifest and the server
+    // there are their own: a manifest file from elsewhere can name any
+    // program there, and the check given that address reads it.
+    const skill = fs.readFileSync(path.join(__dirname, "..", "skills", "easyscreenshotkit", "SKILL.md"), "utf8");
+    assert.match(skill, /When the report names the address that reads one on another port of a host on the public internet, run the check again with that address before you say whether Chrome shows it; for one at an address of the machine or its network, only when the user says the manifest and that server are their own/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
