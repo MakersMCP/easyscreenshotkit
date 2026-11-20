@@ -47,10 +47,11 @@ Sizes: desktop is 1600x900 at 2x, mobile 360x640 at 3x (1080x1920), iphone
 phone page at 2x. 1270x760@2 is a Product Hunt gallery image.
 
 --hide takes a CSS selector, as .cookie-bar or '#chat, .promo', which is a
-rule of its own on the page: one that opens a comment, a quote, a bracket
-or a parenthesis it does not close, or holds {, }, ; or @ outside its
-quotes, is refused before any work, and one the browser does not read as a
-selector hides nothing, with a note.
+rule of its own on the page: one that holds a comment or a control
+character, as a line break or a tab, or {, }, ; or @ outside its quotes,
+that leaves a quote, a bracket or a parenthesis open or closes one it did
+not open, or that ends in a backslash, is refused before any work, and one
+the browser does not read as a selector hides nothing, with a note.
 
 A #route (#/ or #!) in the address or in --page is kept: the page opens on
 that view, waits in each window until the view's data has come and it shows

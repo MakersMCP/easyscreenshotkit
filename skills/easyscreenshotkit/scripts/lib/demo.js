@@ -68,10 +68,11 @@ Options:
 
 --hide takes a CSS selector, as .cookie-bar or '#chat, .promo', and so does
 each item of a steps file's hide: each is a rule of its own on the page,
-and one that opens a comment, a quote, a bracket or a parenthesis it does
-not close, or holds {, }, ; or @ outside its quotes, is refused before any
-work. One the browser does not read as a selector hides nothing, with a
-note in steps.json.
+and one that holds a comment or a control character, as a line break or a
+tab, or {, }, ; or @ outside its quotes, that leaves a quote, a bracket or
+a parenthesis open or closes one it did not open, or that ends in a
+backslash, is refused before any work. One the browser does not read as a
+selector hides nothing, with a note in steps.json.
 
 A #route (#/ or #!) in the address, in --page or in a visit step is kept,
 and every view the video shows, one a click opened included, is a page of

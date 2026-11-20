@@ -187,10 +187,13 @@ function normalizeStep(raw, index) {
 // its rule into the rule after it, or add rules of its own, as two hide
 // items once did, one opening a comment and the next closing it in a
 // quote, so the text between them became a rule that had the page ask an
-// address the run does not open for a picture. A comment is refused too,
-// as a selector needs none, and so is a control character, as a selector
-// is one line. Whether the browser reads what is left as a selector is the
-// browser's to say (see clean.js).
+// address the run does not open for a picture. So is refused one that
+// holds a comment, a closed one too, as a selector needs none; a control
+// character, a line break or a tab among them, as a selector is one line;
+// a ) or a ] that closes nothing; and a backslash at its end, which
+// escapes what comes after it. The callers trim it first. Whether the
+// browser reads what is left as a selector is the browser's to say (see
+// clean.js).
 function hideProblem(selector) {
   const text = String(selector);
   if (/[\u0000-\u001f\u007f-\u009f]/.test(text)) return "it holds a line break or another control character";

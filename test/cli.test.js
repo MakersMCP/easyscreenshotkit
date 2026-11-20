@@ -134,19 +134,38 @@ test("a MAKERSMCP_REFUSE_ADDRESSES that does not parse stops every command befor
 
 // A selector to hide that could reach past its own rule in the page, as one
 // that opens a comment, is refused as an argument is, by both commands,
-// before any work: no folder is made and no browser is looked for.
-test("--hide refuses a selector that opens a comment, a quote or a bracket it does not close or holds a brace, before any work", () => {
+// before any work: no folder is made and no browser is looked for. So is
+// one with a comment that it closes, a control character, a tab too, a )
+// that closes nothing or a backslash at its end, and the help of both
+// commands says so, where it named only what is opened and not closed; a
+// line break at its end is white space and does not count.
+test("--hide refuses a selector that holds a comment or a control character, leaves a quote or a bracket open or holds a brace, before any work, as the help says", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-hide-"));
   try {
     const out = path.join(root, "out");
+    const env = { ...process.env, CHROME_PATH: path.join(root, "no-browser") };
     for (const [name, args] of [["easyscreenshotkit", ["acme.com"]], ["easyscreenshotkit demo", ["demo", "acme.com"]]]) {
-      for (const [selector, why] of [["x-none /*", "it holds a comment"], ["#chat{", "it holds { outside quotes, where no selector has one"], ['[title="Close', "it opens a quote and does not close it"]]) {
-        const run = spawnSync(process.execPath, [CLI, ...args, "--hide", ".promo", `--hide=${selector}`, "--out", out], { encoding: "utf8", env: { ...process.env, CHROME_PATH: path.join(root, "no-browser") } });
+      for (const [selector, why, shown = selector] of [
+        ["x-none /*", "it holds a comment"],
+        [".cookie-bar /* the banner */", "it holds a comment"],
+        ["#chat{", "it holds { outside quotes, where no selector has one"],
+        ['[title="Close', "it opens a quote and does not close it"],
+        ["div\t.promo", "it holds a line break or another control character", "div%09.promo"],
+        ["#chat,\n.promo", "it holds a line break or another control character", "#chat,%0A.promo"],
+        [":is(.a))", "it holds a ) that nothing before it opens"],
+        [".promo\\", "it ends in a backslash"],
+      ]) {
+        const run = spawnSync(process.execPath, [CLI, ...args, "--hide", ".promo", `--hide=${selector}`, "--out", out], { encoding: "utf8", env });
         assert.equal(run.status, 2, `${name} ${selector}`);
-        assert.equal(run.stderr.split("\n")[0], `${name}: --hide takes a CSS selector, and "${selector}" is not one: ${why}`);
+        assert.equal(run.stderr.split("\n")[0], `${name}: --hide takes a CSS selector, and "${shown}" is not one: ${why}`);
         assert.equal(fs.existsSync(out), false);
       }
+      const ended = spawnSync(process.execPath, [CLI, ...args, "--hide", ".promo\n", "--out", out], { encoding: "utf8", env });
+      assert.notEqual(ended.status, 2, ended.stderr);
+      assert.doesNotMatch(ended.stderr, /--hide takes/);
       assert.equal(spawnSync(process.execPath, [CLI, ...args, "--hide", '[data-x="{"], #chat', "--help"], { encoding: "utf8" }).status, 0);
+      const help = spawnSync(process.execPath, [CLI, ...args.slice(0, -1), "--help"], { encoding: "utf8" }).stdout.replace(/\s+/g, " ");
+      assert.ok(help.includes("one that holds a comment or a control character, as a line break or a tab, or {, }, ; or @ outside its quotes, that leaves a quote, a bracket or a parenthesis open or closes one it did not open, or that ends in a backslash, is refused before any work"), `${name} --help`);
     }
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
