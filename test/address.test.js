@@ -339,6 +339,43 @@ test("a request the kit makes itself goes to the address the name was judged by,
   }
 });
 
+// A request the kit makes itself connects to the address its host was
+// judged by, through no proxy: Node.js sends a request through the proxy
+// HTTP_PROXY names once NODE_USE_ENV_PROXY is set, without the lookup the
+// request was given, and the proxy looks the name up again for itself.
+// Here a Node.js with those set reads a file of a server of this machine
+// given to it: the server answers, and the proxy, a server of this test,
+// is asked nothing. A Node.js that does not read NODE_USE_ENV_PROXY sends
+// nothing to the proxy either way.
+test("a request the kit makes itself goes through no proxy, not the one NODE_USE_ENV_PROXY has Node.js send its requests to", async () => {
+  const { spawn } = require("node:child_process");
+  const proxied = [];
+  const proxy = http.createServer((req, res) => {
+    proxied.push(req.url);
+    res.end("from the proxy");
+  });
+  const site = http.createServer((req, res) => res.end("from the site"));
+  await Promise.all([proxy, site].map((server) => new Promise((resolve) => server.listen(0, "127.0.0.1", resolve))));
+  const origin = `http://127.0.0.1:${site.address().port}`;
+  const module = require.resolve("../skills/easyscreenshotkit/scripts/lib/address");
+  const code = `const { guardFor, getChecked } = require(${JSON.stringify(module)});
+(async () => process.stdout.write((await getChecked(${JSON.stringify(`${origin}/robots.txt`)}, { guard: await guardFor(${JSON.stringify(`${origin}/`)}) })).body.toString()))().catch((err) => process.stdout.write(err.message));`;
+  try {
+    const env = { ...process.env, NODE_USE_ENV_PROXY: "1", HTTP_PROXY: `http://127.0.0.1:${proxy.address().port}`, NO_PROXY: "", [SETTING]: "" };
+    const out = await new Promise((resolve) => {
+      const child = spawn(process.execPath, ["-e", code], { env });
+      let text = "";
+      child.stdout.on("data", (chunk) => (text += chunk));
+      child.on("close", () => resolve(text));
+    });
+    assert.equal(out, "from the site");
+    assert.deepEqual(proxied, []);
+  } finally {
+    proxy.close();
+    site.close();
+  }
+});
+
 // The lookup a request of the kit's connects with refuses again what the
 // rule refuses of the answer it hands back, before a connection: an address
 // that is not public, away from the host and port given on this machine,

@@ -549,10 +549,16 @@ async function getChecked(raw, { guard, headers = {}, timeoutMs = 15_000, maxByt
   }
 }
 
+// A request goes to the address the lookup hands back, through no proxy (an
+// agent of its own): Node.js sends a request through the proxy HTTP_PROXY or
+// HTTPS_PROXY names once NODE_USE_ENV_PROXY is set, or with
+// --use-env-proxy, without the lookup the request was given, and the proxy
+// looks the name up again for itself, as a site's DNS server can answer
+// with 127.0.0.1.
 function requestOf(url, { headers, lookup, signal }) {
   return new Promise((resolve, reject) => {
     const client = url.protocol === "https:" ? https : http;
-    const req = client.get(url, { headers, ...(lookup ? { lookup } : {}), signal }, resolve);
+    const req = client.get(url, { headers, agent: false, ...(lookup ? { lookup } : {}), signal }, resolve);
     req.on("error", reject);
   });
 }
