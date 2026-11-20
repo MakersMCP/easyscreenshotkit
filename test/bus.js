@@ -24,6 +24,12 @@ function noBus(root) {
   return found.error || found.status !== 0 ? "dbus-daemon is not installed" : "";
 }
 
+// A path as a D-Bus address writes it: each byte but a letter, a digit and
+// -_/.\* as %xx, as the kit writes the browser's (see chrome.js busPath). A
+// path written as it is, with a space, a quote or a % of the temp folder's
+// in it, is no address dbus-daemon reads, and it ended at once.
+const busPath = (file) => Array.from(Buffer.from(file, "utf8"), (byte) => (/[-0-9A-Za-z_/.\\*]/.test(String.fromCharCode(byte)) ? String.fromCharCode(byte) : `%${byte.toString(16).padStart(2, "0")}`)).join("");
+
 // Starts a session bus listening in dir, as bus, where a program that is
 // given no address can look for it when XDG_RUNTIME_DIR is dir. It activates
 // no service, so nothing on it but the stand-in answers. Resolves to {
@@ -34,7 +40,7 @@ async function privateBus(dir) {
   fs.writeFileSync(
     config,
     `<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN" "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
-<busconfig><type>session</type><listen>unix:path=${socket}</listen><auth>EXTERNAL</auth>
+<busconfig><type>session</type><listen>unix:path=${busPath(socket)}</listen><auth>EXTERNAL</auth>
 <policy context="default"><allow send_destination="*" eavesdrop="true"/><allow eavesdrop="true"/><allow own="*"/></policy></busconfig>
 `,
   );
@@ -185,7 +191,8 @@ function strings(body, count) {
 // addresses it was asked to open, asked: every method it was called with,
 // close }.
 async function fakePortal(address) {
-  const socket = /^unix:path=([^,]+)/.exec(address)[1];
+  // The address writes the path with %xx escapes (see busPath).
+  const socket = decodeURIComponent(/^unix:path=([^,]+)/.exec(address)[1]);
   const conn = net.createConnection(socket);
   await new Promise((resolve, reject) => {
     conn.once("connect", resolve);

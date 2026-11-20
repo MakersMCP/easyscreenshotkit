@@ -1490,7 +1490,10 @@ function profilesOf(pid) {
     const kids = fs.readFileSync(`/proc/${pid}/task/${pid}/children`, "utf8").trim().split(/\s+/).filter(Boolean);
     return kids.flatMap((kid) => {
       try {
-        return [...fs.readFileSync(`/proc/${kid}/cmdline`, "utf8").matchAll(/--user-data-dir=([^\s\0]+)/g)].map((m) => m[1]);
+        // Chrome writes its arguments as one line, joined by spaces, and a
+        // profile's path can hold a space: it ends where the next switch
+        // starts, or at a NUL.
+        return [...fs.readFileSync(`/proc/${kid}/cmdline`, "utf8").matchAll(/--user-data-dir=(.+?)(?=\0| --|$)/g)].map((m) => m[1]);
       } catch {
         return [];
       }
@@ -1627,7 +1630,7 @@ test("a demo whose browser ends or whose tab crashes in the middle of it fails, 
           sent = true;
           const act = () => {
             const all = descendants(child.pid);
-            profiles = [...new Set(all.flatMap(({ args }) => [...args.matchAll(/--user-data-dir=([^\s\0]+)/g)].map((m) => m[1])))];
+            profiles = [...new Set(all.flatMap(({ args }) => [...args.matchAll(/--user-data-dir=(.+?)(?=\0| --|$)/g)].map((m) => m[1])))];
             killed = kill(all);
             for (const { pid } of killed) process.kill(pid, "SIGKILL");
           };

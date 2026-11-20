@@ -1514,7 +1514,7 @@ function profilesOf(pid) {
     return kids.flatMap((kid) => {
       try {
         // Chrome writes its arguments back as one line.
-        return [...fs.readFileSync(`/proc/${kid}/cmdline`, "utf8").matchAll(/--user-data-dir=([^\s\0]+)/g)].map((m) => m[1]);
+        return [...fs.readFileSync(`/proc/${kid}/cmdline`, "utf8").matchAll(/--user-data-dir=(.+?)(?=\0| --|$)/g)].map((m) => m[1]);
       } catch {
         return [];
       }
@@ -3201,7 +3201,10 @@ test("the browser opens no port: the run drives it over a pipe", { skip: noBrows
     const main = { pid: chrome.pid, args: fs.readFileSync(`/proc/${chrome.pid}/cmdline`, "utf8") };
     assert.match(main.args, /--remote-debugging-pipe/);
     assert.doesNotMatch(main.args, /--remote-debugging-port/);
-    const profile = /--user-data-dir=([^\0]+)/.exec(main.args)[1];
+    // Chrome writes its arguments as one line, joined by spaces: the
+    // profile's path ends where the next switch starts.
+    const profile = /--user-data-dir=(.+?)(?=\0| --|$)/.exec(main.args)[1];
+    assert.ok(fs.existsSync(profile), profile);
     assert.equal(fs.existsSync(path.join(profile, "DevToolsActivePort")), false);
     const tab = await openTab(chrome, DEVICES.desktop);
     // Every socket that listens for TCP on this machine, and every socket
