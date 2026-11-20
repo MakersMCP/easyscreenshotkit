@@ -9,6 +9,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const test = require("node:test");
+const { tempProblem, sh } = require("./helpers");
 const { parse, summary } = require("../skills/easyscreenshotkit/scripts/easyscreenshotkit");
 const { parseSizes, normalizeUrl, fragmentNotes, prepareDir, openShots, slugOf, identity, movedOn, pagesAsked, leftOut, siteName, writeMarkdown } = require("../skills/easyscreenshotkit/scripts/lib/shots");
 const { sheetHtml } = require("../skills/easyscreenshotkit/scripts/lib/sheet");
@@ -87,7 +88,7 @@ test("a MAKERSMCP_REFUSE_ADDRESSES that does not parse stops every command befor
     const started = path.join(root, "started");
     // Quoted for sh as a whole: in double quotes a $ or a backquote of
     // TMPDIR's would be read, and the stand-ins would write elsewhere.
-    const quoted = `'${started.replace(/'/g, "'\\''")}'`;
+    const quoted = sh(started);
     const ffmpeg = path.join(root, "ffmpeg");
     fs.writeFileSync(ffmpeg, `#!/bin/sh\necho ffmpeg >> ${quoted}\ncase "$*" in *-version*) echo 'ffmpeg version 4.4.2-stand-in';; *) printf '%s\\n' ' V....D libx264  libx264 H.264';; esac\n`, { mode: 0o755 });
     const chrome = path.join(root, "chrome");
@@ -1039,7 +1040,7 @@ test("a run's folder: refused when it holds someone else's files, and an earlier
 // The cases are made of this machine's own true: copies with a letter of a
 // library or of the loader it needs changed, for another processor, and
 // files that are no program at all.
-test("a browser or an ffmpeg that cannot be started stops a run before any work with its path, what is wrong with it and how to get one that runs", { skip: process.platform !== "linux" && "the files that cannot be run are Linux's", timeout: 300_000 }, async (t) => {
+test("a browser or an ffmpeg that cannot be started stops a run before any work with its path, what is wrong with it and how to get one that runs", { skip: (process.platform !== "linux" && "the files that cannot be run are Linux's") || tempProblem(), timeout: 300_000 }, async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-unstarted-"));
   const at = (...names) => path.join(root, ...names);
   const asRoot = process.getuid() === 0;
@@ -1398,7 +1399,7 @@ test("a Windows program that the system hands to a program of its own, as binfmt
 // run is given as its browser, is named as the browser, CHROME_PATH, and
 // not as the ffmpeg of a run that is over. The file is this machine's true with the name of
 // a library it needs changed: a program until it is started.
-test("a run names a program by its role in that run, whatever runs before it in the same process found it for", { skip: process.platform !== "linux" && "the program that cannot be started is Linux's", timeout: 120_000 }, async (t) => {
+test("a run names a program by its role in that run, whatever runs before it in the same process found it for", { skip: (process.platform !== "linux" && "the program that cannot be started is Linux's") || tempProblem(), timeout: 120_000 }, async (t) => {
   const { takeShots } = require("../skills/easyscreenshotkit/scripts/lib/shots");
   const { makeDemo } = require("../skills/easyscreenshotkit/scripts/lib/demo");
   const { findFfmpeg } = require("../skills/easyscreenshotkit/scripts/lib/ffmpeg");

@@ -19,12 +19,15 @@ const { readSteps } = require("../skills/easyscreenshotkit/scripts/lib/steps");
 const { findChrome, launch, openTab, closeTab, navigate } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
 const { findFfmpeg, makeGif, startVideo, gifIsWhole, mp4Frames } = require("../skills/easyscreenshotkit/scripts/lib/ffmpeg");
 const { checkBackdrop } = require("../skills/easyscreenshotkit/scripts/lib/compose");
-const { readPng, pngOf, serve, near, descendants, relayBrowser, runUntilOver } = require("./helpers");
+const { readPng, pngOf, serve, near, descendants, relayBrowser, runUntilOver, tempProblem, sh } = require("./helpers");
 const { noBus, privateBus, fakePortal } = require("./bus");
 
 const CLI = path.resolve(__dirname, "../skills/easyscreenshotkit/scripts/easyscreenshotkit.js");
 const ffmpeg = findFfmpeg();
-const missing = !findChrome() ? "no Chrome, Chromium, Edge or Brave installed" : !ffmpeg ? "no ffmpeg installed" : false;
+// A temp folder the kit starts no browser from skips every test that
+// starts one, with the kit's own reason (see helpers.js tempProblem).
+const noTemp = tempProblem();
+const missing = !findChrome() ? "no Chrome, Chromium, Edge or Brave installed" : !ffmpeg ? "no ffmpeg installed" : noTemp;
 
 const GREEN = [0, 160, 0];
 const PURPLE = [120, 0, 200];
@@ -203,7 +206,7 @@ test("a GIF or a video that ffmpeg cut short while exiting with 0 is no output",
   const root = tempDir();
   const log = path.join(root, "args.txt");
   const fake = path.join(root, "ffmpeg");
-  fs.writeFileSync(fake, `#!/bin/sh\necho "$*" >> "${log}"\nfor last; do :; done\nprintf 'GIF89a\\001\\000\\001\\000\\000\\000\\000' > "$last"\ncat > /dev/null\nexit 0\n`, { mode: 0o755 });
+  fs.writeFileSync(fake, `#!/bin/sh\necho "$*" >> ${sh(log)}\nfor last; do :; done\nprintf 'GIF89a\\001\\000\\001\\000\\000\\000\\000' > "$last"\ncat > /dev/null\nexit 0\n`, { mode: 0o755 });
   try {
     await assert.rejects(makeGif(fake, path.join(root, "in.mp4"), path.join(root, "out.gif"), { dir: root }), /^Error: ffmpeg could not write out\.gif: the file came out cut short \(the disk, or your disk quota, may be full\)$/);
     const sink = startVideo(fake, path.join(root, "out.mp4"), { fps: 30, encoder: { name: "x", args: [] } });
@@ -245,7 +248,7 @@ test("what ffmpeg said of why it stopped is told, when its last line ends with n
 // short is one the browser draws a strip of, over grey, and says it loaded:
 // it is read to its end. The JPEG, the GIF and the WebP come from ffmpeg,
 // when there is one that makes them.
-test("a --background file is judged by the browser: what it draws is taken, what it does not is refused, and a picture cut short too", { skip: !findChrome() && "no Chrome, Chromium, Edge or Brave installed", timeout: 60_000 }, async () => {
+test("a --background file is judged by the browser: what it draws is taken, what it does not is refused, and a picture cut short too", { skip: (!findChrome() && "no Chrome, Chromium, Edge or Brave installed") || noTemp, timeout: 60_000 }, async () => {
   const root = tempDir();
   const png = pngOf(32, 32, () => [0, 170, 119]);
   const bmp = Buffer.alloc(70);
@@ -424,7 +427,7 @@ test("a demo exits once it is over, while a program an ffmpeg wrapper left runni
   fs.writeFileSync(steps, "steps:\n  - visit: /\n  - wait: 0.5\n");
   const pids = path.join(root, "leftovers.pid");
   const wrapper = path.join(root, "ffmpeg-leftover");
-  fs.writeFileSync(wrapper, `#!/bin/sh\ncase " $* " in *" -version "*|*" -encoders "*) sleep 600 & echo $! >> ${JSON.stringify(pids)};; esac\nexec ${JSON.stringify(ffmpeg)} "$@"\n`, { mode: 0o755 });
+  fs.writeFileSync(wrapper, `#!/bin/sh\ncase " $* " in *" -version "*|*" -encoders "*) sleep 600 & echo $! >> ${sh(pids)};; esac\nexec ${sh(ffmpeg)} "$@"\n`, { mode: 0o755 });
   const leftovers = () => (fs.existsSync(pids) ? fs.readFileSync(pids, "utf8").trim().split("\n").filter(Boolean).map(Number) : []);
   try {
     const run = await runUntilOver(CLI, ["demo", origin, "--steps", steps, "--no-gif", "--json", "--out", path.join(root, "out")], { env: { ...process.env, FFMPEG_PATH: wrapper } });
@@ -1125,7 +1128,7 @@ test("a tour with #routes asked for with --page: clicked to through their links,
   }
 });
 
-test("a tour lists the #route links of the home page and the address given, and the #routes its sitemap lists, in one note, also when it needs no more pages", { skip: !findChrome() && "no Chrome, Chromium, Edge or Brave installed", timeout: 120_000 }, async () => {
+test("a tour lists the #route links of the home page and the address given, and the #routes its sitemap lists, in one note, also when it needs no more pages", { skip: (!findChrome() && "no Chrome, Chromium, Edge or Brave installed") || noTemp, timeout: 120_000 }, async () => {
   const { server, origin } = await fixture({ sitemap: ["/", "/app/#/x", "/app/#/plants"] });
   setTimeLimit(110_000);
   const chrome = await launch();
@@ -1153,7 +1156,7 @@ test("a tour lists the #route links of the home page and the address given, and 
 // A --page the browser cannot open, here one that answers with nothing, is
 // left out of the tour with the reason, and the tour goes on: it stopped
 // the demo.
-test("a tour leaves out a --page that cannot be opened, and goes on, and fails with none of the pages asked for", { skip: !findChrome() && "no Chrome, Chromium, Edge or Brave installed", timeout: 150_000 }, async () => {
+test("a tour leaves out a --page that cannot be opened, and goes on, and fails with none of the pages asked for", { skip: (!findChrome() && "no Chrome, Chromium, Edge or Brave installed") || noTemp, timeout: 150_000 }, async () => {
   const { server, origin } = await fixture();
   setTimeLimit(50_000);
   const chrome = await launch();
@@ -1187,7 +1190,7 @@ test("a tour leaves out a --page that cannot be opened, and goes on, and fails w
 // to it, here in the sitemap, is not listed again with the #route links the
 // tour does not follow, whose note says to give one with --page, as it was
 // given. One nobody asked for still is.
-test("a tour does not list a --page it could not take with the #route links to give with --page", { skip: !findChrome() && "no Chrome, Chromium, Edge or Brave installed", timeout: 120_000 }, async () => {
+test("a tour does not list a --page it could not take with the #route links to give with --page", { skip: (!findChrome() && "no Chrome, Chromium, Edge or Brave installed") || noTemp, timeout: 120_000 }, async () => {
   const { server, origin } = await fixture({ sitemap: ["/", "/missing/#/gone", "/app/#/x"] });
   setTimeLimit(110_000);
   const chrome = await launch();
@@ -1212,7 +1215,7 @@ test("a tour does not list a --page it could not take with the #route links to g
 // the check first counts its elements, after its first look at the page
 // (settle() counts them with getElementsByTagName), and tells the server so
 // first. The README said a tour left out such a page as the screenshots do.
-test("a tour leaves out a --page that does not answer as it opens it, and can keep one that stops answering a moment later, as the README says", { skip: !findChrome() && "no Chrome, Chromium, Edge or Brave installed", timeout: 180_000 }, async () => {
+test("a tour leaves out a --page that does not answer as it opens it, and can keep one that stops answering a moment later, as the README says", { skip: (!findChrome() && "no Chrome, Chromium, Edge or Brave installed") || noTemp, timeout: 180_000 }, async () => {
   const readme = fs.readFileSync(path.join(__dirname, "..", "README.md"), "utf8");
   assert.match(readme, /In the screenshots, a `--page` or a page of the tour is left out as too slow to answer, with those words\. A demo's tour leaves out such a page in the same words when the page does not answer as the tour opens it to check it, but can keep one that stops answering a moment later, and the demo then fails in those words when it records it\./);
   const hang = "setTimeout(() => { const s = Date.now(); while (Date.now() - s < 60000); });";
@@ -1352,7 +1355,7 @@ const HOME_LOST = [
   ["a file to download instead of a page", (res) => res.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Disposition": 'attachment; filename="x.bin"' }).end("x")],
 ];
 
-test("a tour starts at the address given when the home page cannot be taken, and says what it answered", { skip: !findChrome() && "no Chrome, Chromium, Edge or Brave installed", timeout: 200_000 }, async () => {
+test("a tour starts at the address given when the home page cannot be taken, and says what it answered", { skip: (!findChrome() && "no Chrome, Chromium, Edge or Brave installed") || noTemp, timeout: 200_000 }, async () => {
   setTimeLimit(180_000);
   const chrome = await launch();
   try {
@@ -1398,7 +1401,7 @@ test("a tour starts at the address given when the home page cannot be taken, and
 // A tour whose home page names a version in another language that answers
 // an error or cannot be opened starts at the home page, with a note, where
 // the demo failed over it.
-test("a tour whose home page names a version in another language that answers an error or cannot be opened takes the home page, with a note", { skip: !findChrome() && "no Chrome, Chromium, Edge or Brave installed", timeout: 200_000 }, async () => {
+test("a tour whose home page names a version in another language that answers an error or cannot be opened takes the home page, with a note", { skip: (!findChrome() && "no Chrome, Chromium, Edge or Brave installed") || noTemp, timeout: 200_000 }, async () => {
   const html = { "Content-Type": "text/html; charset=utf-8" };
   const { server, origin } = await serve((req, res) => {
     if (req.url === "/") {
@@ -1807,7 +1810,7 @@ async function cutOff(root) {
   const dir = path.join(root, "handlers");
   fs.mkdirSync(dir);
   const log = path.join(root, "started.log");
-  for (const name of ["xdg-open", "xdg-email", "x-www-browser", "www-browser", "sensible-browser", "xdg-settings", "xdg-mime", "gio", "kde-open", "gnome-open", "exo-open"]) fs.writeFileSync(path.join(dir, name), `#!/bin/sh\necho "$0 $*" >> '${log}'\n`, { mode: 0o755 });
+  for (const name of ["xdg-open", "xdg-email", "x-www-browser", "www-browser", "sensible-browser", "xdg-settings", "xdg-mime", "gio", "kde-open", "gnome-open", "exo-open"]) fs.writeFileSync(path.join(dir, name), `#!/bin/sh\necho "$0 $*" >> ${sh(log)}\n`, { mode: 0o755 });
   const env = { ...process.env, PATH: `${dir}${path.delimiter}${process.env.PATH}` };
   for (const name of ["DISPLAY", "WAYLAND_DISPLAY", "WAYLAND_SOCKET", "XDG_CURRENT_DESKTOP", "DESKTOP_SESSION", "BROWSER"]) delete env[name];
   const bus = noBus(root) ? null : await privateBus(fs.mkdtempSync(path.join(root, "bus-")));

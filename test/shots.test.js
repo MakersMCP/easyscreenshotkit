@@ -22,11 +22,15 @@ const { pickPages } = require("../skills/easyscreenshotkit/scripts/lib/tour");
 const { pngText } = require("../skills/easyscreenshotkit/scripts/lib/png");
 const { clean } = require("../skills/easyscreenshotkit/scripts/lib/clean");
 const programs = require("../skills/easyscreenshotkit/scripts/lib/programs");
-const { readPng, serve, near, descendants, relayBrowser, runUntilOver } = require("./helpers");
+const { readPng, serve, near, descendants, relayBrowser, runUntilOver, tempProblem, sh } = require("./helpers");
 const { noBus, privateBus, fakePortal } = require("./bus");
 
 const CLI = path.resolve(__dirname, "../skills/easyscreenshotkit/scripts/easyscreenshotkit.js");
-const noBrowser = !findChrome() && "no Chrome, Chromium, Edge or Brave installed";
+// A temp folder the kit starts no browser from skips every test that
+// starts one, real or a stand-in, with the kit's own reason (see
+// helpers.js tempProblem).
+const noTemp = tempProblem();
+const noBrowser = (!findChrome() && "no Chrome, Chromium, Edge or Brave installed") || noTemp;
 
 const RED = [200, 0, 0];
 const GREEN = [0, 160, 0];
@@ -491,8 +495,9 @@ test("each selector to hide is a rule of its own in the page, and one that could
   const pair = ["x-none /*", `[a="*/x-none{} *{background-image:url(${other.origin}/x.png)} [b="]`];
   const { server, origin } = await serve((req, res) => res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Acme", `<h1>Acme</h1><p class="promo" style="height:80px">Sale</p><div style="height:1400px"></div>`)));
   const root = tempDir();
-  const chrome = await launch();
+  let chrome = null;
   try {
+    chrome = await launch();
     chrome.guard = await guardFor(`${origin}/`);
     const tab = await openTab(chrome, DEVICES.desktop);
     try {
@@ -513,7 +518,7 @@ test("each selector to hide is a rule of its own in the page, and one that could
     await assert.rejects(takeShots(`${origin}/`, { dir: path.join(root, "shots"), pages: 1, sizes: "desktop", hide: pair, timeLimit: 60_000 }), { message: 'hide takes CSS selectors, and "x-none /*" is not one: it holds a comment' });
     assert.equal(fs.existsSync(path.join(root, "shots")), false);
   } finally {
-    await chrome.close();
+    if (chrome) await chrome.close();
     server.close();
     other.server.close();
     fs.rmSync(root, { recursive: true, force: true });
@@ -1993,7 +1998,7 @@ test("a tour opens no more pages after a window could not be saved", { skip: noB
 
 // A browser that cannot start on a disk with no room for its profile was
 // told to try again.
-test("a browser that did not start with a nearly full temp folder says so", { skip: process.platform === "win32" && "the stand-in browser is a shell script", timeout: 60_000 }, async () => {
+test("a browser that did not start with a nearly full temp folder says so", { skip: (process.platform === "win32" && "the stand-in browser is a shell script") || noTemp, timeout: 60_000 }, async () => {
   const root = tempDir();
   const fake = path.join(root, "browser");
   fs.writeFileSync(fake, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
@@ -2018,7 +2023,7 @@ test("a browser that did not start with a nearly full temp folder says so", { sk
 // failed then, as one a helper writing in it can make fail, gave the run
 // Node's bare words in place of why the browser did not start. Here every
 // removal of a profile fails.
-test("a profile that cannot be removed after a browser that did not start leaves the reason as it was", { skip: process.platform === "win32" && "the stand-in browser is a shell script", timeout: 60_000 }, async () => {
+test("a profile that cannot be removed after a browser that did not start leaves the reason as it was", { skip: (process.platform === "win32" && "the stand-in browser is a shell script") || noTemp, timeout: 60_000 }, async () => {
   const root = tempDir();
   const tmp = path.join(root, "tmp");
   fs.mkdirSync(tmp);
@@ -2055,7 +2060,7 @@ test("a profile that cannot be removed after a browser that did not start leaves
 // threads it may have, and what the loader or the shell said of the program
 // a launcher script starts. Lines of Chrome's that say nothing of it, as
 // its D-Bus lines, are not quoted.
-test("a browser that did not start and said why is quoted, with what to do", { skip: process.platform === "win32" && "the stand-in browser is a shell script", timeout: 60_000 }, async () => {
+test("a browser that did not start and said why is quoted, with what to do", { skip: (process.platform === "win32" && "the stand-in browser is a shell script") || noTemp, timeout: 60_000 }, async () => {
   const root = tempDir();
   const before = process.env.CHROME_PATH;
   const fake = path.join(root, "browser");
@@ -2119,7 +2124,7 @@ test("a browser that did not start and said why is quoted, with what to do", { s
 // answer because it could not start, not because the machine was slow:
 // the line it printed is quoted, where the run said it started but did not
 // answer in 60 s, a few seconds in.
-test("a browser that closes its pipe and goes on running is quoted, not said to be slow to answer", { skip: process.platform === "win32" && "the stand-in browser is a shell script", timeout: 60_000 }, async () => {
+test("a browser that closes its pipe and goes on running is quoted, not said to be slow to answer", { skip: (process.platform === "win32" && "the stand-in browser is a shell script") || noTemp, timeout: 60_000 }, async () => {
   const root = tempDir();
   const before = process.env.CHROME_PATH;
   const fake = path.join(root, "browser");
@@ -2167,7 +2172,7 @@ test("a run exits once it is over, while a program the browser's wrapper left ru
   const root = tempDir();
   const pid = path.join(root, "leftover.pid");
   const wrapper = path.join(root, "chrome-leftover");
-  fs.writeFileSync(wrapper, `#!/bin/sh\nsleep 600 &\necho $! > ${JSON.stringify(pid)}\nexec ${JSON.stringify(findChrome())} "$@"\n`, { mode: 0o755 });
+  fs.writeFileSync(wrapper, `#!/bin/sh\nsleep 600 &\necho $! > ${sh(pid)}\nexec ${sh(findChrome())} "$@"\n`, { mode: 0o755 });
   try {
     const run = await runUntilOver(CLI, [origin, "--pages", "1", "--sizes", "desktop", "--json", "--out", path.join(root, "shots")], { env: { ...process.env, CHROME_PATH: wrapper } });
     assert.equal(run.held, undefined, `the run printed its manifest and had not exited 20 s later\n${run.stderr}`);
@@ -2339,7 +2344,7 @@ function endStandIns(root, modes) {
 // address of a site on the public internet that answers on no https: the
 // run, or a hosted job, failed with "net::ERR_BLOCKED_BY_CLIENT". The browser
 // is started with that turn-on left off, as Chrome 155 has it.
-test("the browser is started with HTTPS-First's own turn-on left off", { skip: process.platform === "win32" && "the stand-in browser is a shell script", timeout: 60_000 }, async () => {
+test("the browser is started with HTTPS-First's own turn-on left off", { skip: (process.platform === "win32" && "the stand-in browser is a shell script") || noTemp, timeout: 60_000 }, async () => {
   const root = tempDir();
   const saved = process.env.CHROME_PATH;
   process.env.CHROME_PATH = standIns(root)("plain");
@@ -2363,7 +2368,7 @@ test("the browser is started with HTTPS-First's own turn-on left off", { skip: p
 // the host and port the run judged the address by. The browser is started
 // with no HTTP/3, so each request goes over TCP to the host and port its
 // address names.
-test("the browser is started with no HTTP/3", { skip: process.platform === "win32" && "the stand-in browser is a shell script", timeout: 60_000 }, async () => {
+test("the browser is started with no HTTP/3", { skip: (process.platform === "win32" && "the stand-in browser is a shell script") || noTemp, timeout: 60_000 }, async () => {
   const root = tempDir();
   const saved = process.env.CHROME_PATH;
   process.env.CHROME_PATH = standIns(root)("plain");
@@ -2390,7 +2395,7 @@ test("the browser is started with no HTTP/3", { skip: process.platform === "win3
 // can save a file through it. One slow to answer is taken, and not marked
 // as lost: each call of the start had a second, what the run had left,
 // where the slow one took a second and a half.
-test("a browser's start: one that does not answer says so and leaves nothing running, one slow to answer is taken", { skip: process.platform === "win32" && "the stand-in browser is a shell script", timeout: 90_000 }, async () => {
+test("a browser's start: one that does not answer says so and leaves nothing running, one slow to answer is taken", { skip: (process.platform === "win32" && "the stand-in browser is a shell script") || noTemp, timeout: 90_000 }, async () => {
   const root = tempDir();
   const failing = ["mute", "refuser", "mum"];
   const starting = ["slow"];
@@ -3022,7 +3027,7 @@ test("the folders a browser left for its own downloads since it started go with 
 // its profile does not start there: it starts again with the temp folder as
 // its own. Here a stand-in that makes such a lock folder in its temp folder
 // and ends, as Chrome ends when its socket does not fit.
-test("a browser whose lock does not fit in its profile starts again with the temp folder as its own", { skip: process.platform !== "linux" && "the profile is the browser's temp folder on Linux only", timeout: 60_000 }, async (t) => {
+test("a browser whose lock does not fit in its profile starts again with the temp folder as its own", { skip: (process.platform !== "linux" && "the profile is the browser's temp folder on Linux only") || noTemp, timeout: 60_000 }, async (t) => {
   const tmp = os.tmpdir();
   if (!roomIn(path.join(tmp, "easyscreenshotkit-chrome-XXXXXX"))) return t.skip(`${tmp} leaves no room for the browser's lock in a profile`);
   const root = tempDir();
@@ -3030,7 +3035,7 @@ test("a browser whose lock does not fit in its profile starts again with the tem
   const lock = `com.example.${"x".repeat(75 - Buffer.byteLength(tmp) - 19)}.Ab12Cd`;
   const log = path.join(root, "temp-folders.txt");
   const fake = path.join(root, "browser");
-  fs.writeFileSync(fake, `#!/bin/sh\nT="\${TMPDIR:-/tmp}"\necho "$T" >> "${log}"\nmkdir "$T/${lock}"\nexit 1\n`, { mode: 0o755 });
+  fs.writeFileSync(fake, `#!/bin/sh\nT="\${TMPDIR:-/tmp}"\necho "$T" >> ${sh(log)}\nmkdir "$T/${lock}"\nexit 1\n`, { mode: 0o755 });
   const before = process.env.CHROME_PATH;
   process.env.CHROME_PATH = fake;
   try {
@@ -3281,9 +3286,10 @@ test("from a public site the browser opens no address on this machine: given, af
   });
   const site = `http://public.example:${new URL(origin).port}`;
   const secret = path.join(tempDir(), "secret.txt");
-  fs.writeFileSync(secret, "a file of this machine");
-  const chrome = await launch({ args: ["--host-resolver-rules=MAP public.example 127.0.0.1"] });
+  let chrome = null;
   try {
+    fs.writeFileSync(secret, "a file of this machine");
+    chrome = await launch({ args: ["--host-resolver-rules=MAP public.example 127.0.0.1"] });
     chrome.guard = await guardFor(`${site}/`);
     assert.equal(chrome.guard.local, false);
     const tab = await openTab(chrome, DEVICES.desktop);
@@ -3303,7 +3309,7 @@ test("from a public site the browser opens no address on this machine: given, af
       await closeTab(chrome, tab);
     }
   } finally {
-    await chrome.close();
+    if (chrome) await chrome.close();
     server.close();
     other.server.close();
     fs.rmSync(path.dirname(secret), { recursive: true, force: true });
@@ -3521,6 +3527,7 @@ test("an http address given on another port is taken at https on that host and p
   const key = path.join(root, "key.pem");
   const cert = path.join(root, "cert.pem");
   const made = spawnSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", cert, "-days", "1", "-subj", "/CN=myapp.dev", "-addext", "subjectAltName=DNS:myapp.dev,DNS:public.example"], { encoding: "utf8" });
+  if (made.status !== 0) fs.rmSync(root, { recursive: true, force: true });
   assert.equal(made.status, 0, made.stderr);
   const https = require("node:https");
   const http = require("node:http");
@@ -3548,8 +3555,9 @@ test("an http address given on another port is taken at https on that host and p
   });
   await new Promise((resolve) => both.listen(0, "127.0.0.1", resolve));
   const port = both.address().port;
-  const chrome = await launch({ args: ["--host-resolver-rules=MAP myapp.dev 127.0.0.1, MAP public.example 127.0.0.1", "--ignore-certificate-errors"] });
+  let chrome = null;
   try {
+    chrome = await launch({ args: ["--host-resolver-rules=MAP myapp.dev 127.0.0.1, MAP public.example 127.0.0.1", "--ignore-certificate-errors"] });
     for (const [given, opened, landed] of [
       // The browser goes to https itself: myapp.dev asks for it.
       [`http://myapp.dev:${port}/`, `http://myapp.dev:${port}/`, `https://myapp.dev:${port}/`],
@@ -3575,7 +3583,7 @@ test("an http address given on another port is taken at https on that host and p
     assert.ok(seen.includes(`https myapp.dev:${port}/`) && seen.includes(`https public.example:${port}/`), seen.join("\n"));
     assert.ok(!seen.includes(`http public.example:${port}/`), seen.join("\n"));
   } finally {
-    await chrome.close();
+    if (chrome) await chrome.close();
     for (const server of [both, secure, plain]) {
       server.close();
       if (server.closeAllConnections) server.closeAllConnections();
@@ -3611,9 +3619,8 @@ test("of a menu's link to a page on another port and the footer's on the site's 
     return get(`http://127.0.0.1:${port}${where.pathname}${where.search}`, { ...rest, headers: { ...((rest && rest.headers) || {}), Host: "dup.example" } }, done);
   };
   const root = tempDir();
-  const quote = (text) => `'${String(text).replace(/'/g, "'\\''")}'`;
   const browser = path.join(root, "mapped-chrome");
-  fs.writeFileSync(browser, `#!/bin/sh\nexec ${quote(findChrome())} --host-resolver-rules="MAP dup.example 127.0.0.1:${port}" "$@"\n`, { mode: 0o755 });
+  fs.writeFileSync(browser, `#!/bin/sh\nexec ${sh(findChrome())} --host-resolver-rules="MAP dup.example 127.0.0.1:${port}" "$@"\n`, { mode: 0o755 });
   const saved = process.env.CHROME_PATH;
   process.env.CHROME_PATH = browser;
   try {
@@ -3685,7 +3692,7 @@ test("a run takes no --page or frame on another port than 80 and 443 away from t
   const site = `http://public.example:${new URL(origin).port}`;
   const root = tempDir();
   const browser = path.join(root, "mapped-chrome");
-  fs.writeFileSync(browser, `#!/bin/sh\nexec ${JSON.stringify(findChrome())} --host-resolver-rules="MAP public.example 127.0.0.1" "$@"\n`, { mode: 0o755 });
+  fs.writeFileSync(browser, `#!/bin/sh\nexec ${sh(findChrome())} --host-resolver-rules="MAP public.example 127.0.0.1" "$@"\n`, { mode: 0o755 });
   const saved = { CHROME_PATH: process.env.CHROME_PATH, MAKERSMCP_REFUSE_ADDRESSES: process.env.MAKERSMCP_REFUSE_ADDRESSES };
   process.env.CHROME_PATH = browser;
   process.env.MAKERSMCP_REFUSE_ADDRESSES = "93.184.215.99";
@@ -3755,8 +3762,9 @@ test("a page's speculation rules take the browser to no address the run does not
     res.writeHead(200, html).end(page("Acme", "<h1>Acme</h1>"));
   });
   const site = `http://public.example:${new URL(origin).port}`;
-  const chrome = await launch({ args: ["--host-resolver-rules=MAP public.example 127.0.0.1"] });
+  let chrome = null;
   try {
+    chrome = await launch({ args: ["--host-resolver-rules=MAP public.example 127.0.0.1"] });
     const click = async (tab, y, { hover = false } = {}) => {
       if (hover) {
         await tab.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 100, y });
@@ -3802,7 +3810,7 @@ test("a page's speculation rules take the browser to no address the run does not
     assert.deepEqual(seen, []);
     assert.equal(connections, 0, "connections to the other server");
   } finally {
-    await chrome.close();
+    if (chrome) await chrome.close();
     server.close();
     other.server.close();
   }
@@ -3813,7 +3821,7 @@ test("a page's speculation rules take the browser to no address the run does not
 // says, or one started with a profile of a program's own, is not used, and
 // neither is one that cannot say. The profile the kit gives it asks it to
 // preload nothing.
-test("a browser that preloads pages, or does not say whether it does, is not used", { skip: process.platform === "win32" && "the stand-in browsers are shell scripts", timeout: 120_000 }, async () => {
+test("a browser that preloads pages, or does not say whether it does, is not used", { skip: (process.platform === "win32" && "the stand-in browsers are shell scripts") || noTemp, timeout: 120_000 }, async () => {
   const root = tempDir();
   const modes = ["preloading", "unsaid", "untold"];
   const wrapper = standIns(root);
@@ -3858,14 +3866,13 @@ test("a browser that preloads pages, or does not say whether it does, is not use
 // has it preload, which the browser says, and it is not used.
 test("the browser's profile asks it to preload nothing, and a browser started with that taken out is not used", { skip: noBrowser || (process.platform === "win32" && "the wrappers are shell scripts"), timeout: 120_000 }, async () => {
   const root = tempDir();
-  const quote = (text) => `'${String(text).replace(/'/g, "'\\''")}'`;
   const kept = path.join(root, "preferences.json");
   // Each wrapper reads the profile from the browser's command line.
   const profileOf = 'for a in "$@"; do case "$a" in --user-data-dir=*) d="${a#--user-data-dir=}";; esac; done';
   const reading = path.join(root, "reading");
-  fs.writeFileSync(reading, `#!/bin/sh\n${profileOf}\ncat "$d/Default/Preferences" > ${quote(kept)}\nexec ${quote(findChrome())} "$@"\n`, { mode: 0o755 });
+  fs.writeFileSync(reading, `#!/bin/sh\n${profileOf}\ncat "$d/Default/Preferences" > ${sh(kept)}\nexec ${sh(findChrome())} "$@"\n`, { mode: 0o755 });
   const emptied = path.join(root, "emptied");
-  fs.writeFileSync(emptied, `#!/bin/sh\n${profileOf}\nprintf '{}' > "$d/Default/Preferences"\nexec ${quote(findChrome())} "$@"\n`, { mode: 0o755 });
+  fs.writeFileSync(emptied, `#!/bin/sh\n${profileOf}\nprintf '{}' > "$d/Default/Preferences"\nexec ${sh(findChrome())} "$@"\n`, { mode: 0o755 });
   const before = process.env.CHROME_PATH;
   try {
     setTimeLimit(60_000);
@@ -4215,7 +4222,7 @@ function recordingHandlers(root, bus = null) {
   fs.mkdirSync(dir);
   const log = path.join(root, "started.log");
   for (const name of ["xdg-open", "xdg-email", "x-www-browser", "www-browser", "sensible-browser", "xdg-settings", "xdg-mime", "gio", "kde-open", "gnome-open", "exo-open"]) {
-    fs.writeFileSync(path.join(dir, name), `#!/bin/sh\necho "$0 $*" >> '${log}'\n`, { mode: 0o755 });
+    fs.writeFileSync(path.join(dir, name), `#!/bin/sh\necho "$0 $*" >> ${sh(log)}\n`, { mode: 0o755 });
   }
   const env = { ...process.env, PATH: `${dir}${path.delimiter}${process.env.PATH}` };
   for (const name of ["DISPLAY", "WAYLAND_DISPLAY", "XDG_CURRENT_DESKTOP", "DESKTOP_SESSION", "BROWSER"]) delete env[name];
@@ -4367,7 +4374,7 @@ test("a browser that could not be kept from the programs of the machine is not s
 // stand-in starts finds no display, though a wayland-0 listens in its
 // XDG_RUNTIME_DIR, where it connected to it. Its PATH starts with the
 // stand-ins, each of whose names leads to one there.
-test("the browser starts with no display, a session bus where nothing listens, and stand-ins first on its PATH", { skip: process.platform !== "linux" && "the browser is kept from the desktop on Linux only", timeout: 60_000 }, async () => {
+test("the browser starts with no display, a session bus where nothing listens, and stand-ins first on its PATH", { skip: (process.platform !== "linux" && "the browser is kept from the desktop on Linux only") || noTemp, timeout: 60_000 }, async () => {
   const root = tempDir();
   const desktop = { DISPLAY: ":0", WAYLAND_DISPLAY: "wayland-0", WAYLAND_SOCKET: "9", DBUS_SESSION_BUS_ADDRESS: `unix:path=${path.join(root, "desktop-bus")}`, XDG_RUNTIME_DIR: root };
   const saved = Object.fromEntries(["CHROME_PATH", ...Object.keys(desktop)].map((name) => [name, process.env[name]]));
@@ -4439,7 +4446,7 @@ test("the browser starts with no display, a session bus where nothing listens, a
 // links, as some mounted ones are, the browser cannot start either, and the
 // run said that no program may run from the temp folder. It names the disk,
 // and the browser is not started.
-test("a temp folder on a disk that takes no symbolic links is named, and the browser is not started", { skip: process.platform !== "linux" && "the stand-ins are made on Linux only", timeout: 60_000 }, async () => {
+test("a temp folder on a disk that takes no symbolic links is named, and the browser is not started", { skip: (process.platform !== "linux" && "the stand-ins are made on Linux only") || noTemp, timeout: 60_000 }, async () => {
   const root = tempDir();
   const tmp = path.join(root, "tmp");
   fs.mkdirSync(tmp);
@@ -4476,7 +4483,7 @@ test("a temp folder on a disk that takes no symbolic links is named, and the bro
 // stand-ins cannot be made, and the run said that no program may run from
 // the temp folder. It says the temp folder cannot be written, with the
 // system's words, as for the profile, and the browser is not started.
-test("a temp folder that fills before the browser's stand-ins are made is said to be one that cannot be written", { skip: process.platform !== "linux" && "the stand-ins are made on Linux only", timeout: 60_000 }, async () => {
+test("a temp folder that fills before the browser's stand-ins are made is said to be one that cannot be written", { skip: (process.platform !== "linux" && "the stand-ins are made on Linux only") || noTemp, timeout: 60_000 }, async () => {
   const root = tempDir();
   const tmp = path.join(root, "tmp");
   fs.mkdirSync(tmp);
@@ -4519,7 +4526,7 @@ test("a temp folder that fills before the browser's stand-ins are made is said t
 // A temp folder whose disk quota is full: the browser's profile cannot be
 // made there, and Node has no name for that error on Linux (errno -122),
 // which the run quoted as "Unknown system error -122".
-test("a temp folder whose disk quota is full is said so", { skip: process.platform === "win32" && "the stand-in browser is a shell script", timeout: 60_000 }, async () => {
+test("a temp folder whose disk quota is full is said so", { skip: (process.platform === "win32" && "the stand-in browser is a shell script") || noTemp, timeout: 60_000 }, async () => {
   const root = tempDir();
   const saved = process.env.CHROME_PATH;
   const make = fs.mkdtempSync;

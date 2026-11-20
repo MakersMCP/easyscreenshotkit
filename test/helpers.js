@@ -5,9 +5,29 @@
 
 const fs = require("node:fs");
 const http = require("node:http");
+const os = require("node:os");
 const { spawn } = require("node:child_process");
 const path = require("node:path");
 const zlib = require("node:zlib");
+const { roomIn } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
+
+// A path or a word quoted for sh as a whole, each ' written as '\'': in
+// double quotes a $, a backquote or a ! of a temp folder's path would be
+// read by the shell, and the stand-in would write somewhere else.
+const sh = (text) => `'${String(text).replace(/'/g, "'\\''")}'`;
+
+// Why the kit starts no browser from this temp folder, in its own words, or
+// false, as a test's skip takes it (an empty reason skips the test too): on
+// Linux one whose path holds PATH's delimiter, where the browser's
+// stand-ins could not come first on its PATH, and on Linux and macOS one
+// whose path leaves no room for the socket the browser opens there (see
+// chrome.js). A test that starts a browser from it, or a program in its
+// place, skips with that.
+function tempProblem(tmp = os.tmpdir()) {
+  if (process.platform === "linux" && tmp.includes(path.delimiter)) return `the temp folder's path, ${tmp}, has a ${path.delimiter} in it, which parts the folders of PATH`;
+  if (process.platform !== "win32" && !roomIn(tmp)) return `the temp folder's path, ${tmp}, is too long for the socket the browser opens there`;
+  return false;
+}
 
 // Minimal PNG reader for 8-bit RGB/RGBA, non-interlaced (what Chrome
 // writes), every filter type.
@@ -258,4 +278,4 @@ function runUntilOver(cli, args, { env = process.env, holdMs = 20_000 } = {}) {
   });
 }
 
-module.exports = { readPng, pngOf, serve, near, descendants, relayBrowser, runUntilOver };
+module.exports = { readPng, pngOf, serve, near, descendants, relayBrowser, runUntilOver, tempProblem, sh };
