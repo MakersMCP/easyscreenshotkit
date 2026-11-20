@@ -3699,6 +3699,44 @@ test("where the browser reached an answer is waited for when the browser says it
   }
 }));
 
+// The browser says it sent a request for a document, and then nothing of
+// where it reached the answer in the 5 s the run waits: the document is not
+// loaded, as one the browser said nothing of, though the site is on the
+// public internet. Here a relay holds what it says of the answer 6 s.
+test("an answer whose place the browser does not say within 5 s of saying it sent its request is not loaded", { skip: noBrowser || (process.platform === "win32" && "the relay's wrapper is a shell script"), timeout: 120_000 }, () => withNames({ "public.example": "93.184.215.14" }, async () => {
+  setTimeLimit(180_000);
+  const seen = [];
+  const published = await serve((req, res) => {
+    seen.push(req.url);
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Public", "<h1>Public</h1>"));
+  });
+  const publicPort = new URL(published.origin).port;
+  const root = tempDir();
+  const relay = relayBrowser(root, findChrome(), { holdSpacesMs: 6_000 });
+  const saved = process.env.CHROME_PATH;
+  process.env.CHROME_PATH = relay.browser;
+  let chrome = null;
+  try {
+    chrome = await launch({ args: [`--host-resolver-rules=MAP public.example 127.0.0.1:${publicPort}`, publicAt(publicPort)] });
+    chrome.guard = await guardFor("http://public.example/");
+    const tab = await openTab(chrome, DEVICES.desktop);
+    try {
+      const began = Date.now();
+      await assert.rejects(navigate(tab, "http://public.example/"), { message: "Could not open http://public.example/: it is on a host the browser reached at an address it did not name." });
+      assert.ok(Date.now() - began >= 4_500, `${Date.now() - began} ms`);
+      assert.deepEqual(seen, ["/"]);
+    } finally {
+      await closeTab(chrome, tab);
+    }
+  } finally {
+    if (chrome) await chrome.close();
+    if (saved === undefined) delete process.env.CHROME_PATH;
+    else process.env.CHROME_PATH = saved;
+    published.server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}));
+
 // The same in a run: the address given on such a host stops it before any
 // file is saved, and from a site on this machine a --page that redirects
 // there is left out and a frame there is not loaded, each named with the
