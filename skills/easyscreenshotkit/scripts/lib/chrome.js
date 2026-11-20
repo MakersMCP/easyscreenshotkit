@@ -13,7 +13,7 @@ const os = require("os");
 const path = require("path");
 const { spawn } = require("child_process");
 const { timeLeft, sleep } = require("./time");
-const { NOT_WEB } = require("./address");
+const { NOT_WEB, INSIDE_SPACES } = require("./address");
 const programs = require("./programs");
 
 const MAC = [
@@ -1186,13 +1186,24 @@ const BARRED = "easyscreenshotkit.addressRefused";
 // the data it fetches are not documents: the browser's own rules hold for
 // them.
 // The answer to each such request is held a moment too, before the browser
-// reads it: one that redirects to an address of another kind, as a 302 to
-// mailto:, is not followed, on any system, and the tab is told of it as of
-// a move there, one the browser was not asked to open (no asked, see
-// openTab()). Followed, it had the browser hand the address to a program
-// of the machine, and a page that redirected there was said to fail in the
-// browser's bare words (net::ERR_ABORTED), or, for a frame or a page that
-// moved there once it had loaded, went without a note.
+// reads it. One the browser reached on this machine or its network, as it
+// says (see spaceOf()), is not read but on the host and port given there
+// (see reached() in address.js): the browser looks a name up again for
+// itself, and a site whose DNS answered the run with a public address and
+// the browser with 127.0.0.1 had it show the machine's own page on port 80,
+// as the address given, as a frame and after a redirect. The request has
+// reached that address by then; what answered is not shown, and the tab is
+// told as of a document refused. And one that redirects to an address of
+// another kind, as a 302 to mailto:, is not followed, on any system, and
+// the tab is told of it as of a move there, one the browser was not asked
+// to open (no asked, see openTab()). Followed, it had the browser hand the
+// address to a program of the machine, and a page that redirected there was
+// said to fail in the browser's bare words (net::ERR_ABORTED), or, for a
+// frame or a page that moved there once it had loaded, went without a
+// note.
+// A window a page opens is held at its start until the browser says where
+// it reaches its documents (see hearAddresses()), as a frame of another
+// site is: with nothing said of it, its documents are not read.
 // Turned on once for a browser, when its first tab opens with the guard
 // set; timeoutMs: how long the browser has to take it. A turn-on that
 // failed, as one that ran out of time on a busy machine, is not kept: the
@@ -1201,6 +1212,150 @@ const BARRED = "easyscreenshotkit.addressRefused";
 // The listeners go on once for the browser, so a request is not continued
 // or failed twice.
 const QUICK = { fixed: true, watched: false };
+
+// What the browser says of the requests it sends for documents, by each
+// request's id in its Network domain (Fetch's networkId): how many it sent
+// over the network since its last answer was judged (sent), the address
+// spaces of the answers that came since (spaces), and who waits for one.
+// Chrome says where it reached an answer (Network.responseReceivedExtraInfo,
+// resourceIPAddressSpace) before it hands the answer to the paused request,
+// on the session of the target whose frame asked for it: the tab's for its
+// page and the frames in its process, and its own for a frame of another
+// site that runs in a process of its own and for a window. So each of
+// those is heard, a frame of another site and a window held at their start
+// until the browser says where they reach (Target.setAutoAttach with
+// waitForDebuggerOnStart): without, a frame that moved on once it ran in a
+// process of its own, and a window, came with nothing said of them. An
+// answer from the browser's cache comes with nothing said either, as no
+// request went out for it: it is one the browser reached, and the run
+// judged, before. At most HEARD_MAX requests are kept, the oldest let go of
+// first, and each goes once it has loaded or failed.
+const HEARD_MAX = 2_000;
+
+function heardOf(chrome, id) {
+  const heard = chrome.heard || (chrome.heard = new Map());
+  let known = heard.get(id);
+  if (!known) {
+    known = { sent: 0, spaces: [], waiting: [] };
+    heard.set(id, known);
+    if (heard.size > HEARD_MAX) heard.delete(heard.keys().next().value);
+  }
+  return known;
+}
+
+// Has a session of the browser (a tab, a window, a frame of another site)
+// heard for heardOf(), with Network on, and each frame of another site
+// that comes in it held at its start until it is heard in turn; a target of
+// another kind, as a worker, is let go of at once. The frames' sessions end
+// with this one. Resolves once the browser has taken it, and fails as a
+// call does when it does not. id: the target's, which stands among those
+// heard (see heardFrame()) from the moment this is sent until the browser
+// fails it or the session ends. A target held at its start is let go of
+// (see letGo()) right after this is sent, not once it is answered: the
+// browser takes a session's calls in their order, so it hears the target's
+// documents from then on, and a window opened with no opener, which has no
+// page of its own yet, answers Network.enable only once it runs, so waiting
+// for that answer held it for good. One the browser did not take it for
+// has its documents not read (see spaceOf()).
+function hearAddresses(chrome, session, timeoutMs = 10_000, id = "") {
+  const { browser } = chrome;
+  const heard = chrome.heardTargets || (chrome.heardTargets = new Set());
+  session.on("Network.requestWillBeSentExtraInfo", ({ requestId }) => {
+    if (requestId) heardOf(chrome, requestId).sent++;
+  });
+  session.on("Network.responseReceivedExtraInfo", ({ requestId, resourceIPAddressSpace }) => {
+    if (!requestId) return;
+    const known = heardOf(chrome, requestId);
+    known.spaces.push(String(resourceIPAddressSpace || ""));
+    for (const wake of known.waiting.splice(0)) wake();
+  });
+  const done = ({ requestId }) => {
+    if (chrome.heard) chrome.heard.delete(requestId);
+  };
+  session.on("Network.loadingFinished", done);
+  session.on("Network.loadingFailed", done);
+  const frames = new Map();
+  session.on("Target.attachedToTarget", ({ sessionId, targetInfo = {} }) => {
+    if (!sessionId) return;
+    const frame = browser.session(sessionId);
+    if (targetInfo.type !== "iframe") {
+      letGo(frame)
+        .then(() => session.send("Target.detachFromTarget", { sessionId }, 10_000, QUICK).catch(() => {}))
+        .finally(() => frame.close());
+      return;
+    }
+    frames.set(sessionId, frame);
+    hearAddresses(chrome, frame, 10_000, targetInfo.targetId || "").catch(() => {});
+    letGo(frame);
+  });
+  session.on("Target.detachedFromTarget", ({ sessionId }) => {
+    const frame = frames.get(sessionId);
+    if (!frame) return;
+    frames.delete(sessionId);
+    frame.close();
+  });
+  session.over.then(() => {
+    for (const frame of frames.values()) frame.close();
+    frames.clear();
+    if (id) heard.delete(id);
+  });
+  if (id) heard.add(id);
+  return Promise.all([
+    session.send("Network.enable", { maxTotalBufferSize: 1, maxResourceBufferSize: 1 }, timeoutMs),
+    session.send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, timeoutMs),
+  ]).catch((err) => {
+    if (id) heard.delete(id);
+    throw err;
+  });
+}
+
+// Whether the documents of a frame are heard (see hearAddresses()): the
+// tab's page and the frames in its process, on the tab's session, and a
+// frame of another site and a window, on their own while the browser took
+// the order for them. A document request the browser pauses for such a
+// frame that it said nothing of, as no session heard it, is none of the
+// frame's documents: the browser asks for a link's file with a download
+// attribute so, which it then refuses as it refuses every download (see
+// start()), and the page stays as it is: refused as a document the browser
+// said nothing of, it would be named so in the notes of a page that only
+// started a download, besides the refused download.
+function heardFrame(chrome, frameId) {
+  const known = chrome.owners && chrome.owners.get(frameId);
+  if (!known || !known.tab || known.own) return false;
+  return known.tab.targetId === frameId || (known.tab.frames && known.tab.frames.has(frameId)) || Boolean(chrome.heardTargets && chrome.heardTargets.has(frameId));
+}
+
+// Lets a target held at its start (waitForDebuggerOnStart) run.
+function letGo(session) {
+  return session.send("Runtime.runIfWaitingForDebugger", {}, 10_000, QUICK).catch(() => {});
+}
+
+// The address space of the answer a paused document request got, as the
+// browser said it (see hearAddresses()): the one most inside of those said
+// since its last answer was judged, so each hop of a redirect is judged by
+// its own; "" for an answer from the browser's cache, for which no request
+// went out; and null when the browser said nothing of the request at all,
+// as for a target it did not take hearAddresses() for, or nothing in
+// SPACE_MS of the answer to a request it said it sent.
+const SPACE_MS = 5_000;
+
+async function spaceOf(chrome, networkId) {
+  if (!networkId) return null;
+  const known = heardOf(chrome, networkId);
+  if (!known.spaces.length && known.sent) {
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, Math.max(1, Math.min(SPACE_MS, timeLeft())));
+      known.waiting.push(() => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+    if (!known.spaces.length) return null;
+  }
+  const spaces = known.spaces.splice(0);
+  known.sent = 0;
+  return spaces.find((space) => INSIDE_SPACES.has(space)) || spaces[0] || "";
+}
 
 function guardBrowser(chrome, timeoutMs) {
   if (chrome.guarding) return chrome.guarding;
@@ -1240,11 +1395,40 @@ function guardBrowser(chrome, timeoutMs) {
       const known = owners.get(targetId);
       if (known && known.tab.targetId !== targetId) owners.delete(targetId);
     });
+    // A window a page opens comes held at its start (see turning, below):
+    // one of a tab of the run's is heard first (see hearAddresses()), and
+    // any other page, as a tab the kit opens itself, is let go of at once.
+    // One that was not held, as the kit's own attach to its tab, is not
+    // this one's to let go of.
+    browser.on("Target.attachedToTarget", ({ sessionId, targetInfo: t = {}, waitingForDebugger }) => {
+      if (!sessionId || !waitingForDebugger) return;
+      adopt({ targetInfo: t });
+      const known = owners.get(t.targetId);
+      const held = browser.session(sessionId);
+      if (known && known.window && !known.own) {
+        hearAddresses(chrome, held, 10_000, t.targetId).catch(() => {});
+        letGo(held);
+        return;
+      }
+      letGo(held)
+        .then(() => browser.send("Target.detachFromTarget", { sessionId }, 10_000, QUICK).catch(() => {}))
+        .finally(() => held.close());
+    });
     browser.on("Fetch.requestPaused", async (p) => {
       const go = () => void browser.send("Fetch.continueRequest", { requestId: p.requestId }, 10_000, QUICK).catch(() => {});
       const url = String((p.request && p.request.url) || "");
       const owner = owners.get(p.frameId);
       if (p.responseStatusCode !== undefined || p.responseErrorReason !== undefined) {
+        // Where the browser reached the answer, before it reads it.
+        if (p.responseStatusCode !== undefined && chrome.guard && !(owner && owner.own) && /^https?:/i.test(url)) {
+          const space = !p.networkId && heardFrame(chrome, p.frameId) ? "" : await spaceOf(chrome, p.networkId);
+          const why = chrome.guard.reached(url, space);
+          if (why) {
+            const known = owners.get(p.frameId) || owner;
+            if (known && known.tab) known.tab.emit(BARRED, { url, why, main: p.frameId === known.tab.targetId, window: Boolean(known.window) });
+            return void browser.send("Fetch.failRequest", { requestId: p.requestId, errorReason: "Aborted" }, 10_000, QUICK).catch(() => {});
+          }
+        }
         const to = redirectOf(p);
         if (!to || !outside(to) || (owner && owner.own)) return go();
         if (owner && owner.tab) owner.tab.emit(BARRED, { url: to, why: NOT_WEB, main: p.frameId === owner.tab.targetId, window: Boolean(owner.window), stays: true });
@@ -1261,6 +1445,9 @@ function guardBrowser(chrome, timeoutMs) {
   }
   const turning = (async () => {
     await browser.send("Target.setDiscoverTargets", { discover: true }, timeoutMs);
+    // Each page that opens from now on, a window a page opens among them,
+    // held at its start (see the listener above).
+    await browser.send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true, flatten: true, filter: [{ type: "page" }] }, timeoutMs);
     const documents = (requestStage) => ({ urlPattern: "*", resourceType: "Document", requestStage });
     await browser.send("Fetch.enable", { patterns: [documents("Request"), documents("Response")] }, timeoutMs);
   })();
@@ -1315,8 +1502,15 @@ async function openTab(chrome, device, { lang = "", theme = "light", reducedMoti
     owners.set(targetId, { tab, own });
     // The tab's frames, one that runs in a process of its own too, which
     // keeps its id as it moves there.
-    cdp.on("Page.frameAttached", ({ frameId }) => owners.set(frameId, { tab, own }));
+    // Those in its process, whose documents its session hears; one that
+    // moves to a process of its own is heard there (see heardFrame()).
+    cdp.frames = new Set();
+    cdp.on("Page.frameAttached", ({ frameId }) => {
+      owners.set(frameId, { tab, own });
+      cdp.frames.add(frameId);
+    });
     cdp.on("Page.frameDetached", ({ frameId, reason }) => {
+      cdp.frames.delete(frameId);
       if (reason !== "swap" && frameId !== targetId) owners.delete(frameId);
     });
     // The input events under way, each told when the tab's page commits
@@ -1352,6 +1546,9 @@ async function openTab(chrome, device, { lang = "", theme = "light", reducedMoti
     }
     await cdp.send("Inspector.enable", {}, left()).catch(() => {});
     await cdp.send("Page.enable", {}, left());
+    // Where the browser reaches the tab's documents, its frames' of other
+    // sites too, is heard before its first page opens (see guardBrowser()).
+    if (cdp.guard) await hearAddresses(chrome, cdp, left());
     await cdp.send(
       "Emulation.setDeviceMetricsOverride",
       {
@@ -1547,6 +1744,9 @@ async function navigate(cdp, url) {
     });
     if (isDownload) throw Object.assign(new Error(`Could not open ${url}: it answers with ${NOT_A_PAGE}.`), { refused: NOT_A_PAGE });
     const refusal = barred || stayed;
+    // The address itself, refused once the browser had reached it (see
+    // guardBrowser()), is said to be what it is, as one refused before.
+    if (errorText && refusal && refusal.url === withoutFragment(url)) throw Object.assign(new Error(`Could not open ${url}: it is ${refusal.why}.`), { refused: refusal.why });
     if (errorText && refusal) {
       const why = `it leads to ${refusal.url}, which is ${refusal.why}`;
       throw Object.assign(new Error(`Could not open ${url}: ${why}.`), { refused: why });
@@ -1582,6 +1782,17 @@ function protocolOf(url) {
     return new URL(url).protocol;
   } catch {
     return "";
+  }
+}
+
+// An address as the browser asks for it, with no fragment.
+function withoutFragment(url) {
+  try {
+    const at = new URL(url);
+    at.hash = "";
+    return at.href;
+  } catch {
+    return String(url);
   }
 }
 

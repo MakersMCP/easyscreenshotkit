@@ -10,9 +10,10 @@
 // port 80 or 443 or on the scheme, host and port of the address given. So
 // no page, link, redirect, step or manifest of a site can send the browser
 // or the kit to this machine, its network or another address that is not on
-// the public internet, nor to another program of a host on the public
-// internet, to find what answers there and save it in a screenshot, a demo
-// or a report. A run given such an address itself, as a developer gives the
+// the public internet, as the run looks a name up (the browser's own lookup
+// is below), nor to another program of a host on the public internet, to
+// find what answers there and save it in a screenshot, a demo or a report.
+// A run given such an address itself, as a developer gives the
 // address of a site on their own machine, opens that host and port and no
 // other address of the kind.
 //
@@ -32,11 +33,21 @@
 // the kit makes itself (a sitemap, a manifest, a screenshot's file) goes to
 // one of those addresses, not to a second answer of the DNS. The browser
 // resolves a name again when it opens it, which a DNS server of the site's
-// can answer otherwise in between. A name that does not resolve here, or
-// gives no answer in LOOKUP_MS, is not opened: left to the browser's own
-// lookup, it let a DNS server that failed the kit's question, or answered it
-// late, send the browser's next one to this machine. The address given on
-// such a host stops the run before any work.
+// can answer otherwise in between: so each document the browser loads is
+// judged again by where the browser says it reached it, before the browser
+// reads it (see reached() and guardBrowser() in chrome.js), and one it
+// reached on this machine or its network is not shown but on the host and
+// port given there; its request has reached that address by then. A site
+// whose DNS answered the run with a public address and the browser with
+// 127.0.0.1 had the browser show the machine's own page on port 80, as the
+// address given, a frame or after a redirect. An address the browser counts
+// as public, as one MAKERSMCP_REFUSE_ADDRESSES names, is judged by the
+// run's lookup alone, as is any address behind a proxy. A
+// name that does not resolve here, or gives no answer in LOOKUP_MS, is not
+// opened: left to the browser's own lookup, it let a DNS server that failed
+// the kit's question, or answered it late, send the browser's next one to
+// this machine. The address given on such a host stops the run before any
+// work.
 
 const dns = require("dns");
 const net = require("net");
@@ -57,6 +68,20 @@ const otherPort = (port, given) => `on port ${port}, not 80 or 443${given ? ", a
 // host that the setting refuses.
 const REFUSE_SETTING = "MAKERSMCP_REFUSE_ADDRESSES";
 const refusedHere = (address) => `at ${address}, an address ${REFUSE_SETTING} refuses`;
+// A document the browser reached on this machine or its network, by its
+// own lookup, where the run's found the host on the public internet or on
+// another host and port; and one the browser said nothing of where it
+// reached (see reached()).
+const REACHED_INSIDE = "on a host the browser reached on this machine or its network";
+const REACHED_UNNAMED = "on a host the browser reached at an address it did not name";
+
+// The address spaces Chrome gives the answer to a request it made itself
+// (resourceIPAddressSpace): Loopback for this machine and Local for a
+// private or link-local network, as Chrome 155 and 157 name them, where
+// earlier versions named this machine Local and such a network Private;
+// Public for the rest, and Unknown through a proxy, whose own address it
+// reached, which says nothing of the page.
+const INSIDE_SPACES = new Set(["Loopback", "Local", "Private"]);
 
 // The ports a run opens on any host on the public internet: those of the
 // web. Any other is opened only on the scheme, host and port of the address
@@ -367,10 +392,12 @@ function addressesFor(hostname) {
 // said after "it is": not a web address, at an address the host's
 // MAKERSMCP_REFUSE_ADDRESSES refuses, not on the public internet, on a host
 // whose name could not be looked up, or on a port other than 80 and 443
-// away from the address given. unresolved: why the host of the address
-// given could not be looked up, or "": a run given it opens nothing.
-// refused: why MAKERSMCP_REFUSE_ADDRESSES refuses the address given, or ""
-// likewise. Throws when MAKERSMCP_REFUSE_ADDRESSES does not parse.
+// away from the address given. reached(url, space) says the same of a
+// document the browser has reached, by where it says it reached it (see
+// INSIDE_SPACES). unresolved: why the host of the address given could not
+// be looked up, or "": a run given it opens nothing. refused: why
+// MAKERSMCP_REFUSE_ADDRESSES refuses the address given, or "" likewise.
+// Throws when MAKERSMCP_REFUSE_ADDRESSES does not parse.
 async function guardFor(start) {
   const refusals = hostRefusals();
   let from = null;
@@ -426,6 +453,19 @@ async function guardFor(start) {
       if (where === "unknown") return UNRESOLVED;
       if (where === "inside") return local ? NOT_GIVEN : NOT_PUBLIC;
       return anyPort ? "" : otherPort(port, web);
+    },
+    // Why a document refuses() took is not to be shown, now that the
+    // browser has reached it in the address space `space`, or "": the
+    // browser looks a name up again for itself, and one it reached on this
+    // machine or its network is shown only on the host and port given
+    // there. null for space: the browser did not say where it reached it.
+    // Elsewhere the run's own lookup has decided.
+    reached(raw, space) {
+      if (space === null) return REACHED_UNNAMED;
+      if (!INSIDE_SPACES.has(String(space || ""))) return "";
+      const url = parse(raw);
+      if (url && given(url)) return "";
+      return local ? `${REACHED_INSIDE}, and not on the host and port given` : REACHED_INSIDE;
     },
     // For a request the kit makes itself: the lookup that connects it to
     // the addresses refuses() judged, undefined where any address goes.
@@ -520,4 +560,4 @@ function refusedError(url, guard) {
   return new Error(`Could not open ${url}: it is ${guard.refused}.`);
 }
 
-module.exports = { guardFor, getChecked, notPublicIp, hostNotPublic, hostRefusals, refusalsProblem, unresolvedError, refusedError, otherPort, refusedHere, NOT_WEB, NOT_PUBLIC, NOT_GIVEN, UNRESOLVED, REFUSE_SETTING };
+module.exports = { guardFor, getChecked, notPublicIp, hostNotPublic, hostRefusals, refusalsProblem, unresolvedError, refusedError, otherPort, refusedHere, NOT_WEB, NOT_PUBLIC, NOT_GIVEN, UNRESOLVED, REFUSE_SETTING, REACHED_INSIDE, REACHED_UNNAMED, INSIDE_SPACES };

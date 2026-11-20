@@ -106,17 +106,20 @@ moves on so; a click on a link to one, or to a page that redirects to one,
 leaves the page where it was, with a note in steps.json, and a frame or a
 window a page opens there is not loaded; a tour leaves such a page out and
 says so. A host whose name does not resolve here, or gives no answer in
-10 s, is not opened either, and an address given on one stops the demo. The
+10 s, is not opened either, and an address given on one stops the demo. A
+host name is judged as the demo looks it up, and the browser looks it up
+again: a page, a frame or a window it reaches on this machine or its
+network by then is not shown, though its request has gone there. The
 rule is for the pages the demo opens: a page's own pictures, styles, scripts
 and the data it fetches are left to the browser's own rules, and on a site
 you run on your machine they can come from other ports of it.
 
 MAKERSMCP_REFUSE_ADDRESSES, a comma list of IP addresses and CIDR ranges,
 names addresses the machine refuses besides, as a service that runs the
-kit for others names its own: no page is opened at one, the address given
-included, which then stops the demo. Empty or unset, it refuses nothing
-more; a value that does not parse stops the demo before any work, with
-exit code 2.
+kit for others names its own: no page is opened at one as the demo looks a
+name up, the address given included, which then stops the demo. Empty or
+unset, it refuses nothing more; a value that does not parse stops the demo
+before any work, with exit code 2.
 
 A click on a link to an address of another kind, such as mailto:, or to
 a page that redirects to one, or a page that goes to one, leaves the page

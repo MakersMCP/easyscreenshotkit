@@ -85,7 +85,10 @@ report names it with the reason, and neither is a frame or a window a page
 opens there, nor one on another port of a host on the public internet, nor a
 host whose name does not resolve here or gives no answer in 10 s; an address
 given on such a host stops the run. A page that moves on to one before it
-has loaded is refused as a redirect there is. --pwa and --pwa-check read a
+has loaded is refused as a redirect there is. A host name is judged as the
+run looks it up, and the browser looks it up again: a page, a frame or a
+window it reaches on this machine or its network by then is not shown,
+though its request has gone there. --pwa and --pwa-check read a
 manifest and its screenshots by the same rule, and from a manifest file no
 screenshot at such an address or on another port than 80 and 443. The rule
 is for the pages the run opens and the files it reads itself: a page's own
@@ -95,10 +98,10 @@ ports of it.
 
 MAKERSMCP_REFUSE_ADDRESSES, a comma list of IP addresses and CIDR ranges,
 names addresses the machine refuses besides, as a service that runs the
-kit for others names its own: no page is opened and no file read at one,
-the address given included, which then stops the run. Empty or unset, it
-refuses nothing more; a value that does not parse stops every command
-before any work, with exit code 2.
+kit for others names its own: no page is opened and no file read at one as
+the run looks a name up, the address given included, which then stops the
+run. Empty or unset, it refuses nothing more; a value that does not parse
+stops every command before any work, with exit code 2.
 
 An address of another kind that a page goes to, such as mailto:, is no
 page to open, and its notes say so: on Linux the browser hands it to no

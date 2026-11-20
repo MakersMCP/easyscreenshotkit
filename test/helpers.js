@@ -278,4 +278,16 @@ function runUntilOver(cli, args, { env = process.env, holdMs = 20_000 } = {}) {
   });
 }
 
-module.exports = { readPng, pngOf, serve, near, descendants, relayBrowser, runUntilOver, tempProblem, sh };
+// The switch that has the browser count servers of this process, on
+// 127.0.0.1, as ones it reached on the public internet
+// (--ip-address-space-overrides), for a test whose site on the public
+// internet is such a server: the run judges each page again by where the
+// browser says it reached it, and one on this machine is not shown away
+// from the host and port given (see guardBrowser() in chrome.js). servers:
+// their addresses or ports.
+function publicAt(...servers) {
+  const ports = servers.map((server) => (/^\d+$/.test(String(server)) ? String(server) : new URL(server).port));
+  return `--ip-address-space-overrides=${ports.map((port) => `127.0.0.1:${port}=public`).join(",")}`;
+}
+
+module.exports = { readPng, pngOf, serve, near, descendants, relayBrowser, runUntilOver, tempProblem, sh, publicAt };
