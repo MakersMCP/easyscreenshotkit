@@ -493,6 +493,30 @@ test("the addresses MAKERSMCP_REFUSE_ADDRESSES names are refused wherever they c
     },
   ));
 
+// An entry written as an IPv6 form of an IPv4 address or range, as a log
+// shows a client's address (::ffff:185.137.215.163), refuses that IPv4
+// address and range too, and every other form of it, as an IPv4 entry does:
+// it named only itself, so 185.137.215.163 itself was opened.
+test("an entry of MAKERSMCP_REFUSE_ADDRESSES in an IPv6 form of an IPv4 address or range refuses that IPv4 address or range and its other forms", () => {
+  const forms = ["185.137.215.163", "::ffff:185.137.215.163", "::185.137.215.163", "::ffff:0:185.137.215.163", "2002:b989:d7a3::", "2002:b989:d7a3:1::5", "64:ff9b::b989:d7a3"];
+  for (const entry of ["::ffff:185.137.215.163", "::ffff:b989:d7a3/128", "::185.137.215.163", "::ffff:0:185.137.215.163", "64:ff9b::185.137.215.163", "2002:b989:d7a3::/48", "2002:b989:d7a3:1::/64", "::ffff:185.137.215.0/120", "2002:b989:d700::/40"]) {
+    const refusals = hostRefusals(entry);
+    for (const address of forms) assert.equal(refusals.has(address), true, `${entry} ${address}`);
+    assert.equal(refusals.has("185.137.214.163"), false, entry);
+  }
+  // A range holds the IPv4 range of its bits.
+  assert.equal(hostRefusals("::ffff:185.137.215.0/120").has("185.137.215.7"), true);
+  assert.equal(hostRefusals("::ffff:185.137.215.0/120").has("185.137.216.7"), false);
+  assert.equal(hostRefusals("2002:b989:d700::/40").has("185.137.215.250"), true);
+  assert.equal(hostRefusals("2002:b989:d700::/40").has("185.137.216.1"), false);
+  // An IPv6 entry of no such form, ::1 and :: among them, holds no IPv4
+  // address; nor do NAT64's local use prefix and Teredo, which are not on
+  // the public internet whatever they hold.
+  for (const entry of ["::1", "::", "2606:4700::/32", "64:ff9b:1::b989:d7a3", "2001:0:b989:d7a3::"]) {
+    for (const address of ["185.137.215.163", "0.0.0.0", "0.0.0.1"]) assert.equal(hostRefusals(entry).has(address), false, `${entry} ${address}`);
+  }
+});
+
 // A file the kit reads itself is held to the setting too, on the host and
 // port given on this machine, whose lookup the run otherwise leaves to the
 // system: no request is sent to an address it names.

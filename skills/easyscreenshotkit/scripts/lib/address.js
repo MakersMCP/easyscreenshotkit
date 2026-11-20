@@ -124,6 +124,31 @@ function heldIpv4(groups) {
   return "";
 }
 
+// The IPv4 address or range an IPv6 address or range holds, in one of the
+// forms heldIpv4() reads, as [address, prefix], or null: the IPv4 part is
+// the last 32 bits of the mapped, compatible, translated and NAT64 forms,
+// so a range of them at /96 or longer holds the IPv4 range of its last
+// bits, and the 32 bits after 2002 in 6to4, so a range of those at /16 or
+// longer holds the IPv4 range of its next bits, /32 from /48 on. A
+// compatible range that holds only :: and ::1, which are no IPv4 address,
+// holds none. ::ffff:185.137.215.0/120 holds 185.137.215.0/24.
+function heldRange(groups, bits) {
+  const v4 = (hi, lo) => `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`;
+  const zero = (from, to) => groups.slice(from, to).every((g) => g === 0);
+  if (bits >= 96) {
+    const prefix = bits - 96;
+    if ((zero(0, 5) && groups[5] === 0xffff) || (zero(0, 4) && groups[4] === 0xffff && groups[5] === 0) || (groups[0] === 0x64 && groups[1] === 0xff9b && zero(2, 6))) return [v4(groups[6], groups[7]), prefix];
+    if (zero(0, 6)) {
+      const low = ((groups[6] << 16) | groups[7]) >>> 0;
+      const size = 2 ** (32 - prefix);
+      const first = low - (low % size);
+      return first + size - 1 >= 2 ? [v4(groups[6], groups[7]), prefix] : null;
+    }
+  }
+  if (groups[0] === 0x2002 && bits >= 16) return [v4(groups[1], groups[2]), Math.min(bits, 48) - 16];
+  return null;
+}
+
 // An IP address as written in a URL's host or by a lookup, without the
 // brackets and the zone (%eth0) that are no part of it.
 const bareIp = (address) => String(address || "").replace(/^\[|\]$/g, "").replace(/%.*$/, "");
@@ -148,7 +173,9 @@ function notPublicIp(address) {
 // that runs the kit for others names its own public addresses there, which
 // lead back into its network. An IPv4 entry refuses that address in every
 // IPv6 form that holds it too (see heldIpv4()); an IPv6 entry refuses the
-// IPv6 addresses it covers. An empty or missing value refuses nothing more.
+// IPv6 addresses it covers, and one in such a form the IPv4 address or
+// range it holds as well (see heldRange()). An empty or missing value
+// refuses nothing more.
 // A value that does not parse throws, naming the setting, so that a run
 // stops before any work: a run that went on would open what the host meant
 // to refuse. has(address): whether an address, as a URL or a lookup gives
@@ -183,6 +210,12 @@ function hostRefusals(value = process.env[REFUSE_SETTING]) {
       throw new Error(`${REFUSE_SETTING} takes IP addresses and CIDR ranges, separated by commas, such as 192.0.2.7,198.51.100.0/24, and "${shown}" is neither. Correct it, or leave it empty to refuse no more addresses.`);
     }
     (family === 4 ? v4 : v6).addSubnet(match[1], bits, family === 4 ? "ipv4" : "ipv6");
+    // An entry written as an IPv6 form of an IPv4 address or range refuses
+    // that IPv4 address or range too, and so each form of it, as an IPv4
+    // entry does: ::ffff:185.137.215.163 named only itself, and
+    // 185.137.215.163 was opened.
+    const held = family === 6 ? heldRange(groupsOf(match[1]) || [], bits) : null;
+    if (held) v4.addSubnet(held[0], held[1], "ipv4");
     size++;
   }
   const has = (address) => {
