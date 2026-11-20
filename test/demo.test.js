@@ -2406,6 +2406,29 @@ test("a demo opens no address on a host whose name it cannot look up", { skip: m
   }
 }));
 
+// Away from the address given a demo opens port 80 and 443 only: a visit
+// step, or a window a click opens, on another port of a host on the public
+// internet is not opened, and the demo says why, where 0.1.3 opened it.
+test("a demo opens no other port than 80 and 443 away from the address given", { skip: missing, timeout: 200_000 }, () => withNames({ "public.example": "93.184.215.14" }, async () => {
+  const OTHER_PORT = "on port 8080, not 80 or 443, and not on the scheme, host and port given";
+  const { server, origin } = await serve((req, res) => {
+    if (req.url !== "/") return res.writeHead(404).end("not found");
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Acme | Tools", `<h1>Acme</h1><p style="font-size:32px;padding:0 40px"><button onclick="window.open('http://public.example:8080/window')">Open a window</button></p><div style="height:1400px;background:rgb(0,160,0)"></div>`));
+  });
+  const root = tempDir();
+  const steps = path.join(root, "steps.yaml");
+  try {
+    fs.writeFileSync(steps, 'steps:\n  - visit: /\n  - click: "text=Open a window"\n    zoom: false\n  - wait: 1\n');
+    const { manifest } = await makeDemo(origin, { dir: path.join(root, "demo"), steps, gif: false, timeLimit: 150_000 });
+    assert.ok(manifest.notes.includes(`The page tried to open a window at http://public.example:8080/window, which is ${OTHER_PORT}: it was not opened.`), manifest.notes.join("\n"));
+    fs.writeFileSync(steps, "steps:\n  - visit: /\n  - visit: http://public.example:8080/visited\n");
+    await assert.rejects(makeDemo(origin, { dir: path.join(root, "visit"), steps, gif: false, timeLimit: 100_000 }), { message: `step 2 (visit): Could not open http://public.example:8080/visited: it is ${OTHER_PORT}.` });
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}));
+
 test("a step that points at nothing stops the run with its number and leaves nothing behind", { skip: missing, timeout: 120_000 }, async () => {
   const { server, origin } = await fixture();
   const root = tempDir();

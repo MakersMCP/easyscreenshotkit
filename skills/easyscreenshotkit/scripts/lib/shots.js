@@ -1208,9 +1208,9 @@ async function takeShots(rawUrl, options = {}) {
     const noBrowser = browserProblem();
     if (noBrowser) throw new Error(noBrowser);
     // The pages the run opens, and the sitemaps it reads, are of the address
-    // given or on the public internet (see address.js). One whose host's name
-    // cannot be looked up here opens nothing, and the run stops before it
-    // starts the browser.
+    // given or on the public internet, on port 80 or 443 away from it (see
+    // address.js). One whose host's name cannot be looked up here opens
+    // nothing, and the run stops before it starts the browser.
     const guard = await guardFor(asked);
     if (guard.unresolved) throw unresolvedError(asked, guard);
     chrome = await launch({ lang });

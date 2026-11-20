@@ -372,6 +372,74 @@ test("--pwa-check: a site's address leads to the manifest its page links", async
 // only that host and port, from a manifest file only the public internet.
 // It read every address it was given there, and told an open port from a
 // closed one by what it said of each screenshot.
+// Away from the address given the check reads port 80 and 443 only: a
+// manifest a page links there, a screenshot there or a redirect to one is
+// not read, and nothing connects there, where 0.1.3 read a screenshot on any
+// port of a host on the public internet. From a manifest file, the web ports
+// only. Here a host on the public internet is a name that resolves to a
+// public address for the check's rule, and the check's own requests there go
+// to a stand-in that notes them, so nothing leaves this machine.
+test("--pwa-check reads no manifest or screenshot on another port than 80 and 443 away from the address given", async () => {
+  const dns = require("node:dns");
+  const http = require("node:http");
+  const https = require("node:https");
+  const names = { "cdn.example": "93.184.215.15" };
+  const lookup = dns.lookup;
+  dns.lookup = (host, options, callback) => {
+    if (typeof options === "function") [options, callback] = [{}, options];
+    if (!names[host]) return lookup(host, options, callback);
+    process.nextTick(callback, null, options && options.all ? [{ address: names[host], family: 4 }] : names[host], 4);
+  };
+  const outside = [];
+  const saved = { http: http.get, https: https.get };
+  for (const [module, get] of [[http, saved.http], [https, saved.https]]) {
+    module.get = (url, options, done) => {
+      if (new URL(url).hostname === "127.0.0.1") return get(url, options, done);
+      outside.push(String(url));
+      throw new Error(`no request leaves this machine in a test: ${url}`);
+    };
+  }
+  const PORT_8443 = "on port 8443, not 80 or 443, and not on the scheme, host and port given";
+  const { server, origin } = await serve((req, res) => {
+    if (req.url === "/") return res.writeHead(200, { "Content-Type": "text/html" }).end('<!doctype html><link rel="manifest" href="http://cdn.example:8443/app.webmanifest"><h1>Acme</h1>');
+    if (req.url === "/app.webmanifest") {
+      const screenshots = [
+        { src: "https://cdn.example:8443/wide.png", sizes: "1920x1080", type: "image/png", form_factor: "wide", label: "Home" },
+        { src: "/moved.png", sizes: "1920x1080", type: "image/png", form_factor: "wide", label: "Plans" },
+        { src: "/here.png", sizes: "1920x1080", type: "image/png", form_factor: "wide", label: "Team" },
+      ];
+      return res.writeHead(200, { "Content-Type": "application/manifest+json" }).end(JSON.stringify({ name: "Acme", screenshots }));
+    }
+    if (req.url === "/moved.png") return res.writeHead(302, { Location: "https://cdn.example:8443/moved.png" }).end();
+    if (req.url === "/here.png") return res.writeHead(200, { "Content-Type": "image/png" }).end(pngHead(1920, 1080));
+    res.writeHead(404).end();
+  });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-pwa-"));
+  try {
+    await assert.rejects(checkManifest({ url: `${origin}/` }), { message: `Could not read http://cdn.example:8443/app.webmanifest, the manifest ${origin}/ links: it is ${PORT_8443}` });
+    const report = await checkManifest({ url: `${origin}/app.webmanifest` });
+    assert.deepEqual(
+      report.screenshots.map((shot) => [shot.n, shot.error, Boolean(shot.image)]),
+      [
+        [1, `it is ${PORT_8443}`, false],
+        [2, `it leads to https://cdn.example:8443/moved.png, which is ${PORT_8443}`, false],
+        [3, "", true],
+      ],
+    );
+    const file = path.join(dir, "manifest.json");
+    fs.writeFileSync(file, JSON.stringify({ name: "Acme", screenshots: [{ src: "https://cdn.example:8443/wide.png", sizes: "1920x1080", type: "image/png", form_factor: "wide" }] }));
+    const fromFile = await checkManifest({ file });
+    assert.deepEqual(fromFile.screenshots.map((shot) => shot.error), ["it is on port 8443, not 80 or 443"]);
+    assert.deepEqual(outside, []);
+  } finally {
+    dns.lookup = lookup;
+    http.get = saved.http;
+    https.get = saved.https;
+    server.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("--pwa-check reads nothing from an address on this machine other than the one given, nor from one a manifest file names", async () => {
   const seen = [];
   const other = await serve((req, res) => {

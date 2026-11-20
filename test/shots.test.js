@@ -3249,9 +3249,10 @@ test("from a public site a frame of another site that is moved later, and a wind
   });
   const port = new URL(origin).port;
   const site = `http://public.example:${port}`;
-  // Another site, so its frames run in a process of their own.
-  const framed = `http://framed.example:${port}`;
-  const chrome = await launch({ args: ["--host-resolver-rules=MAP public.example 127.0.0.1, MAP framed.example 127.0.0.1"] });
+  // Another site, so its frames run in a process of their own, on port 80
+  // as a site's frames are: the browser takes that port to the server's.
+  const framed = "http://framed.example";
+  const chrome = await launch({ args: [`--host-resolver-rules=MAP public.example 127.0.0.1, MAP framed.example 127.0.0.1:${port}`] });
   try {
     chrome.guard = await guardFor(`${site}/`);
     const tab = await openTab(chrome, DEVICES.desktop);
@@ -3359,6 +3360,110 @@ test("a run opens no other address on this machine than the one given: not by it
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// Away from the address given the browser opens port 80 and 443 only, and
+// the scheme, host and port given on any port: another program of the
+// site's host, or of another host on the public internet, given to it,
+// after a redirect, as a page that moves on by itself, a frame or a window
+// a click opens, is not loaded, and sees no request. 0.1.3 opened them and
+// saved what answered. Here both names resolve to public addresses for the
+// run's rule, and the browser takes them to this machine, where the other
+// program is a server of its own.
+const OTHER_PORT = (n) => `on port ${n}, not 80 or 443, and not on the scheme, host and port given`;
+
+test("from a public site the browser opens no other port than 80 and 443 away from the address given: given, after a redirect, when a page moves on, as a frame or a window", { skip: noBrowser, timeout: 120_000 }, () => withNames({ "public.example": "93.184.215.14", "other.example": "93.184.215.15" }, async () => {
+  const seen = [];
+  const other = await serve((req, res) => {
+    seen.push(req.url);
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Other", "<h1>Other</h1>"));
+  });
+  const otherPort = new URL(other.origin).port;
+  const html = { "Content-Type": "text/html; charset=utf-8" };
+  const { server, origin } = await serve((req, res) => {
+    if (req.url === "/away") return res.writeHead(302, { Location: `http://other.example:${otherPort}/moved` }).end();
+    if (req.url === "/hop") return res.writeHead(200, html).end(page("Hop", `<h1>Hop</h1><script>setTimeout(() => { location.href = "http://public.example:${otherPort}/hop"; }, 100);</script>`));
+    if (req.url === "/framed") return res.writeHead(200, html).end(page("Framed", `<a id="away" target="_blank" href="http://other.example:${otherPort}/window" style="display:block;width:300px;height:100px">Away</a><iframe src="http://other.example:${otherPort}/frame"></iframe>`));
+    res.writeHead(200, html).end(page("Acme", "<h1>Acme</h1>"));
+  });
+  const site = `http://public.example:${new URL(origin).port}`;
+  const chrome = await launch({ args: ["--host-resolver-rules=MAP public.example 127.0.0.1, MAP other.example 127.0.0.1"] });
+  try {
+    chrome.guard = await guardFor(`${site}/`);
+    const tab = await openTab(chrome, DEVICES.desktop);
+    try {
+      // The site's own scheme, host and port, which is not 80 or 443.
+      assert.equal((await navigate(tab, `${site}/`)).status, 200);
+      for (const given of [`http://other.example:${otherPort}/given`, `http://public.example:${otherPort}/given`]) {
+        await assert.rejects(navigate(tab, given), { message: `Could not open ${given}: it is ${OTHER_PORT(otherPort)}.`, refused: OTHER_PORT(otherPort) });
+      }
+      await assert.rejects(navigate(tab, `${site}/away`), { message: `Could not open ${site}/away: it leads to http://other.example:${otherPort}/moved, which is ${OTHER_PORT(otherPort)}.` });
+      const barred = [];
+      tab.on(BARRED, (b) => barred.push(b));
+      await navigate(tab, `${site}/hop`);
+      await sleep(1_500);
+      assert.equal(await currentUrl(tab), `${site}/hop`);
+      await navigate(tab, `${site}/framed`);
+      await sleep(1_500);
+      for (const type of ["mousePressed", "mouseReleased"]) await tab.send("Input.dispatchMouseEvent", { type, x: 100, y: 50, button: "left", clickCount: 1 });
+      const until = Date.now() + 5_000;
+      while (barred.length < 3 && Date.now() < until) await sleep(100);
+      const said = Object.fromEntries(barred.map((b) => [new URL(b.url).pathname, [b.why, b.main, b.window]]));
+      assert.deepEqual(said, {
+        "/hop": [OTHER_PORT(otherPort), true, false],
+        "/frame": [OTHER_PORT(otherPort), false, false],
+        "/window": [OTHER_PORT(otherPort), false, true],
+      });
+      assert.deepEqual(seen, []);
+    } finally {
+      await closeTab(chrome, tab);
+    }
+  } finally {
+    await chrome.close();
+    server.close();
+    other.server.close();
+  }
+}));
+
+// A run goes on without what it does not open, and says why: a --page on
+// another port of the site's host, and a frame there. The browser takes
+// public.example to this machine, as its CHROME_PATH starts it with
+// --host-resolver-rules, and the other server, another program of the
+// site's host, sees no request.
+test("a run takes no --page or frame on another port than 80 and 443 away from the address given, and goes on with a note", { skip: noBrowser || (process.platform === "win32" && "the wrapper is a shell script"), timeout: 150_000 }, () => withNames({ "public.example": "93.184.215.14" }, async () => {
+  const seen = [];
+  const other = await serve((req, res) => {
+    seen.push(req.url);
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Other", "<h1>Other</h1>"));
+  });
+  const otherPort = new URL(other.origin).port;
+  const html = { "Content-Type": "text/html; charset=utf-8" };
+  const { server, origin } = await serve((req, res) => {
+    if (req.url === "/framed") return res.writeHead(200, html).end(page("Framed | Acme", `<h1>Framed</h1><iframe src="http://public.example:${otherPort}/frame"></iframe><div style="height:1400px"></div>`));
+    res.writeHead(200, html).end(page("Acme | Tools for teams", '<h1>Acme</h1><div style="height:1400px"></div>'));
+  });
+  const site = `http://public.example:${new URL(origin).port}`;
+  const root = tempDir();
+  const browser = path.join(root, "mapped-chrome");
+  fs.writeFileSync(browser, `#!/bin/sh\nexec ${JSON.stringify(findChrome())} --host-resolver-rules="MAP public.example 127.0.0.1" "$@"\n`, { mode: 0o755 });
+  const saved = process.env.CHROME_PATH;
+  process.env.CHROME_PATH = browser;
+  try {
+    const asked = `http://public.example:${otherPort}/asked`;
+    const { manifest } = await takeShots(`${site}/`, { dir: path.join(root, "shots"), pages: 1, extra: [asked, "/framed"], sizes: "desktop", timeLimit: 120_000 });
+    assert.deepEqual(manifest.pages.map((p) => p.slug), ["home", "framed"]);
+    assert.ok(manifest.notes.includes(`${asked} was asked for but not taken: ${OTHER_PORT(otherPort)}.`), manifest.notes.join("\n"));
+    assert.deepEqual(manifest.skipped.map(({ url, reason }) => [url, reason]), [[asked, OTHER_PORT(otherPort)]]);
+    const framed = manifest.pages[1].notes;
+    assert.ok(framed.includes(`a frame of it tried to open http://public.example:${otherPort}/frame, which is ${OTHER_PORT(otherPort)}: it was not opened`), framed.join("\n"));
+    assert.deepEqual(seen, []);
+  } finally {
+    if (saved === undefined) delete process.env.CHROME_PATH;
+    else process.env.CHROME_PATH = saved;
+    server.close();
+    other.server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}));
 
 // A page that moves on by itself before its load event has left its own
 // load. When it moves to an address the run does not open, as a local app

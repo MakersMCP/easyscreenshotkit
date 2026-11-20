@@ -6,13 +6,15 @@
 // below), and what it finds from there
 // (a page of the tour, a step's visit, a redirect, a move of a page or of a
 // frame in it, a window a page opens, a sitemap, a manifest and its
-// screenshots) only while that is a web address on the public internet. So
+// screenshots) only while that is a web address on the public internet, on
+// port 80 or 443 or on the scheme, host and port of the address given. So
 // no page, link, redirect, step or manifest of a site can send the browser
 // or the kit to this machine, its network or another address that is not on
-// the public internet, to find what answers there and save it in a
-// screenshot, a demo or a report. A run given such an address itself, as a
-// developer gives the address of a site on their own machine, opens that
-// host and port and no other address of the kind.
+// the public internet, nor to another program of a host on the public
+// internet, to find what answers there and save it in a screenshot, a demo
+// or a report. A run given such an address itself, as a developer gives the
+// address of a site on their own machine, opens that host and port and no
+// other address of the kind.
 //
 // The rule is held for the documents the browser loads for the run's pages
 // (see guardBrowser() in chrome.js) and for the files the kit reads itself.
@@ -41,6 +43,18 @@ const NOT_WEB = "not a web address";
 const NOT_PUBLIC = "not on the public internet";
 const NOT_GIVEN = "not on the public internet, and not on the host and port given";
 const UNRESOLVED = "on a host whose name could not be looked up";
+// An address on another port than 80 and 443, away from the address given:
+// given, whether the run has an address given, as --pwa-check of a
+// manifest file has none.
+const otherPort = (port, given) => `on port ${port}, not 80 or 443${given ? ", and not on the scheme, host and port given" : ""}`;
+
+// The ports a run opens on any host on the public internet: those of the
+// web. Any other is opened only on the scheme, host and port of the address
+// given, as a site that serves on 8443 is given: a site that links or
+// redirects to another port, of its own host or of another one, reached
+// another program there, as a mail or a database server is, and the run
+// told an open port from a closed one.
+const WEB_PORTS = new Set(["80", "443"]);
 
 // The ranges that are not on the public internet: this machine, private and
 // shared networks, link-local, and the ranges kept for documentation,
@@ -171,9 +185,10 @@ const portOf = (url) => url.port || (url.protocol === "https:" ? "443" : "80");
 // The rule for a run that starts at `start`, the address it was given, or
 // at no address ("", for a manifest read from a file). refuses(url)
 // resolves to "" for an address the run may open, else to what it is, as
-// said after "it is": not a web address, not on the public internet, or on
-// a host whose name could not be looked up. unresolved: why the host of the
-// address given could not be looked up, or "": a run given it opens nothing.
+// said after "it is": not a web address, not on the public internet, on a
+// host whose name could not be looked up, or on a port other than 80 and
+// 443 away from the address given. unresolved: why the host of the address
+// given could not be looked up, or "": a run given it opens nothing.
 async function guardFor(start) {
   let from = null;
   try {
@@ -181,9 +196,14 @@ async function guardFor(start) {
   } catch {
     from = null;
   }
-  const at = from && /^https?:$/.test(from.protocol) ? await standing(from.hostname) : "";
+  const web = Boolean(from) && /^https?:$/.test(from.protocol);
+  const at = web ? await standing(from.hostname) : "";
   const local = at === "inside";
+  // The host and port given on this machine or its network, which the run
+  // opens though they are not on the public internet; and the scheme, host
+  // and port given, which the run opens on any port.
   const given = (url) => local && url.hostname === from.hostname && portOf(url) === portOf(from);
+  const own = (url) => web && url.protocol === from.protocol && url.hostname === from.hostname && portOf(url) === portOf(from);
   const parse = (raw) => {
     try {
       return new URL(String(raw));
@@ -197,11 +217,13 @@ async function guardFor(start) {
     async refuses(raw) {
       const url = parse(raw);
       if (!url || !/^https?:$/.test(url.protocol)) return NOT_WEB;
-      if (given(url)) return "";
+      const port = portOf(url);
+      const anyPort = own(url) || WEB_PORTS.has(port);
+      if (given(url)) return anyPort ? "" : otherPort(port, web);
       const where = await standing(url.hostname);
       if (where === "unknown") return UNRESOLVED;
       if (where === "inside") return local ? NOT_GIVEN : NOT_PUBLIC;
-      return "";
+      return anyPort ? "" : otherPort(port, web);
     },
     // For a request the kit makes itself: the lookup that connects it to
     // the addresses refuses() judged, undefined where any address goes.
@@ -287,4 +309,4 @@ function unresolvedError(url, guard) {
   return new Error(`Could not open ${url}: it is ${UNRESOLVED} (${guard.unresolved}).`);
 }
 
-module.exports = { guardFor, getChecked, notPublicIp, hostNotPublic, unresolvedError, NOT_WEB, NOT_PUBLIC, NOT_GIVEN, UNRESOLVED };
+module.exports = { guardFor, getChecked, notPublicIp, hostNotPublic, unresolvedError, otherPort, NOT_WEB, NOT_PUBLIC, NOT_GIVEN, UNRESOLVED };
