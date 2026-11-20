@@ -610,12 +610,23 @@ test("--pwa-check reads no manifest or screenshot on another port than 80 and 44
     }
     if (req.url === "/moved.png") return res.writeHead(302, { Location: "https://cdn.example:8443/moved.png" }).end();
     if (req.url === "/here.png") return res.writeHead(200, { "Content-Type": "image/png" }).end(pngHead(1920, 1080));
+    if (req.url === "/linking") return res.writeHead(200, { "Content-Type": "text/html" }).end('<!doctype html><link rel="manifest" href="/redirecting.webmanifest"><h1>Acme</h1>');
+    if (req.url === "/redirecting.webmanifest") return res.writeHead(302, { Location: `http://cdn.example:${new URL(origin).port}/app.webmanifest` }).end();
     res.writeHead(404).end();
   });
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-pwa-"));
   try {
     process.env.MAKERSMCP_REFUSE_ADDRESSES = "93.184.215.99";
-    await assert.rejects(checkManifest({ url: `${origin}/` }), { message: `Could not read http://cdn.example:8443/app.webmanifest, the manifest ${origin}/ links: it is ${PORT_8443}` });
+    // The manifest a page links there is read when the check is given its
+    // own address, and the words say so, as for a screenshot there.
+    await assert.rejects(checkManifest({ url: `${origin}/` }), { message: `Could not read http://cdn.example:8443/app.webmanifest, the manifest ${origin}/ links: it is ${PORT_8443}. To have it read, give the check the manifest's own address, http://cdn.example:8443/app.webmanifest: the host and port of the address it is given are the check's own.` });
+    // So is the manifest itself there, as a --pwa run reads the one its home
+    // page links by the run's own rule; a redirect there from port 443 is
+    // not read at the manifest's own address either, and names none.
+    const hint = " To have it read, give the check the manifest's own address, http://cdn.example:8443/app.webmanifest: the host and port of the address it is given are the check's own.";
+    await assert.rejects(checkManifest({ url: "http://cdn.example:8443/app.webmanifest" }, { guard: await guardFor(`${origin}/`) }), { message: `Could not read http://cdn.example:8443/app.webmanifest: it is ${PORT_8443}.${hint}` });
+    const away = `http://cdn.example:${new URL(origin).port}/app.webmanifest`;
+    await assert.rejects(checkManifest({ url: `${origin}/linking` }), { message: `Could not read ${origin}/redirecting.webmanifest, the manifest ${origin}/linking links: it leads to ${away}, which is on port ${new URL(origin).port}, not 80 or 443, and not on the scheme, host and port given` });
     const report = await checkManifest({ url: `${origin}/app.webmanifest` });
     assert.deepEqual(
       report.screenshots.map((shot) => [shot.n, shot.unread, shot.error, Boolean(shot.image)]),

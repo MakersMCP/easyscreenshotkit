@@ -406,6 +406,24 @@ function manifestLink(html, base) {
   return "";
 }
 
+// What a refusal to read a manifest says of the address that reads it: a
+// manifest on another port of a host on the public internet is read when
+// the check is given its own address, as the host and port of the address
+// it is given are the check's own, and the words name it then, as the
+// report does for a screenshot there (see checkManifest()), where the
+// check stopped with the reason alone; "" for any other refusal, and for a
+// redirect from there to another port.
+function readsAt(err, url) {
+  let at;
+  try {
+    at = new URL(url);
+  } catch {
+    return "";
+  }
+  if (!err || !err.refused || err.at !== at.href || err.why !== otherPort(at.port, true)) return "";
+  return ` To have it read, give the check the manifest's own address, ${at.href}: the host and port of the address it is given are the check's own.`;
+}
+
 // target: {file} or {url}. A web address may be the manifest itself or a
 // page that links it. guard: the rule for the addresses the check reads.
 async function loadManifest(target, guard) {
@@ -423,7 +441,8 @@ async function loadManifest(target, guard) {
   try {
     got = await get(target.url, "application/manifest+json, application/json;q=0.9, text/html;q=0.8, */*;q=0.5", guard);
   } catch (err) {
-    throw new Error(`Could not read ${target.url}: ${reasonOf(err)}`);
+    const hint = readsAt(err, target.url);
+    throw new Error(`Could not read ${target.url}: ${reasonOf(err)}${hint ? `.${hint}` : ""}`);
   }
   const text = got.body.toString("utf8").replace(/^\uFEFF/, "");
   if (/^\s*\{/.test(text) || (!/html/i.test(got.type) && !/^\s*</.test(text))) return { where: got.url, base: { url: got.url }, json: parseJson(text, got.url) };
@@ -433,7 +452,8 @@ async function loadManifest(target, guard) {
   try {
     manifest = await get(href, "application/manifest+json, application/json;q=0.9, */*;q=0.5", guard);
   } catch (err) {
-    throw new Error(`Could not read ${href}, the manifest ${got.url} links: ${reasonOf(err)}`);
+    const hint = readsAt(err, href);
+    throw new Error(`Could not read ${href}, the manifest ${got.url} links: ${reasonOf(err)}${hint ? `.${hint}` : ""}`);
   }
   return { where: manifest.url, page: got.url, base: { url: manifest.url }, json: parseJson(manifest.body.toString("utf8"), manifest.url) };
 }
