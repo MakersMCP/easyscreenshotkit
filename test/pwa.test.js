@@ -367,11 +367,6 @@ test("--pwa-check: a site's address leads to the manifest its page links", async
   }
 });
 
-// A manifest, the page that links it or a redirect cannot send the check to
-// this machine or its network: from an address on this machine it reads
-// only that host and port, from a manifest file only the public internet.
-// It read every address it was given there, and told an open port from a
-// closed one by what it said of each screenshot.
 // Away from the address given the check reads port 80 and 443 only, and
 // nothing MAKERSMCP_REFUSE_ADDRESSES names: a manifest a page links there, a
 // screenshot there or a redirect to one is not read, and nothing connects
@@ -449,6 +444,11 @@ test("--pwa-check reads no manifest or screenshot on another port than 80 and 44
   }
 });
 
+// A manifest, the page that links it or a redirect cannot send the check to
+// this machine or its network: from an address on this machine it reads
+// only that host and port, from a manifest file only the public internet.
+// It read every address it was given there, and told an open port from a
+// closed one by what it said of each screenshot.
 test("--pwa-check reads nothing from an address on this machine other than the one given, nor from one a manifest file names", async () => {
   const seen = [];
   const other = await serve((req, res) => {

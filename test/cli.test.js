@@ -85,10 +85,13 @@ test("a MAKERSMCP_REFUSE_ADDRESSES that does not parse stops every command befor
   const { CHROME_PATH, FFMPEG_PATH, MAKERSMCP_REFUSE_ADDRESSES, ...base } = process.env;
   try {
     const started = path.join(root, "started");
+    // Quoted for sh as a whole: in double quotes a $ or a backquote of
+    // TMPDIR's would be read, and the stand-ins would write elsewhere.
+    const quoted = `'${started.replace(/'/g, "'\\''")}'`;
     const ffmpeg = path.join(root, "ffmpeg");
-    fs.writeFileSync(ffmpeg, `#!/bin/sh\necho ffmpeg >> ${JSON.stringify(started)}\ncase "$*" in *-version*) echo 'ffmpeg version 4.4.2-stand-in';; *) printf '%s\\n' ' V....D libx264  libx264 H.264';; esac\n`, { mode: 0o755 });
+    fs.writeFileSync(ffmpeg, `#!/bin/sh\necho ffmpeg >> ${quoted}\ncase "$*" in *-version*) echo 'ffmpeg version 4.4.2-stand-in';; *) printf '%s\\n' ' V....D libx264  libx264 H.264';; esac\n`, { mode: 0o755 });
     const chrome = path.join(root, "chrome");
-    fs.writeFileSync(chrome, `#!/bin/sh\necho chrome >> ${JSON.stringify(started)}\nexit 1\n`, { mode: 0o755 });
+    fs.writeFileSync(chrome, `#!/bin/sh\necho chrome >> ${quoted}\nexit 1\n`, { mode: 0o755 });
     const manifest = path.join(root, "manifest.json");
     fs.writeFileSync(manifest, JSON.stringify({ screenshots: [] }));
     const run = (setting, ...args) => spawnSync(process.execPath, [CLI, ...args], { env: { ...base, CHROME_PATH: chrome, FFMPEG_PATH: ffmpeg, MAKERSMCP_REFUSE_ADDRESSES: setting }, encoding: "utf8", timeout: 30_000 });
@@ -118,8 +121,11 @@ test("a MAKERSMCP_REFUSE_ADDRESSES that does not parse stops every command befor
     const checked = run("127.0.0.0/8", "--pwa-check", "http://127.0.0.1:9/");
     assert.deepEqual([checked.status, checked.stderr], [1, "easyscreenshotkit: Could not read http://127.0.0.1:9/: it is at 127.0.0.1, an address MAKERSMCP_REFUSE_ADDRESSES refuses\n"]);
     // The demo asks ffmpeg its version and encoders before the address is
-    // judged, as before; no browser started at all.
-    assert.equal(fs.existsSync(started) ? fs.readFileSync(started, "utf8").split("\n").filter((line) => line === "chrome").length : 0, 0);
+    // judged, as before; no browser started at all. That ffmpeg wrote its
+    // line says the stand-ins write where the test reads, whatever TMPDIR
+    // holds.
+    assert.ok(fs.existsSync(started) && fs.readFileSync(started, "utf8").split("\n").includes("ffmpeg"), "the stand-in ffmpeg wrote where the test reads");
+    assert.equal(fs.readFileSync(started, "utf8").split("\n").filter((line) => line === "chrome").length, 0);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
