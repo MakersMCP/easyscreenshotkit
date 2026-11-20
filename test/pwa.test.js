@@ -390,6 +390,53 @@ test("--pwa-check: a site's address leads to the manifest its page links", async
   }
 });
 
+// A file the kit reads itself goes to the address its name was judged by:
+// the lookup each request connects with hands back that answer, and the
+// DNS is asked once, so a DNS server of the site's that answers a public
+// address first and this machine's after cannot send the kit's request
+// here. Here every request is stopped before it connects, and the address
+// its lookup gives is noted; without a lookup of the kit's, it would be the
+// system's, which asks the DNS again.
+test("the screenshots of a manifest are read at the address their host was judged by, not at a later answer of the DNS", async () => {
+  const dns = require("node:dns");
+  const https = require("node:https");
+  const lookup = dns.lookup;
+  const asked = [];
+  dns.lookup = (host, options, callback) => {
+    if (typeof options === "function") [options, callback] = [{}, options];
+    if (host !== "rebinding-shots.example") return lookup(host, options, callback);
+    asked.push(host);
+    const address = asked.length === 1 ? "93.184.215.14" : "127.0.0.1";
+    process.nextTick(callback, null, options && options.all ? [{ address, family: 4 }] : address, 4);
+  };
+  const reached = [];
+  const saved = https.get;
+  https.get = (url, options) => {
+    const resolve = options.lookup || dns.lookup;
+    const host = new URL(url).hostname;
+    reached.push(new Promise((done) => resolve(host, {}, (err, address) => done(err ? err.code : address))));
+    reached.push(new Promise((done) => resolve(host, { all: true }, (err, list) => done(err ? err.code : list.map((one) => one.address).join(",")))));
+    throw new Error(`no request leaves this machine in a test: ${url}`);
+  };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-pwa-"));
+  try {
+    const file = path.join(dir, "manifest.json");
+    const screenshots = [
+      { src: "https://rebinding-shots.example/s/wide.png", sizes: "1920x1080", type: "image/png", form_factor: "wide" },
+      { src: "https://rebinding-shots.example/s/narrow.png", sizes: "1080x1920", type: "image/png", form_factor: "narrow" },
+    ];
+    fs.writeFileSync(file, JSON.stringify({ name: "Acme", screenshots }));
+    const report = await checkManifest({ file });
+    assert.deepEqual(report.screenshots.map((shot) => shot.unread), ["", ""]);
+    assert.deepEqual(await Promise.all(reached), ["93.184.215.14", "93.184.215.14", "93.184.215.14", "93.184.215.14"]);
+    assert.deepEqual(asked, ["rebinding-shots.example"]);
+  } finally {
+    dns.lookup = lookup;
+    https.get = saved;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // Away from the address given the check reads port 80 and 443 only, and
 // nothing MAKERSMCP_REFUSE_ADDRESSES names: a manifest a page links there, a
 // screenshot there or a redirect to one is not read, and nothing connects

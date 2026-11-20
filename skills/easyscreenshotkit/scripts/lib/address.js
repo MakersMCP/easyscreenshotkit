@@ -467,21 +467,20 @@ async function guardFor(start) {
       if (url && given(url)) return "";
       return local ? `${REACHED_INSIDE}, and not on the host and port given` : REACHED_INSIDE;
     },
-    // For a request the kit makes itself: the lookup that connects it to
-    // the addresses refuses() judged, undefined where any address goes.
+    // For a request the kit makes itself, to an address refuses() took: the
+    // lookup that connects it to the addresses refuses() judged, the answer
+    // the name was asked for once (see addressesOf()), and not to a second
+    // answer of the DNS; undefined where any address goes. refuses() has
+    // already refused a name with an address that is not public, or that
+    // MAKERSMCP_REFUSE_ADDRESSES names, from that same answer, so the lookup
+    // judges none again.
     lookupFor(raw) {
       const url = parse(raw);
       if (!url || (given(url) && !refusals.size)) return undefined;
-      const inside = given(url);
       return (hostname, options, callback) => {
         const host = String(hostname).replace(/\.$/, "");
         addressesFor(host).then(({ list, error }) => {
           if (error) return callback(error);
-          const hit = list.find((answer) => refusals.has(answer.address));
-          if (hit) return callback(Object.assign(new Error(`${host} is ${refusedHere(hit.address)}`), { code: "ENOTPUBLIC", hostname: host }));
-          if (!inside && list.some((answer) => notPublicIp(answer.address))) {
-            return callback(Object.assign(new Error(`${host} is ${local ? NOT_GIVEN : NOT_PUBLIC}`), { code: "ENOTPUBLIC", hostname: host }));
-          }
           const family = options && options.family;
           const fit = family ? list.filter((answer) => answer.family === family) : list;
           if (!fit.length) return callback(Object.assign(new Error(`${host} has no address`), { code: "ENOTFOUND", hostname: host }));

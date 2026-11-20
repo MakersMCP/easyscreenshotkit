@@ -614,12 +614,9 @@ test("a file the kit reads itself is not read at an address MAKERSMCP_REFUSE_ADD
       const guard = await guardFor(`${origin}/`);
       assert.equal(guard.refused, here("127.0.0.1"));
       await assert.rejects(getChecked(`${origin}/robots.txt`, { guard }), { refused: `it is ${here("127.0.0.1")}` });
-      // The lookup for the host and port given on this machine refuses the
-      // addresses the setting names, a name under localhost included.
-      const lookup = (await guardFor("http://localhost:3000/")).lookupFor("http://localhost:3000/robots.txt");
-      assert.equal(typeof lookup, "function");
-      const err = await new Promise((resolve) => lookup("localhost", { all: true }, resolve));
-      assert.deepEqual([err.code, err.message], ["ENOTPUBLIC", `localhost is ${here("127.0.0.1")}`]);
+      // A name under localhost too, before any connection: nothing listens
+      // on that port, and a request sent there would fail otherwise.
+      await assert.rejects(getChecked("http://localhost:9/robots.txt", { guard: await guardFor("http://localhost:9/") }), { refused: `it is ${here("127.0.0.1")}` });
     });
     await withSetting(undefined, async () => {
       const got = await getChecked(`${origin}/robots.txt`, { guard: await guardFor(`${origin}/`) });

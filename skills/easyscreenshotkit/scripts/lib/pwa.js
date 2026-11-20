@@ -361,7 +361,6 @@ function reasonOf(err) {
   const cause = (err && err.cause) || err;
   if (cause && cause.code === "ENOTFOUND") return `${cause.hostname || "the host"} was not found`;
   if (err && err.code === "ENOENT") return `there is no file ${err.path}`;
-  if (cause && cause.code === "ENOTPUBLIC") return cause.message.replace(/^\S+ is /, "it is ");
   if (cause && cause.code) return cause.code;
   return (err && err.message) || String(err);
 }
@@ -470,7 +469,7 @@ async function checkManifest(target, { guard: given = null } = {}) {
   const list = Array.isArray(json.screenshots) ? json.screenshots : [];
   // A screenshot the check's rule refuses is one it did not read, not one
   // that could not be loaded: Chrome reads it by rules of its own.
-  const refused = (err) => Boolean(err && (err.refused || ((err.cause || err).code === "ENOTPUBLIC")));
+  const refused = (err) => Boolean(err && err.refused);
   const images = await Promise.all(
     list.slice(0, LOOKED_AT).map((entry) => {
       const src = entry && typeof entry.src === "string" ? entry.src.trim() : "";
