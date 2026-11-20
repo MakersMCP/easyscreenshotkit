@@ -381,6 +381,11 @@ test("addresses, page names and the site's name", () => {
   // with a query and a route keeps both.
   assert.deepEqual(pagesAsked(["#/light", "/app/?mode=b#/plants"], "https://acme.com/app/?mode=a#/today", home), ["https://acme.com/app/?mode=a#/light", "https://acme.com/app/?mode=b#/plants"]);
   assert.throws(() => pagesAsked(["https://other.com/#/x"], "https://acme.com/", home), /is not a page of acme\.com/);
+  // The host given with the one dot that can end a name is the same site,
+  // as the rule for the addresses a run opens reads it, where such a --page
+  // stopped the run before any work.
+  assert.deepEqual(pagesAsked(["https://acme.com:8443/p3", "/p4"], "https://acme.com.:8443/", "https://acme.com.:8443/"), ["https://acme.com:8443/p3", "https://acme.com.:8443/p4"]);
+  assert.deepEqual(pagesAsked(["https://acme.com.:8443/p3"], "https://acme.com:8443/", "https://acme.com:8443/"), ["https://acme.com.:8443/p3"]);
   // Asked with a route, a page is the view it ended on; asked without, its
   // page, whatever route the app went to by itself.
   assert.deepEqual([...identity("https://acme.com/app/#/private", "https://acme.com/app/#/login").keys], ["acme.com/app#/private", "acme.com/app#/login"]);

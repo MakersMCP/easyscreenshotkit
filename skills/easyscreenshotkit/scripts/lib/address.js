@@ -372,7 +372,8 @@ const portOf = (url) => url.port || (url.protocol === "https:" ? "443" : "80");
 // host to the DNS, and on one port one program. Compared as written, an
 // address given at https://portal.example.:8443/ had the sitemap its
 // robots.txt names at https://portal.example:8443/ refused as not on the
-// host given.
+// host given. The tour reads the site's host so too (see pick.js siteOf
+// and opensPort).
 const hostOf = (url) => url.hostname.replace(/\.$/, "");
 
 // The addresses a host, as a URL gives it, stands for here: an IP address
@@ -566,4 +567,4 @@ function refusedError(url, guard) {
   return new Error(`Could not open ${url}: it is ${guard.refused}.`);
 }
 
-module.exports = { guardFor, getChecked, notPublicIp, hostNotPublic, hostRefusals, refusalsProblem, unresolvedError, refusedError, otherPort, refusedHere, NOT_WEB, NOT_PUBLIC, NOT_GIVEN, UNRESOLVED, REFUSE_SETTING, REACHED_INSIDE, REACHED_UNNAMED, INSIDE_SPACES };
+module.exports = { guardFor, getChecked, hostOf, notPublicIp, hostNotPublic, hostRefusals, refusalsProblem, unresolvedError, refusedError, otherPort, refusedHere, NOT_WEB, NOT_PUBLIC, NOT_GIVEN, UNRESOLVED, REFUSE_SETTING, REACHED_INSIDE, REACHED_UNNAMED, INSIDE_SPACES };

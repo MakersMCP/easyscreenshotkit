@@ -12,7 +12,7 @@
 // site's robots.txt asks crawlers to stay out of.
 
 const zlib = require("zlib");
-const { guardFor, getChecked } = require("./address");
+const { guardFor, getChecked, hostOf } = require("./address");
 
 const fold = (text) =>
   String(text || "")
@@ -204,8 +204,13 @@ function textMatches(rule, text) {
 // product's single sign-on, not a sign-in page.
 const SHOWCASE_SECTIONS = new Set(["pricing", "product", "tour", "integrations", "templates"]);
 
-// The site a page belongs to: its host without www.
-const siteOf = (url) => new URL(url).hostname.toLowerCase().replace(/^www\./, "");
+// The site a page belongs to: its host without www., and without the one
+// dot that can end a name, as the rule for the addresses a run opens reads
+// it (see address.js hostOf). Read as written, a run given
+// https://acme.com.:8443/ dropped every link and sitemap entry at
+// https://acme.com:8443/ as another site's, and a --page there stopped the
+// run, though the rule opens them.
+const siteOf = (url) => hostOf(new URL(url)).toLowerCase().replace(/^www\./, "");
 
 function localeOf(pathname) {
   const first = String(pathname || "").split("/").filter(Boolean)[0] || "";
@@ -444,7 +449,7 @@ function whyOf(where, text, url) {
 function opensPort(url, homeUrl) {
   const port = (u) => u.port || (u.protocol === "https:" ? "443" : "80");
   if (port(url) === "80" || port(url) === "443") return true;
-  return url.hostname === homeUrl.hostname && port(url) === port(homeUrl) && (url.protocol === homeUrl.protocol || (homeUrl.protocol === "http:" && url.protocol === "https:"));
+  return hostOf(url) === hostOf(homeUrl) && port(url) === port(homeUrl) && (url.protocol === homeUrl.protocol || (homeUrl.protocol === "http:" && url.protocol === "https:"));
 }
 
 // Ranks the home page's links and the sitemap's addresses. links:

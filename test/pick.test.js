@@ -142,6 +142,29 @@ test("of two links to one page, the one the run opens by its port is kept", () =
   assert.deepEqual(upgraded.candidates.map((c) => c.url), ["https://dup.example:8080/pricing"]);
 });
 
+// The host given is the site's with or without the one dot that can end a
+// name, as the rule for the addresses a run opens reads it: given
+// https://dup.example.:8443/, the links and the sitemap's entries at
+// https://dup.example:8443/ are the site's and on its port, where the tour
+// dropped them as another site's and kept the pages at the dotted host
+// alone; and the other way round.
+test("the host given is the site's with or without the one dot that can end a name, in links and in the sitemap", () => {
+  const links = [
+    { href: "/pricing", text: "Pricing", where: "header" },
+    { href: "https://dup.example:8443/features", text: "Features", where: "header" },
+  ];
+  const { candidates } = pick.rankLinks(links, ["https://dup.example:8443/customers"], { home: "https://dup.example.:8443/" });
+  assert.deepEqual(candidates.map((c) => c.url).sort(), ["https://dup.example.:8443/pricing", "https://dup.example:8443/customers", "https://dup.example:8443/features"]);
+  const plain = pick.rankLinks([{ href: "https://dup.example.:8443/features", text: "Features", where: "header" }], [], { home: "https://dup.example:8443/" });
+  assert.deepEqual(plain.candidates.map((c) => c.url), ["https://dup.example.:8443/features"]);
+  // Of a menu's link to another port and the footer's on the port given,
+  // the footer's, which the run opens.
+  const two = pick.rankLinks([{ href: "https://dup.example:9443/pricing", text: "Pricing", where: "header" }, { href: "https://dup.example:8443/pricing", text: "Pricing", where: "footer" }], [], { home: "https://dup.example.:8443/" });
+  assert.deepEqual(two.candidates.map((c) => c.url), ["https://dup.example:8443/pricing"]);
+  assert.equal(pick.siteOf("https://www.dup.example.:8443/"), "dup.example");
+  assert.equal(pick.pageKey("https://dup.example.:8443/features"), pick.pageKey("https://dup.example:8443/features"));
+});
+
 test("a #route is a view of its own; #/, #! and an anchor are not", () => {
   assert.equal(pick.routeOf("https://acme.com/app/#/plants"), "#/plants");
   assert.equal(pick.routeOf("https://acme.com/#/plant/Fern"), "#/plant/Fern");
