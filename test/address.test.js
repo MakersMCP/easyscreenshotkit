@@ -444,6 +444,28 @@ test("the lookup a request of the kit's connects with hands back no address the 
     });
   }));
 
+// A document the browser has reached is judged again by where it says it
+// reached it: on this machine (Loopback), on a private network (Local, as
+// Chrome 155 and 157 name it, or Private, as earlier versions did), it is
+// not shown, but on the host and port given there; on the public internet,
+// or where the browser cannot say, as through a proxy (Unknown), the run's
+// own lookup has decided; and one it said nothing of is not shown either.
+test("a document the browser reached on this machine or its network is not shown but on the host and port given there", () =>
+  withNames({ "site.example": "93.184.215.14" }, async () => {
+    const REACHED = "on a host the browser reached on this machine or its network";
+    const UNNAMED = "on a host the browser reached at an address it did not name";
+    const spaces = ["Loopback", "Local", "Private", "Public", "Unknown", ""];
+    const fromPublic = await guardFor("https://site.example/");
+    assert.deepEqual(spaces.map((space) => fromPublic.reached("https://site.example/pricing", space)), [REACHED, REACHED, REACHED, "", "", ""]);
+    assert.equal(fromPublic.reached("https://site.example/pricing", null), UNNAMED);
+    const fromLocal = await guardFor("http://localhost:3000/");
+    const away = `${REACHED}, and not on the host and port given`;
+    assert.deepEqual(spaces.map((space) => fromLocal.reached("http://localhost:3000/docs", space)), ["", "", "", "", "", ""]);
+    assert.deepEqual(spaces.map((space) => fromLocal.reached("http://localhost:3001/", space)), [away, away, away, "", "", ""]);
+    assert.deepEqual(spaces.map((space) => fromLocal.reached("https://site.example/", space)), [away, away, away, "", "", ""]);
+    assert.equal(fromLocal.reached("http://localhost:3000/docs", null), UNNAMED);
+  }));
+
 // A name that cannot be looked up here, as the DNS fails or answers late,
 // is refused, and stays refused for the run: it counted as public, was
 // kept so, and was left to the browser's own lookup, which the same DNS

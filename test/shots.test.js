@@ -3737,6 +3737,56 @@ test("an answer whose place the browser does not say within 5 s of saying it sen
   }
 }));
 
+// A document the browser reached on a private network, as a router's own
+// page is, is refused as one it reached on this machine is: as the address
+// given and as a frame of a site on this machine. The browser is told that
+// the other server is on such a network (--ip-address-space-overrides),
+// which Chrome 155 and 157 name Local and earlier versions Private; with
+// that taken out of the rule, every test of it still passed.
+test("a host the run finds on the public internet that the browser reaches on a private network is not shown: given, or as a frame of a site on this machine", { skip: noBrowser, timeout: 120_000 }, () => withNames({ "rebind.example": "93.184.215.16" }, async () => {
+  setTimeLimit(180_000);
+  const seen = [];
+  const other = await serve((req, res) => {
+    seen.push(req.url);
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Router", "<h1>Router</h1>"));
+  });
+  const html = { "Content-Type": "text/html; charset=utf-8" };
+  const { server, origin } = await serve((req, res) => {
+    if (req.url === "/framed") return res.writeHead(200, html).end(page("Framed | Acme", '<h1>Framed</h1><iframe src="http://rebind.example/framed"></iframe>'));
+    res.writeHead(200, html).end(page("Acme", "<h1>Acme</h1>"));
+  });
+  const otherPort = new URL(other.origin).port;
+  const chrome = await launch({ args: [`--host-resolver-rules=MAP rebind.example 127.0.0.1:${otherPort}`, `--ip-address-space-overrides=127.0.0.1:${otherPort}=private`] });
+  try {
+    chrome.guard = await guardFor("http://rebind.example/");
+    let tab = await openTab(chrome, DEVICES.desktop);
+    try {
+      await assert.rejects(navigate(tab, "http://rebind.example/"), { message: `Could not open http://rebind.example/: it is ${REACHED}.`, refused: REACHED });
+    } finally {
+      await closeTab(chrome, tab);
+    }
+    chrome.guard = await guardFor(`${origin}/`);
+    tab = await openTab(chrome, DEVICES.desktop);
+    const barred = [];
+    tab.on(BARRED, (b) => barred.push(b));
+    try {
+      assert.equal((await navigate(tab, `${origin}/framed`)).status, 200);
+      const until = Date.now() + 5_000;
+      while (!barred.length && Date.now() < until) await sleep(100);
+      assert.deepEqual(barred.map((b) => [b.url, b.why, b.main]), [["http://rebind.example/framed", `${REACHED}, and not on the host and port given`, false]]);
+      const { result } = await tab.send("Runtime.evaluate", { expression: "document.querySelector('iframe').contentDocument ? document.querySelector('iframe').contentDocument.body.innerText : ''", returnByValue: true });
+      assert.equal(result.value, "");
+    } finally {
+      await closeTab(chrome, tab);
+    }
+    assert.deepEqual(seen, ["/", "/framed"]);
+  } finally {
+    await chrome.close();
+    server.close();
+    other.server.close();
+  }
+}));
+
 // The same in a run: the address given on such a host stops it before any
 // file is saved, and from a site on this machine a --page that redirects
 // there is left out and a frame there is not loaded, each named with the
