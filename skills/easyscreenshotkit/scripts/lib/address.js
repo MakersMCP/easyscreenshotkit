@@ -488,17 +488,25 @@ async function guardFor(start) {
     // For a request the kit makes itself, to an address refuses() took: the
     // lookup that connects it to the addresses refuses() judged, the answer
     // the name was asked for once (see addressesOf()), and not to a second
-    // answer of the DNS; undefined where any address goes. It reads the
-    // host as refuses() does (see lookupKey()), and refuses again an answer
-    // that is not public, away from the host and port given, or that
-    // MAKERSMCP_REFUSE_ADDRESSES names, failing the request before it
-    // connects, with the reason as refuses() gives it. refuses() refuses
-    // such a name first, from the same answer; with this refusal taken out,
-    // a host the lookup read otherwise than refuses(), one written with two
-    // dots at its end, had the kit's request connect to 127.0.0.1.
+    // answer of the DNS. For the host and port given it hands back the
+    // addresses the run takes that host for, both of this machine's for a
+    // name under localhost, as the browser takes them (see addressesFor()):
+    // left to Node.js's own lookup, which can ask with ADDRCONFIG, ::1 was
+    // left out where the machine's only IPv6 address is its loopback's, as
+    // in a container on Docker's own network, so a server that listens on
+    // ::1 alone, as one started on localhost can, was not reached, and its
+    // robots.txt, its sitemaps and its page for --pwa-check were not read.
+    // It reads the host as refuses() does (see lookupKey()), and refuses
+    // again an answer that is not public, away from the host and port
+    // given, or that MAKERSMCP_REFUSE_ADDRESSES names, failing the request
+    // before it connects, with the reason as refuses() gives it. refuses()
+    // refuses such a name first, from the same answer; with this refusal
+    // taken out, a host the lookup read otherwise than refuses(), one
+    // written with two dots at its end, had the kit's request connect to
+    // 127.0.0.1. undefined for what is no address.
     lookupFor(raw) {
       const url = parse(raw);
-      if (!url || (given(url) && !refusals.size)) return undefined;
+      if (!url) return undefined;
       return (hostname, options, callback) => {
         const refuse = (why) => callback(Object.assign(new Error(`${hostname} is ${why}`), { code: "ENOTPUBLIC", hostname, refused: `it is ${why}`, why, at: url.href }));
         // The host and port given on this machine or its network, asked for

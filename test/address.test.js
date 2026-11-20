@@ -331,11 +331,52 @@ test("a request the kit makes itself goes to the address the name was judged by,
     const all = await new Promise((done, fail) => resolve("rebinding.example", { all: true }, (err, list) => (err ? fail(err) : done(list))));
     assert.deepEqual(all, [{ address: "93.184.215.14", family: 4 }]);
     assert.deepEqual(asked, ["rebinding.example"]);
-    // The host and port given on this machine are the run's own: any
-    // address of them goes.
-    assert.equal((await guardFor("http://localhost:3000/")).lookupFor("http://localhost:3000/robots.txt"), undefined);
   } finally {
     dns.lookup = lookup;
+  }
+});
+
+// A request to the host and port given on this machine connects to the
+// addresses the run takes that host for, both of this machine's for a name
+// under localhost, as the browser takes them. Left to Node.js's own lookup,
+// which can ask with ADDRCONFIG, ::1 was left out on a machine whose only
+// IPv6 address is its loopback's, as in a container on Docker's own
+// network, so a server that listens on ::1 alone, as one started on
+// localhost can, was not reached: the tour read no robots.txt or sitemap
+// of it, and --pwa-check could not read its page. Here the system's lookup
+// of localhost gives 127.0.0.1 alone, as it does there, and the site
+// listens on ::1 alone, with MAKERSMCP_REFUSE_ADDRESSES unset.
+test("the kit reads the files of a site on localhost that listens on ::1 alone, whatever the system's lookup gives for localhost", async (t) => {
+  const pick = require("../skills/easyscreenshotkit/scripts/lib/pick");
+  const { checkManifest } = require("../skills/easyscreenshotkit/scripts/lib/pwa");
+  let port = 0;
+  const site = http.createServer((req, res) => {
+    if (req.url === "/robots.txt") return res.end(`Sitemap: http://localhost:${port}/sitemap.xml\n`);
+    if (req.url === "/sitemap.xml") return res.end(`<urlset><url><loc>http://localhost:${port}/integrations</loc></url></urlset>`);
+    res.writeHead(200, { "Content-Type": "text/html" }).end("<!doctype html><title>Acme</title><h1>Acme</h1>");
+  });
+  const listening = await new Promise((resolve) => {
+    site.once("error", () => resolve(false));
+    site.listen(0, "::1", () => resolve(true));
+  });
+  if (!listening) return t.skip("this machine has no ::1 to listen on");
+  port = site.address().port;
+  const lookup = dns.lookup;
+  dns.lookup = (host, options, callback) => {
+    if (typeof options === "function") [options, callback] = [{}, options];
+    if (String(host).replace(/\.$/, "").toLowerCase() !== "localhost") return lookup(host, options, callback);
+    process.nextTick(callback, null, options && options.all ? [{ address: "127.0.0.1", family: 4 }] : "127.0.0.1", 4);
+  };
+  try {
+    await withSetting(undefined, async () => {
+      const origin = `http://localhost:${port}`;
+      const index = await pick.readSiteIndex(origin);
+      assert.deepEqual(index.urls, [`${origin}/integrations`]);
+      await assert.rejects(checkManifest({ url: `${origin}/` }), { message: `${origin}/ links no web app manifest (no <link rel="manifest"> in its HTML). Give the manifest's own address or file.` });
+    });
+  } finally {
+    dns.lookup = lookup;
+    site.close();
   }
 });
 
