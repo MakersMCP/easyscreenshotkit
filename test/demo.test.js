@@ -2447,6 +2447,50 @@ test("a demo opens no other port than 80 and 443 away from the address given, an
   }
 }));
 
+// The demo's browser preloads nothing: a click on a link to a page a
+// speculation rule of the site had the browser prefetch, at another port of
+// this machine, was served from that copy, the browser's interception never
+// held it, and the demo recorded that program's page as the site's. And it
+// connected to the address of a link under the pointer and of a click
+// before the demo had judged it, though the page stayed where it was. Here
+// the other program sees no request and no connection, and each click
+// leaves the page where it is, with a note.
+test("a demo's click opens no address the run does not open that a page had the browser preload, and the browser connects to none for a link it hovers or clicks", { skip: missing, timeout: 200_000 }, async () => {
+  const seen = [];
+  let connections = 0;
+  const other = await serve((req, res) => {
+    seen.push(`${req.url} ${req.headers["sec-purpose"] || ""}`.trim());
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Admin", "<h1>Admin</h1>"));
+  });
+  other.server.on("connection", () => connections++);
+  const fetched = `${other.origin}/admin`;
+  const away = `${other.origin}/away`;
+  const { server, origin } = await serve((req, res) => {
+    if (req.url !== "/") return res.writeHead(404).end("not found");
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(
+      page(
+        "Acme | Tools",
+        `<h1>Acme</h1><script type="speculationrules">{"prefetch":[{"source":"list","urls":[${JSON.stringify(fetched)}]}]}</script><p style="font-size:32px;padding:0 40px"><a id="go" href="${fetched}">Admin</a> <a id="away" href="${away}">Away</a></p><div style="height:1400px;background:rgb(0,160,0)"></div>`,
+      ),
+    );
+  });
+  const root = tempDir();
+  const steps = path.join(root, "steps.yaml");
+  try {
+    fs.writeFileSync(steps, 'steps:\n  - visit: /\n  - wait: 3\n  - click: "#go"\n    zoom: false\n  - wait: 1\n  - hover: "#away"\n    zoom: false\n  - wait: 1\n  - click: "#away"\n    zoom: false\n  - wait: 1\n');
+    const { manifest } = await makeDemo(origin, { dir: path.join(root, "demo"), steps, gif: false, timeLimit: 180_000 });
+    const why = "not on the public internet, and not on the host and port given";
+    for (const url of [fetched, away]) assert.ok(manifest.notes.includes(`The page tried to open ${url}, which is ${why}: it was not opened, and the page stayed where it was.`), manifest.notes.join("\n"));
+    assert.deepEqual(manifest.pages.map((p) => p.url), [`${origin}/`]);
+    assert.deepEqual(seen, []);
+    assert.equal(connections, 0, "connections to the other program");
+  } finally {
+    server.close();
+    other.server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a step that points at nothing stops the run with its number and leaves nothing behind", { skip: missing, timeout: 120_000 }, async () => {
   const { server, origin } = await fixture();
   const root = tempDir();

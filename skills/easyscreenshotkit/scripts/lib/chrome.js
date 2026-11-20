@@ -396,6 +396,7 @@ async function launch({ lang = "", args = [] } = {}) {
   if (tried.unstarted) throw new Error(`${name} did not start: ${tried.unstarted}`);
   if (tried.unguarded) throw new Error(`${name} was not started: it hands addresses such as mailto: to programs of this machine, and none could be put in their place, as ${tried.unguarded}.`);
   if (tried.refused) throw new Error(`${name} cannot be told to refuse the downloads a page starts (${tried.refused}), so it was not used: a site could save files on this machine through it. Point CHROME_PATH at another browser.`);
+  if (tried.preloading) throw new Error(`${name} ${tried.preloading}`);
   if (tried.tooDeep) throw new Error(`${name} did not start: the temp folder's path, ${os.tmpdir()}, is too long for the socket it opens there. Point TMPDIR at a folder with a shorter path.`);
   const free = freeInTemp();
   if (free !== null && free < TEMP_NEEDED) throw new Error(`${name} did not start: the temp folder, ${os.tmpdir()}, has only ${Math.round(free / 1024)} KB free. Free some space there, or point TMPDIR at another disk.`);
@@ -502,17 +503,19 @@ function freeInTemp() {
 // makes its lock in its temp folder, and in its first seconds a folder for
 // what it downloads for itself, which it leaves behind when it quits or is
 // killed before the download has ended. Both go with the profile then.
-// wait: how long it has to answer, its version and the order to refuse
-// downloads both within it. Returns {chrome} once it answers, else {own,
-// tooDeep, silent, refused}: whether its profile was its temp folder,
-// whether it ended because its lock's socket did not fit in that folder,
-// whether it was still running, its pipe open, without an answer when the
-// wait ran out, and the error it answered the order to refuse downloads
-// with. A profile that cannot be made, as in a temp folder this user cannot
-// write in, and a program the system will not start, as one another
-// process has open for writing or with no memory left to start it, which
-// Node throws where it does not say so in an error event, are said in
-// unstarted, in place of Node's bare words, and the profile goes.
+// wait: how long it has to answer, its version, the order to refuse
+// downloads and whether it preloads all within it. Returns {chrome} once it
+// answers, else {own, tooDeep, silent, refused, preloading}: whether its
+// profile was its temp folder, whether it ended because its lock's socket
+// did not fit in that folder, whether it was still running, its pipe open,
+// without an answer when the wait ran out, the error it answered the order
+// to refuse downloads with, and what it said of its preloading when that
+// is not off (see preloadingSaid()). A profile that cannot be made, as in a
+// temp folder this user cannot write in, and a program the system will not
+// start, as one another process has open for writing or with no memory left
+// to start it, which Node throws where it does not say so in an error
+// event, are said in unstarted, in place of Node's bare words, and the
+// profile goes.
 async function start(binary, { lang, args, own, wait = START_MS }) {
   let profile;
   try {
@@ -526,6 +529,22 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
   if (apart.problem) {
     removeProfile(profile);
     return { unguarded: apart.problem };
+  }
+  // The browser preloads nothing (network_prediction_options 2, never):
+  // with its default, a page's speculation rules had it prefetch or
+  // prerender an address and then serve the page's move there from that
+  // copy, which the guard never saw (see guardBrowser()), so a page of a
+  // site took the run to another program of this machine or of the site's
+  // host; and it connected ahead to the address of a page's move, a frame,
+  // a window and a link under the pointer before the guard had judged it.
+  // Whether the browser took it is asked of it once it answers (see
+  // preloadingSaid()).
+  try {
+    fs.mkdirSync(path.join(profile, "Default"));
+    fs.writeFileSync(path.join(profile, "Default", "Preferences"), JSON.stringify({ net: { network_prediction_options: 2 } }));
+  } catch (err) {
+    removeProfile(profile);
+    return { unstarted: `${unwritten(err)}.` };
   }
   const inProfile = own && process.platform === "linux" && roomIn(profile);
   const locksBefore = lockFolders();
@@ -707,6 +726,7 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
   const until = Date.now() + wait;
   const left = () => Math.max(1, until - Date.now());
   let refused = "";
+  let preloading = "";
   try {
     // One that answers with an error has answered all the same.
     const version = await browser.send("Browser.getVersion", {}, left(), { fixed: true }).catch((err) => {
@@ -725,6 +745,10 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
       if (err.answered) refused = err.message;
       throw err;
     });
+    // It preloads nothing, as its profile asks (see above): one that says
+    // it does, or cannot say, is not used.
+    preloading = await preloadingSaid(browser, left);
+    if (preloading) throw new Error(preloading);
     // Read now: a browser that is quitting removes the link to it before
     // the folder, and a stop can land in between. In a profile that is the
     // browser's temp folder, it goes with the profile.
@@ -760,7 +784,7 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
   // machine, or a browser that hangs. One that closed its pipe was not slow
   // to answer: Chrome short of threads closes it at once and can go on
   // running for seconds, and what it printed says why it did not start.
-  const silent = !exited && !refused && !browser.closed();
+  const silent = !exited && !refused && !preloading && !browser.closed();
   // A program the system could not start, or one that ended before it
   // answered as one the system cannot run does (see programs.js), and
   // what is wrong with it.
@@ -774,7 +798,57 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
   await close();
   await sleep(300);
   removeProfile(profile);
-  return { own: inProfile, tooDeep: removeStrayLocks(locksBefore) || deep, silent, refused, unstarted, said: exited && !answered ? printed() : "" };
+  return { own: inProfile, tooDeep: removeStrayLocks(locksBefore) || deep, silent, refused, preloading, unstarted, said: exited && !answered ? printed() : "" };
+}
+
+// What the browser says of its preloading, asked in its first tab, the one
+// it starts with (about:blank), or in a tab of its own that is closed again
+// when it has none yet, so no page is added beside the run's own: "" when it
+// preloads nothing, as its profile asks (see start()), else why it is not
+// used, said after its name. Preload.enable has it tell the state of its
+// preloading first (Preload.preloadEnabledStateUpdated), where
+// disabledByPreference is the profile's setting as the browser holds it: a
+// Chrome policy (NetworkPredictionOptions) holds it in the profile's place,
+// and a program that starts the browser with another profile of its own
+// gives it that one's. A browser that answers Preload.enable with an error,
+// or tells no state, cannot be told to preload nothing either. left: the
+// time the start has left; a call with no answer in it fails as start()'s
+// others do.
+const AHEAD = "so it was not used: a page could have it open an address the run does not open, before the run had judged that address.";
+
+async function preloadingSaid(browser, left) {
+  const { targetInfos = [] } = await browser.send("Target.getTargets", {}, left(), { fixed: true });
+  const first = targetInfos.find((info) => info.type === "page");
+  const made = !first;
+  const { targetId } = first || (await browser.send("Target.createTarget", { url: "about:blank" }, left(), { fixed: true }));
+  let tab = null;
+  let sessionId = "";
+  try {
+    ({ sessionId } = await browser.send("Target.attachToTarget", { targetId, flatten: true }, left(), { fixed: true }));
+    tab = browser.session(sessionId);
+    let state = null;
+    tab.on("Preload.preloadEnabledStateUpdated", (p) => {
+      if (!state) state = p;
+    });
+    try {
+      await tab.send("Preload.enable", {}, left(), { fixed: true });
+    } catch (err) {
+      if (!err.answered) throw err;
+      return `cannot say whether it preloads pages (${err.message}), ${AHEAD} Point CHROME_PATH at another browser.`;
+    }
+    // Told before the answer; a moment more for a browser that tells it
+    // after.
+    for (let i = 0; i < 10 && !state; i++) await sleep(50);
+    if (!state) return `does not say whether it preloads pages, ${AHEAD} Point CHROME_PATH at another browser.`;
+    if (state.disabledByPreference !== true) return `preloads pages though its profile asks it not to, as a Chrome policy (NetworkPredictionOptions) or a program that starts it with a profile of its own can make it, ${AHEAD} Lift that policy, or point CHROME_PATH at the browser's own program.`;
+    return "";
+  } finally {
+    // A tab made for it is gone before the run opens its own; the first tab
+    // is let go of.
+    if (tab) tab.close();
+    if (made) await browser.send("Target.closeTarget", { targetId }, Math.min(5_000, left()), { fixed: true, watched: false }).catch(() => {});
+    else if (sessionId) browser.send("Target.detachFromTarget", { sessionId }, 5_000, { fixed: true, watched: false }).catch(() => {});
+  }
 }
 
 // Why the temp folder could not take the browser's profile or its stand-ins

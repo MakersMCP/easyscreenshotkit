@@ -2223,17 +2223,24 @@ const answer = (message) => output.write(JSON.stringify(message) + "\\0");
 let hushed = false;
 let held = Buffer.alloc(0);
 const take = (text) => {
-  const { id, method, sessionId } = JSON.parse(text);
-  if (mode === "windowless" && method === "Target.createTarget") return;
+  const { id, method, sessionId, params = {} } = JSON.parse(text);
+  // A window is a target the kit asks for with a window of its own; the
+  // start asks for a tab with none, to ask whether the browser preloads.
+  if (mode === "windowless" && method === "Target.createTarget" && params.newWindow) return;
   if (mode === "mum" && method === "Browser.setDownloadBehavior") return;
   if (hushed) return;
-  if (mode === "hushed" && method === "Target.createTarget") {
+  if (mode === "hushed" && method === "Target.createTarget" && params.newWindow) {
     hushed = true;
     return answer({ id, result: { targetId: "t1" } });
   }
   const result = method === "Browser.getVersion" ? { product: "Stand-in/1", userAgent: "Stand-in" } : method === "Target.createTarget" ? { targetId: "t1" } : method === "Target.attachToTarget" ? { sessionId: "s1" } : {};
-  const reply = mode === "refuser" && method !== "Browser.getVersion" ? { id, error: { code: -32000, message: "Not allowed here" } } : { id, result, ...(sessionId ? { sessionId } : {}) };
+  const refuses = (mode === "refuser" && method !== "Browser.getVersion") || (mode === "unsaid" && method === "Preload.enable");
+  const reply = refuses ? { id, error: { code: -32000, message: "Not allowed here" } } : { id, result, ...(sessionId ? { sessionId } : {}) };
   const send = () => {
+    // A browser tells the state of its preloading as it takes Preload.enable,
+    // before it answers: off, as the kit's profile asks, but for one that a
+    // policy keeps preloading.
+    if (method === "Preload.enable" && !refuses && mode !== "untold") answer({ method: "Preload.preloadEnabledStateUpdated", sessionId, params: { disabledByPreference: mode !== "preloading", disabledByDataSaver: false, disabledByBatterySaver: false, disabledByHoldbackPrefetchSpeculationRules: false, disabledByHoldbackPrerenderSpeculationRules: false } });
     answer(reply);
     if (method === "Browser.close") setTimeout(() => process.exit(0), 50);
   };
@@ -3511,6 +3518,164 @@ test("a run takes no --page or frame on another port than 80 and 443 away from t
     fs.rmSync(root, { recursive: true, force: true });
   }
 }));
+
+// The browser preloads nothing. With its default a page's speculation rules
+// had it prefetch or prerender an address, and the page's move there was
+// served from that copy, which the browser's interception never held: from
+// a site of this machine and from one on the public internet, the page of
+// another program of this machine was taken as the page the site moved to,
+// with no refusal. And it connected ahead to the address of a page's move,
+// a frame, a window, a click and a link under the pointer before the run
+// had judged that address: the other server saw connections with nothing
+// asked in them. Here the other server sees no request and no connection,
+// and each move is refused.
+test("a page's speculation rules take the browser to no address the run does not open, and the browser connects to none before the run has judged it", { skip: noBrowser, timeout: 150_000 }, () => withNames({ "public.example": "93.184.215.14" }, async () => {
+  const seen = [];
+  let connections = 0;
+  const html = { "Content-Type": "text/html; charset=utf-8" };
+  const other = await serve((req, res) => {
+    seen.push(`${req.headers.host}${req.url} ${req.headers["sec-purpose"] || ""}`.trim());
+    res.writeHead(200, html).end(page("Other", "<h1>Other</h1>"));
+  });
+  other.server.on("connection", () => connections++);
+  const port = new URL(other.origin).port;
+  const { server, origin } = await serve((req, res) => {
+    const { pathname, searchParams } = new URL(req.url, "http://site");
+    const to = searchParams.get("to") || "";
+    const go = `<script>setTimeout(() => { location.href = ${JSON.stringify(to)}; }, ${pathname === "/move" ? 300 : 2500});</script>`;
+    if (pathname === "/prefetch" || pathname === "/prerender") return res.writeHead(200, html).end(page("Spec", `<h1>Spec</h1><script type="speculationrules">{"${pathname.slice(1)}":[{"source":"list","urls":[${JSON.stringify(to)}]}]}</script>${go}`));
+    if (pathname === "/move") return res.writeHead(200, html).end(page("Move", `<h1>Move</h1>${go}`));
+    if (pathname === "/frame") return res.writeHead(200, html).end(page("Frame", `<h1>Frame</h1><iframe src="${to}"></iframe>`));
+    if (pathname === "/links") return res.writeHead(200, html).end(page("Links", `<a id="away" href="${to}" style="display:block;width:300px;height:100px">Away</a><a id="window" target="_blank" href="${to}" style="display:block;width:300px;height:100px">Window</a>`));
+    res.writeHead(200, html).end(page("Acme", "<h1>Acme</h1>"));
+  });
+  const site = `http://public.example:${new URL(origin).port}`;
+  const chrome = await launch({ args: ["--host-resolver-rules=MAP public.example 127.0.0.1"] });
+  try {
+    const click = async (tab, y, { hover = false } = {}) => {
+      if (hover) {
+        await tab.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 100, y });
+        await sleep(1_000);
+      }
+      for (const type of ["mousePressed", "mouseReleased"]) await tab.send("Input.dispatchMouseEvent", { type, x: 100, y, button: "left", clickCount: 1 });
+    };
+    const cases = [
+      // A site of this machine, given: another port of it.
+      [`${origin}/`, "/prefetch", `${other.origin}/fetched`, "not on the public internet, and not on the host and port given"],
+      [`${origin}/`, "/prerender", `${other.origin}/rendered`, "not on the public internet, and not on the host and port given"],
+      // A site on the public internet: this machine, by its address and
+      // by its name.
+      [`${site}/`, "/prefetch", `http://127.0.0.1:${port}/fetched`, "not on the public internet"],
+      [`${site}/`, "/prerender", `http://localhost:${port}/rendered`, "not on the public internet"],
+      [`${site}/`, "/move", `http://127.0.0.1:${port}/moved`, "not on the public internet"],
+      [`${site}/`, "/frame", `http://127.0.0.1:${port}/framed`, "not on the public internet"],
+      [`${site}/`, "/links", `http://127.0.0.1:${port}/clicked`, "not on the public internet", (tab) => click(tab, 50)],
+      [`${site}/`, "/links", `http://127.0.0.1:${port}/hovered`, "not on the public internet", (tab) => click(tab, 50, { hover: true })],
+      [`${site}/`, "/links", `http://127.0.0.1:${port}/window`, "not on the public internet", (tab) => click(tab, 150)],
+    ];
+    for (const [given, at, to, why, act] of cases) {
+      chrome.guard = await guardFor(given);
+      const tab = await openTab(chrome, DEVICES.desktop);
+      try {
+        const barred = [];
+        tab.on(BARRED, (b) => barred.push([b.url, b.why]));
+        const opened = `${new URL(given).origin}${at}?to=${encodeURIComponent(to)}`;
+        assert.equal((await navigate(tab, opened)).status, 200, opened);
+        if (act) {
+          await sleep(300);
+          await act(tab);
+        }
+        const until = Date.now() + 6_000;
+        while (!barred.length && Date.now() < until) await sleep(100);
+        await sleep(500);
+        assert.deepEqual(barred, [[to, why]], `${at} to ${to}`);
+        assert.equal(await currentUrl(tab), opened, `${at} to ${to}`);
+      } finally {
+        await closeTab(chrome, tab);
+      }
+    }
+    assert.deepEqual(seen, []);
+    assert.equal(connections, 0, "connections to the other server");
+  } finally {
+    await chrome.close();
+    server.close();
+    other.server.close();
+  }
+}));
+
+// Whether the browser preloads is asked of the browser itself: one that
+// says it does, as a Chrome policy can keep it doing whatever its profile
+// says, or one started with a profile of a program's own, is not used, and
+// neither is one that cannot say. The profile the kit gives it asks it to
+// preload nothing.
+test("a browser that preloads pages, or does not say whether it does, is not used", { skip: process.platform === "win32" && "the stand-in browsers are shell scripts", timeout: 120_000 }, async () => {
+  const root = tempDir();
+  const modes = ["preloading", "unsaid", "untold"];
+  const wrapper = standIns(root);
+  const before = process.env.CHROME_PATH;
+  const ahead = "so it was not used: a page could have it open an address the run does not open, before the run had judged that address.";
+  try {
+    setTimeLimit(60_000);
+    for (const mode of modes) {
+      process.env.CHROME_PATH = wrapper(mode);
+      const err = await launch().then(async (chrome) => {
+        await chrome.close();
+        assert.fail(`${mode}: the stand-in was taken for a browser`);
+      }, (e) => e);
+      const said = {
+        preloading: `preloading preloads pages though its profile asks it not to, as a Chrome policy (NetworkPredictionOptions) or a program that starts it with a profile of its own can make it, ${ahead} Lift that policy, or point CHROME_PATH at the browser's own program.`,
+        unsaid: `unsaid cannot say whether it preloads pages (Not allowed here), ${ahead} Point CHROME_PATH at another browser.`,
+        untold: `untold does not say whether it preloads pages, ${ahead} Point CHROME_PATH at another browser.`,
+      }[mode];
+      assert.equal(err.message, said);
+      const { pid, profile } = JSON.parse(fs.readFileSync(path.join(root, `${mode}.json`), "utf8"));
+      for (let i = 0; i < 50; i++) {
+        try {
+          process.kill(pid, 0);
+        } catch {
+          break;
+        }
+        await sleep(100);
+      }
+      assert.throws(() => process.kill(pid, 0), { code: "ESRCH" }, `${mode} is still running`);
+      assert.equal(fs.existsSync(profile), false, profile);
+    }
+  } finally {
+    endStandIns(root, modes);
+    if (before === undefined) delete process.env.CHROME_PATH;
+    else process.env.CHROME_PATH = before;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// The same of a real browser: the kit's profile asks it to preload nothing,
+// and a program that starts it with that setting taken out of the profile
+// has it preload, which the browser says, and it is not used.
+test("the browser's profile asks it to preload nothing, and a browser started with that taken out is not used", { skip: noBrowser || (process.platform === "win32" && "the wrappers are shell scripts"), timeout: 120_000 }, async () => {
+  const root = tempDir();
+  const quote = (text) => `'${String(text).replace(/'/g, "'\\''")}'`;
+  const kept = path.join(root, "preferences.json");
+  // Each wrapper reads the profile from the browser's command line.
+  const profileOf = 'for a in "$@"; do case "$a" in --user-data-dir=*) d="${a#--user-data-dir=}";; esac; done';
+  const reading = path.join(root, "reading");
+  fs.writeFileSync(reading, `#!/bin/sh\n${profileOf}\ncat "$d/Default/Preferences" > ${quote(kept)}\nexec ${quote(findChrome())} "$@"\n`, { mode: 0o755 });
+  const emptied = path.join(root, "emptied");
+  fs.writeFileSync(emptied, `#!/bin/sh\n${profileOf}\nprintf '{}' > "$d/Default/Preferences"\nexec ${quote(findChrome())} "$@"\n`, { mode: 0o755 });
+  const before = process.env.CHROME_PATH;
+  try {
+    setTimeLimit(60_000);
+    process.env.CHROME_PATH = reading;
+    const chrome = await launch();
+    await chrome.close();
+    assert.deepEqual(JSON.parse(fs.readFileSync(kept, "utf8")).net, { network_prediction_options: 2 });
+    process.env.CHROME_PATH = emptied;
+    await assert.rejects(launch(), { message: "emptied preloads pages though its profile asks it not to, as a Chrome policy (NetworkPredictionOptions) or a program that starts it with a profile of its own can make it, so it was not used: a page could have it open an address the run does not open, before the run had judged that address. Lift that policy, or point CHROME_PATH at the browser's own program." });
+  } finally {
+    if (before === undefined) delete process.env.CHROME_PATH;
+    else process.env.CHROME_PATH = before;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 // A page that moves on by itself before its load event has left its own
 // load. When it moves to an address the run does not open, as a local app
