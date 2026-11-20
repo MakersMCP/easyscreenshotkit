@@ -3148,6 +3148,48 @@ test("a site cannot make the browser save a file", { skip: noBrowser || (process
   }
 });
 
+// Chrome on Linux writes what a download it refuses sends to a hidden file
+// in the Downloads folder of the user it runs as, .com.google.Chrome. and
+// six characters, and removes it a moment later: a browser killed in that
+// moment left the site's bytes there, and the suite's runs wrote there in
+// the owner's home. The browser finds that folder by user-dirs.dirs in its
+// config folder, which is in its profile now, so nothing comes into the
+// home's Downloads at all, not even for a moment.
+test("a download the browser refuses writes nothing in the Downloads folder of the user it runs as, not even for a moment", { skip: noBrowser || (process.platform !== "linux" && "Chrome reads where it saves a download from HOME on Linux only"), timeout: 120_000 }, async () => {
+  const seen = [];
+  const big = Buffer.alloc(3 * 1024 * 1024, 120);
+  const { server, origin } = await serve((req, res) => {
+    seen.push(req.url);
+    if (req.url === "/") return res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Thanks", '<h1>Thanks for downloading</h1><div style="height:1400px"></div><script>setTimeout(() => { location.href = "/big.bin"; }, 300);</script>'));
+    if (req.url === "/big.bin") {
+      res.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Disposition": 'attachment; filename="from-the-site.bin"', "Content-Length": big.length });
+      res.write(big.subarray(0, 1024 * 1024));
+      return setTimeout(() => res.end(big.subarray(1024 * 1024)), 300);
+    }
+    res.writeHead(404).end("not found");
+  });
+  const root = tempDir();
+  const home = path.join(root, "home");
+  fs.mkdirSync(path.join(home, "Downloads"), { recursive: true });
+  const env = { ...process.env, HOME: home };
+  delete env.XDG_CONFIG_HOME;
+  delete env.XDG_DOWNLOAD_DIR;
+  const events = [];
+  const watcher = fs.watch(path.join(home, "Downloads"), (type, name) => events.push(`${type} ${name}`));
+  try {
+    const run = await runCli([origin, "--pages", "1", "--sizes", "desktop", "--out", path.join(root, "shots")], { env });
+    assert.equal(run.status, 0, run.stderr);
+    assert.ok(seen.includes("/big.bin"), "the page sent the browser to the file");
+    await sleep(500);
+    assert.deepEqual(events, []);
+    assert.deepEqual(fs.readdirSync(path.join(home, "Downloads")), []);
+  } finally {
+    watcher.close();
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // An address that answers with a file, at once or after a redirect, is no
 // page to take. It is refused, the report says why, and the browser saves
 // nothing: closing the tab right after the answer saved the file, as a

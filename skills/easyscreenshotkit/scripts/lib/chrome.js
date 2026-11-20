@@ -538,10 +538,15 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
   // host; and it connected ahead to the address of a page's move, a frame,
   // a window and a link under the pointer before the guard had judged it.
   // Whether the browser took it is asked of it once it answers (see
-  // preloadingSaid()).
+  // preloadingSaid()). Its downloads go in the profile too, behind the
+  // order that refuses them (see below), with what the browser writes of a
+  // download as it refuses it (see downloadsIn()).
+  let downloads = {};
   try {
     fs.mkdirSync(path.join(profile, "Default"));
-    fs.writeFileSync(path.join(profile, "Default", "Preferences"), JSON.stringify({ net: { network_prediction_options: 2 } }));
+    fs.mkdirSync(path.join(profile, "Downloads"));
+    fs.writeFileSync(path.join(profile, "Default", "Preferences"), JSON.stringify({ net: { network_prediction_options: 2 }, download: { default_directory: path.join(profile, "Downloads"), prompt_for_download: false } }));
+    downloads = downloadsIn(profile);
   } catch (err) {
     removeProfile(profile);
     return { unstarted: `${unwritten(err)}.` };
@@ -592,7 +597,7 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
         ...(process.getuid && process.getuid() === 0 ? ["--no-sandbox"] : []),
         "about:blank",
       ],
-      { stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"], env: browserEnv(profile, { ...configIn(profile), ...(inProfile ? { TMPDIR: profile } : {}), ...apart }) },
+      { stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"], env: browserEnv(profile, { ...configIn(profile), ...downloads, ...(inProfile ? { TMPDIR: profile } : {}), ...apart }) },
     );
   } catch (err) {
     removeProfile(profile);
@@ -1007,6 +1012,46 @@ const busPath = (file) => Array.from(Buffer.from(file, "utf8"), (byte) => (/[-0-
 // with the profile. Elsewhere it is left as it is.
 function configIn(profile) {
   return process.platform === "linux" ? { CHROME_CONFIG_HOME: profile } : {};
+}
+
+// On Linux the browser writes what a download it refuses sends to a
+// hidden file in the user's Downloads folder (.com.google.Chrome. and six
+// characters) and removes it a moment later: a browser killed in that
+// moment left the site's bytes there, and the suite's runs wrote there in
+// the user's own home. It finds that folder as xdg-user-dirs names it, in
+// user-dirs.dirs of the config folder (XDG_CONFIG_HOME, ~/.config by
+// default), so the browser gets a config folder in its profile whose
+// user-dirs.dirs names the profile's Downloads folder, which goes with the
+// profile. That folder links to every other entry of the user's own config
+// folder, so the browser reads the user's fonts and other settings as
+// before; the links go with the profile and what they lead to stays. The
+// profile's Preferences name that folder for downloads too (see start()).
+// Gives what to add to the browser's environment.
+function downloadsIn(profile) {
+  if (process.platform !== "linux") return {};
+  const config = path.resolve(profile, "easyscreenshotkit-config");
+  const downloads = path.resolve(profile, "Downloads");
+  fs.mkdirSync(config);
+  const given = process.env.XDG_CONFIG_HOME;
+  const own = path.resolve(given && path.isAbsolute(given) ? given : path.join(process.env.HOME || os.homedir(), ".config"));
+  let names = [];
+  try {
+    names = fs.readdirSync(own);
+  } catch {
+    // None, or none to read: there is nothing to keep.
+  }
+  for (const name of names) {
+    if (name === "user-dirs.dirs") continue;
+    try {
+      fs.symlinkSync(path.join(own, name), path.join(config, name));
+    } catch {
+      // Left out.
+    }
+  }
+  // The path in quotes, with a backslash before a quote, a backslash, a $
+  // or a backquote, as the file is read.
+  fs.writeFileSync(path.join(config, "user-dirs.dirs"), `XDG_DOWNLOAD_DIR="${downloads.replace(/["\\$`]/g, (c) => `\\${c}`)}"\n`);
+  return { XDG_CONFIG_HOME: config };
 }
 
 // The longest path a socket can have: 107 bytes on Linux, 103 on macOS.
