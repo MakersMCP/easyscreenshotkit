@@ -2156,7 +2156,7 @@ test("a browser that closes its pipe and goes on running is quoted, not said to 
 test("a program that starts the browser without the kit's pipe is named so, before any work", { skip: noBrowser || (process.platform === "win32" && "the wrapper is a shell script"), timeout: 90_000 }, async () => {
   const root = tempDir();
   const wrapper = path.join(root, "chrome-closefds");
-  fs.writeFileSync(wrapper, `#!/bin/sh\nexec 3<&- 4<&-\nexec ${JSON.stringify(findChrome())} "$@"\n`, { mode: 0o755 });
+  fs.writeFileSync(wrapper, `#!/bin/sh\nexec 3<&- 4<&-\nexec ${sh(findChrome())} "$@"\n`, { mode: 0o755 });
   const tmp = path.join(root, "tmp");
   fs.mkdirSync(tmp);
   try {
@@ -2335,10 +2335,37 @@ else {
   );
   return (mode) => {
     const file = path.join(root, mode);
-    fs.writeFileSync(file, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(script)} ${mode} "$@"\n`, { mode: 0o755 });
+    fs.writeFileSync(file, `#!/bin/sh\nexec ${sh(process.execPath)} ${sh(script)} ${sh(mode)} "$@"\n`, { mode: 0o755 });
     return file;
   };
 }
+
+// The launchers of the stand-in browsers and of the relay quote the paths
+// they start for sh as a whole: in double quotes a $ of the temp folder's
+// path was read by sh, node was given a script that is not there, and ten
+// tests failed under a TMPDIR that holds one. Here the folder's name holds
+// a space, an apostrophe, a $, a % and a !, whatever TMPDIR is.
+test("the launchers of the tests' stand-in browsers start their scripts from a folder whose path holds a space, a ', a $, a % and a !", { skip: process.platform === "win32" && "the launchers are shell scripts", timeout: 60_000 }, () => {
+  const root = path.join(tempDir(), "a b'c$d%e!f");
+  fs.mkdirSync(root);
+  const nothing = fs.openSync(os.devNull, "r+");
+  try {
+    const pipes = { stdio: ["ignore", "ignore", "pipe", nothing, nothing], encoding: "utf8", timeout: 30_000 };
+    // The relay starts its browser, here node itself, with what the
+    // launcher was given.
+    const { browser } = relayBrowser(root, process.execPath);
+    const relayed = spawnSync(browser, ["-e", "process.exit(7)"], pipes);
+    assert.equal(relayed.status, 7, String(relayed.stderr));
+    // A stand-in writes <mode>.json in root once it runs, with its profile.
+    const profile = path.join(root, "profile");
+    const plain = spawnSync(standIns(root)("plain"), [`--user-data-dir=${profile}`], pipes);
+    assert.equal(plain.status, 0, String(plain.stderr));
+    assert.equal(JSON.parse(fs.readFileSync(path.join(root, "plain.json"), "utf8")).profile, profile);
+  } finally {
+    fs.closeSync(nothing);
+    fs.rmSync(path.dirname(root), { recursive: true, force: true });
+  }
+});
 
 // Ends each stand-in of these modes that is still running, told by its
 // command line where there is /proc.
@@ -2785,7 +2812,7 @@ test("a profile that a killed browser's helpers make again after the run removed
       "#!/bin/sh",
       'for arg in "$@"; do case "$arg" in --user-data-dir=*) profile="${arg#--user-data-dir=}" ;; esac; done',
       '(while [ -d "$profile" ]; do sleep 0.02; done; sleep 0.2; mkdir -p "$profile/Default"; echo again > "$profile/Default/Preferences") &',
-      `exec ${JSON.stringify(findChrome())} "$@"`,
+      `exec ${sh(findChrome())} "$@"`,
       "",
     ].join("\n"),
     { mode: 0o755 },

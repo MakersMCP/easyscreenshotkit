@@ -248,7 +248,7 @@ child.on("exit", (code) => process.exit(code === null ? 1 : code));
 `,
   );
   const wrapper = path.join(root, "relayed-chrome");
-  fs.writeFileSync(wrapper, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(script)} "$@"\n`, { mode: 0o755 });
+  fs.writeFileSync(wrapper, `#!/bin/sh\nexec ${sh(process.execPath)} ${sh(script)} "$@"\n`, { mode: 0o755 });
   return { browser: wrapper, dropped: () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8").split("\n").filter(Boolean) : []) };
 }
 
