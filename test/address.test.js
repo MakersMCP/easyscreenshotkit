@@ -160,6 +160,7 @@ test("from a public address a run opens web addresses on the public internet onl
 // server's redirect can send it: that is the program the address names.
 // http on the port of an https address given is not, unless the port is 80
 // or 443. A site on this machine given keeps its host and port, as before.
+// A host is the one given with or without the dot that can end a name.
 test("away from the address given a run opens port 80 and 443 only, and the scheme, host and port given on any port", () =>
   withNames({ "public.example": "93.184.215.14", "other.example": "93.184.215.15", "inside.example": "10.0.0.7" }, async () => {
     const fromPublic = await guardFor("https://public.example/");
@@ -200,10 +201,26 @@ test("away from the address given a run opens port 80 and 443 only, and the sche
       ["http://public.example:8443/", port(8443)],
       ["https://public.example:9443/", port(9443)],
       ["https://other.example:8443/", port(8443)],
-      ["https://public.example.:8443/", port(8443)],
+      // The host with the dot that can end a name is the same host.
+      ["https://public.example.:8443/", ""],
+      ["https://other.example.:8443/", port(8443)],
     ]) {
       assert.equal(await fromPort.refuses(url), why, url);
     }
+    // And given with that dot, its pages without it, as the sitemap its
+    // robots.txt names, which was refused as not on the host given.
+    const fromDotted = await guardFor("https://public.example.:8443/");
+    for (const [url, why] of [
+      ["https://public.example:8443/sitemap.xml", ""],
+      ["https://public.example.:8443/pricing", ""],
+      ["http://public.example:8443/", port(8443)],
+      ["https://public.example:9443/", port(9443)],
+    ]) {
+      assert.equal(await fromDotted.refuses(url), why, url);
+    }
+    const fromLocalDotted = await guardFor("http://localhost.:3000/");
+    assert.equal(await fromLocalDotted.refuses("http://localhost:3000/pricing"), "");
+    assert.equal(await fromLocalDotted.refuses("http://localhost:3001/"), NOT_GIVEN);
     // An http address given on another port: https on that host and port
     // too, and no other port of it or of another host.
     const fromHttp = await guardFor("http://public.example:8080/");

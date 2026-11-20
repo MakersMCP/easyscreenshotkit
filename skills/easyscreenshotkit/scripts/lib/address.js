@@ -308,6 +308,14 @@ async function lookupWhy(hostname) {
 
 const portOf = (url) => url.port || (url.protocol === "https:" ? "443" : "80");
 
+// A host as a URL gives it, with the one dot that can end a name left out,
+// as standing() looks it up: portal.example. and portal.example are one
+// host to the DNS, and on one port one program. Compared as written, an
+// address given at https://portal.example.:8443/ had the sitemap its
+// robots.txt names at https://portal.example:8443/ refused as not on the
+// host given.
+const hostOf = (url) => url.hostname.replace(/\.$/, "");
+
 // The addresses a host, as a URL gives it, stands for here: an IP address
 // itself, the browser's own for a name under localhost, or what the name
 // resolves to (see addressesOf). {list} of {address, family}, or {error}.
@@ -349,8 +357,8 @@ async function guardFor(start) {
   // http://myapp.dev:8080/ stopped the run on the address the browser
   // itself opened for it. A move from https down to http on that port is
   // not the address given.
-  const given = (url) => local && url.hostname === from.hostname && portOf(url) === portOf(from);
-  const own = (url) => web && url.hostname === from.hostname && portOf(url) === portOf(from) && (url.protocol === from.protocol || (from.protocol === "http:" && url.protocol === "https:"));
+  const given = (url) => local && hostOf(url) === hostOf(from) && portOf(url) === portOf(from);
+  const own = (url) => web && hostOf(url) === hostOf(from) && portOf(url) === portOf(from) && (url.protocol === from.protocol || (from.protocol === "http:" && url.protocol === "https:"));
   const parse = (raw) => {
     try {
       return new URL(String(raw));
