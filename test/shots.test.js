@@ -3592,6 +3592,76 @@ test("an http address given on another port is taken at https on that host and p
   }
 }));
 
+// The same over https, where a page's speculation rules also prefetch and
+// prerender another port of the site's own host and a port of another host
+// on the public internet: with the browser's preloading on, each move there
+// was served from that copy, past the rule's port, and saved as the page.
+// Here each is refused, and the other server sees no request and no
+// connection. Both names are public to the run's rule and lead the browser
+// to this machine; its certificate, made here, is taken by a browser told
+// to take any.
+test("over https, a page's speculation rules take the browser to no other port of its host or of another host", { skip: noBrowser || noOpenssl, timeout: 120_000 }, () => withNames({ "public.example": "93.184.215.14", "other.example": "93.184.215.15" }, async () => {
+  const root = tempDir();
+  const key = path.join(root, "key.pem");
+  const cert = path.join(root, "cert.pem");
+  const made = spawnSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", cert, "-days", "1", "-subj", "/CN=public.example", "-addext", "subjectAltName=DNS:public.example,DNS:other.example"], { encoding: "utf8" });
+  if (made.status !== 0) fs.rmSync(root, { recursive: true, force: true });
+  assert.equal(made.status, 0, made.stderr);
+  const https = require("node:https");
+  const tls = { key: fs.readFileSync(key), cert: fs.readFileSync(cert) };
+  const seen = [];
+  let connections = 0;
+  const other = https.createServer(tls, (req, res) => {
+    seen.push(`${req.headers.host}${req.url} ${req.headers["sec-purpose"] || ""}`.trim());
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Other", "<h1>Other</h1>"));
+  });
+  other.on("connection", () => connections++);
+  const site = https.createServer(tls, (req, res) => {
+    const { pathname, searchParams } = new URL(req.url, "https://site");
+    const to = searchParams.get("to") || "";
+    if (pathname === "/prefetch" || pathname === "/prerender") return res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Spec", `<h1>Spec</h1><script type="speculationrules">{"${pathname.slice(1)}":[{"source":"list","urls":[${JSON.stringify(to)}]}]}</script><script>setTimeout(() => { location.href = ${JSON.stringify(to)}; }, 2500);</script>`));
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Acme", "<h1>Acme</h1>"));
+  });
+  await Promise.all([other, site].map((server) => new Promise((resolve) => server.listen(0, "127.0.0.1", resolve))));
+  const port = other.address().port;
+  const given = `https://public.example:${site.address().port}/`;
+  let chrome = null;
+  try {
+    chrome = await launch({ args: ["--host-resolver-rules=MAP public.example 127.0.0.1, MAP other.example 127.0.0.1", "--ignore-certificate-errors"] });
+    chrome.guard = await guardFor(given);
+    for (const [at, to] of [
+      ["/prefetch", `https://public.example:${port}/fetched`],
+      ["/prerender", `https://public.example:${port}/rendered`],
+      ["/prefetch", `https://other.example:${port}/fetched`],
+      ["/prerender", `https://other.example:${port}/rendered`],
+    ]) {
+      const tab = await openTab(chrome, DEVICES.desktop);
+      try {
+        const barred = [];
+        tab.on(BARRED, (b) => barred.push([b.url, b.why]));
+        const opened = `${new URL(given).origin}${at}?to=${encodeURIComponent(to)}`;
+        assert.equal((await navigate(tab, opened)).status, 200, opened);
+        const until = Date.now() + 6_000;
+        while (!barred.length && Date.now() < until) await sleep(100);
+        await sleep(500);
+        assert.deepEqual(barred, [[to, OTHER_PORT(port)]], `${at} to ${to}`);
+        assert.equal(await currentUrl(tab), opened, `${at} to ${to}`);
+      } finally {
+        await closeTab(chrome, tab);
+      }
+    }
+    assert.deepEqual(seen, []);
+    assert.equal(connections, 0, "connections to the other server");
+  } finally {
+    if (chrome) await chrome.close();
+    for (const server of [other, site]) {
+      server.close();
+      server.closeAllConnections();
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}));
+
 // Two links to one page, the menu's on another port of the site and the
 // footer's on its own port: the page's key has no port, the menu's link
 // outranked the footer's, the run refused it, and the page was lost though
