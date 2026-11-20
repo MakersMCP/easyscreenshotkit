@@ -3737,6 +3737,45 @@ test("an answer whose place the browser does not say within 5 s of saying it sen
   }
 }));
 
+// An answer the browser hands on before it says anything of its request,
+// as for one from its cache, for which no request goes out, is taken as
+// such: the run does not wait for a word that may never come, and does not
+// judge it again by where the browser reached it, as the README's Limits
+// say. The browser has said so before it handed the answer on in every run
+// here; this relay holds both what it says of the request and of the
+// answer 1 s, and the page the browser reached on this machine is shown.
+test("an answer the browser hands on before it says anything of its request is taken as one from its cache", { skip: noBrowser || (process.platform === "win32" && "the relay's wrapper is a shell script"), timeout: 120_000 }, () => withNames({ "rebind.example": "93.184.215.16" }, async () => {
+  setTimeLimit(180_000);
+  const seen = [];
+  const other = await serve((req, res) => {
+    seen.push(req.url);
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Inside", "<h1>Inside</h1>"));
+  });
+  const otherPort = new URL(other.origin).port;
+  const root = tempDir();
+  const relay = relayBrowser(root, findChrome(), { holdSpacesMs: 1_000, holdRequestsMs: 1_000 });
+  const saved = process.env.CHROME_PATH;
+  process.env.CHROME_PATH = relay.browser;
+  let chrome = null;
+  try {
+    chrome = await launch({ args: [`--host-resolver-rules=MAP rebind.example 127.0.0.1:${otherPort}`] });
+    chrome.guard = await guardFor("http://rebind.example/");
+    const tab = await openTab(chrome, DEVICES.desktop);
+    try {
+      assert.equal((await navigate(tab, "http://rebind.example/")).status, 200);
+      assert.deepEqual(seen, ["/"]);
+    } finally {
+      await closeTab(chrome, tab);
+    }
+  } finally {
+    if (chrome) await chrome.close();
+    if (saved === undefined) delete process.env.CHROME_PATH;
+    else process.env.CHROME_PATH = saved;
+    other.server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}));
+
 // A document the browser reached on a private network, as a router's own
 // page is, is refused as one it reached on this machine is: as the address
 // given and as a frame of a site on this machine. The browser is told that

@@ -177,10 +177,11 @@ function descendants(pid) {
 // start of, is answered with an error and never reaches the browser, as a
 // browser that does not take it would do. holdSpacesMs: how long what the
 // browser says of where it reached an answer (Network.responseReceivedExtraInfo)
-// is held before it goes on, so it comes after the answer it is of. Returns
-// the wrapper to set CHROME_PATH to, and dropped(): what it dropped, a line
-// each.
-function relayBrowser(root, browser, { holdMs = 0, withholdNetwork = false, holdSpacesMs = 0 } = {}) {
+// is held before it goes on, so it comes after the answer it is of.
+// holdRequestsMs: the same for what it says of a request it sent
+// (Network.requestWillBeSentExtraInfo). Returns the wrapper to set
+// CHROME_PATH to, and dropped(): what it dropped, a line each.
+function relayBrowser(root, browser, { holdMs = 0, withholdNetwork = false, holdSpacesMs = 0, holdRequestsMs = 0 } = {}) {
   const script = path.join(root, "relay.js");
   const log = path.join(root, "dropped.log");
   fs.writeFileSync(
@@ -242,6 +243,10 @@ split(child.stdio[4], (text) => {
   }
   if (${Number(holdSpacesMs)} > 0 && msg.method === "Network.responseReceivedExtraInfo") {
     setTimeout(() => toKit.write(text + "\\0"), ${Number(holdSpacesMs)});
+    return;
+  }
+  if (${Number(holdRequestsMs)} > 0 && msg.method === "Network.requestWillBeSentExtraInfo") {
+    setTimeout(() => toKit.write(text + "\\0"), ${Number(holdRequestsMs)});
     return;
   }
   if (inputs.has(msg.id)) {

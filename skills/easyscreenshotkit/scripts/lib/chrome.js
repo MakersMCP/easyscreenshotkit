@@ -1232,10 +1232,14 @@ const QUICK = { fixed: true, watched: false };
 // until the browser says where they reach (Target.setAutoAttach with
 // waitForDebuggerOnStart): without, a frame that moved on once it ran in a
 // process of its own, and a window, came with nothing said of them. An
-// answer from the browser's cache comes with nothing said either, as no
-// request went out for it: it is one the browser reached, and the run
-// judged, before. At most HEARD_MAX requests are kept, the oldest let go of
-// first, and each goes once it has loaded or failed.
+// answer from the browser's cache comes with nothing said, as no request
+// went out for it, and so the run takes an answer the browser hands on
+// before it has said anything of its request as one from its cache, not
+// judged again by where the browser reached it (see spaceOf()): it does not
+// wait for a word that may never come. The browser has said what it sent
+// before it handed the answer on in every run here. At most HEARD_MAX
+// requests are kept, the oldest let go of first, and each goes once it has
+// loaded or failed.
 const HEARD_MAX = 2_000;
 
 function heardOf(chrome, id) {
@@ -1339,7 +1343,8 @@ function letGo(session) {
 // The address space of the answer a paused document request got, as the
 // browser said it (see hearAddresses()): the one most inside of those said
 // since its last answer was judged, so each hop of a redirect is judged by
-// its own; "" for an answer from the browser's cache, for which no request
+// its own; "" for an answer the browser hands on before it has said
+// anything of the request, as for one from its cache, for which no request
 // went out; and null when the browser said nothing of the request at all,
 // as for a target it did not take hearAddresses() for, or nothing in
 // SPACE_MS of the answer to a request it said it sent. The wait takes what
