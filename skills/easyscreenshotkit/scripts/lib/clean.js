@@ -61,13 +61,28 @@ const KNOWN = [
 ];
 
 // Hides every element the selectors match, with a rule for ones that come
-// later and inline for ones the page styled inline. A selector the browser
-// cannot read is skipped and named. Returns how many elements were showing,
-// and how many of those showed a loading sign (signIn, see page.js).
+// later and inline for ones the page styled inline. Each selector is a rule
+// of its own, added to the style sheet with insertRule, never joined to the
+// others as text: joined, a comment or a quote one selector opened ran on
+// into the next, and the text between them became rules of their own, one
+// that had the page ask an address the run does not open for a picture of
+// every element. A selector the browser cannot read, and one whose rule
+// comes out as anything but its own display:none, is not used and is
+// named in bad. Returns how many elements were showing, and how many of
+// those showed a loading sign (signIn, see page.js).
 const HIDE_SELECTORS = `(function (selectors, signIn) {
-  var style = document.getElementById("easyscreenshotkit-hide") || document.createElement("style");
-  style.id = "easyscreenshotkit-hide";
-  var rules = [], bad = [], hidden = 0, signs = 0, big = false;
+  var style = document.getElementById("easyscreenshotkit-hide");
+  if (!style) {
+    style = document.createElement("style");
+    style.id = "easyscreenshotkit-hide";
+  }
+  // Emptied, then put in the page, so it has a sheet to add rules to. A
+  // page whose policy takes no style element of the kit's (CSP style-src)
+  // gives it none: its elements are hidden inline only, as before.
+  style.textContent = "";
+  (document.head || document.documentElement).appendChild(style);
+  var sheet = style.sheet || null;
+  var bad = [], hidden = 0, signs = 0, big = false;
   selectors.forEach(function (selector) {
     var found;
     try {
@@ -76,19 +91,40 @@ const HIDE_SELECTORS = `(function (selectors, signIn) {
       bad.push(selector);
       return;
     }
-    rules.push(selector + "{display:none!important}");
+    // Measured before its rule hides them.
+    var shown = [], showing = 0, signing = 0, large = false;
     found.forEach(function (el) {
       var r = el.getBoundingClientRect();
       if (r.width > 0 && r.height > 0) {
-        hidden++;
-        if (signIn(el)) signs++;
-        if (r.width * r.height >= 0.5 * innerWidth * innerHeight) big = true;
+        showing++;
+        if (signIn(el)) signing++;
+        if (r.width * r.height >= 0.5 * innerWidth * innerHeight) large = true;
       }
+      shown.push(el);
+    });
+    if (sheet) {
+      var at;
+      try {
+        at = sheet.insertRule(selector + "{display:none!important}", sheet.cssRules.length);
+      } catch (e) {
+        bad.push(selector);
+        return;
+      }
+      var rule = sheet.cssRules[at];
+      var own = rule && rule.type === 1 && rule.style.length === 1 && rule.style.getPropertyValue("display") === "none" && rule.style.getPropertyPriority("display") === "important" && !(rule.cssRules && rule.cssRules.length);
+      if (!own) {
+        sheet.deleteRule(at);
+        bad.push(selector);
+        return;
+      }
+    }
+    hidden += showing;
+    signs += signing;
+    if (large) big = true;
+    shown.forEach(function (el) {
       el.style.setProperty("display", "none", "important");
     });
   });
-  style.textContent = rules.join("\\n");
-  (document.head || document.documentElement).appendChild(style);
   return { hidden: hidden, signs: signs, bad: bad, big: big };
 })`;
 

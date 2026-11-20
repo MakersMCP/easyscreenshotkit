@@ -179,6 +179,61 @@ function normalizeStep(raw, index) {
   return step;
 }
 
+// Why a selector to hide is no CSS selector the run hides with, or "". The
+// page gets each one as a rule of its own, the selector and then
+// {display:none!important} (see clean.js), so a selector must end where it
+// ends: one that opens a comment, a quote, a bracket or a parenthesis it
+// does not close, or holds {, }, ; or @ outside its quotes, could reach past
+// its rule into the rule after it, or add rules of its own, as two hide
+// items once did, one opening a comment and the next closing it in a
+// quote, so the text between them became a rule that had the page ask an
+// address the run does not open for a picture. A comment is refused too,
+// as a selector needs none, and so is a control character, as a selector
+// is one line. Whether the browser reads what is left as a selector is the
+// browser's to say (see clean.js).
+function hideProblem(selector) {
+  const text = String(selector);
+  if (/[\u0000-\u001f\u007f-\u009f]/.test(text)) return "it holds a line break or another control character";
+  const open = [];
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === "\\") {
+      if (i + 1 === text.length) return "it ends in a backslash";
+      i++;
+    } else if (c === '"' || c === "'") {
+      let end = i + 1;
+      while (end < text.length && text[end] !== c) end += text[end] === "\\" ? 2 : 1;
+      if (end >= text.length) return "it opens a quote and does not close it";
+      i = end;
+    } else if (c === "/" && text[i + 1] === "*") return "it holds a comment";
+    else if ("{};@".includes(c)) return `it holds ${c} outside quotes, where no selector has one`;
+    else if (c === "(" || c === "[") open.push(c);
+    else if (c === ")" || c === "]") {
+      if (open.pop() !== (c === ")" ? "(" : "[")) return `it holds a ${c} that nothing before it opens`;
+    }
+  }
+  if (open.length) return `it opens a ${open[open.length - 1]} and does not close it`;
+  return "";
+}
+
+// A selector as a message shows it: in quotes, cut to 60 characters, and
+// each character that would act on the terminal it is printed on, or turn
+// the text after it around, written as in an address (%0A).
+const ACTING = /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g;
+
+function shownSelector(selector) {
+  const chars = [...String(selector)];
+  const cut = chars.length > 60 ? `${chars.slice(0, 57).join("")}...` : chars.join("");
+  return `"${cut.replace(ACTING, (c) => encodeURIComponent(c))}"`;
+}
+
+// The refusal of a selector to hide, as "<what takes it>, and <selector> is
+// not one: <why>", or "".
+function hideRefusal(selector, what) {
+  const why = hideProblem(selector);
+  return why ? `${what}, and ${shownSelector(selector)} is not one: ${why}` : "";
+}
+
 // A parsed steps file, as {url, hide, steps}.
 function normalizeSteps(doc) {
   const top = Array.isArray(doc) ? { steps: doc } : doc;
@@ -189,6 +244,10 @@ function normalizeSteps(doc) {
   if (top.url !== undefined && (typeof top.url !== "string" || !top.url.trim())) throw new StepError("url takes a web address");
   const hide = top.hide === undefined || top.hide === null ? [] : Array.isArray(top.hide) ? top.hide : [top.hide];
   if (hide.some((selector) => typeof selector !== "string" || !selector.trim())) throw new StepError("hide takes CSS selectors");
+  for (const selector of hide) {
+    const refused = hideRefusal(selector.trim(), "hide takes CSS selectors");
+    if (refused) throw new StepError(refused);
+  }
   return { url: top.url ? top.url.trim() : "", hide: hide.map((selector) => selector.trim()), steps: top.steps.map(normalizeStep) };
 }
 
@@ -269,4 +328,4 @@ function toYaml({ url, hide = [], steps }, header = []) {
   return lines.join("\n") + "\n";
 }
 
-module.exports = { ACTIONS, StepError, targetOf, keyOf, normalizeStep, normalizeSteps, readSteps, loadSteps, toYaml, targetText };
+module.exports = { ACTIONS, StepError, targetOf, keyOf, normalizeStep, normalizeSteps, readSteps, loadSteps, toYaml, targetText, hideProblem, hideRefusal, shownSelector };

@@ -125,6 +125,27 @@ test("a MAKERSMCP_REFUSE_ADDRESSES that does not parse stops every command befor
   }
 });
 
+// A selector to hide that could reach past its own rule in the page, as one
+// that opens a comment, is refused as an argument is, by both commands,
+// before any work: no folder is made and no browser is looked for.
+test("--hide refuses a selector that opens a comment, a quote or a bracket it does not close or holds a brace, before any work", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-hide-"));
+  try {
+    const out = path.join(root, "out");
+    for (const [name, args] of [["easyscreenshotkit", ["acme.com"]], ["easyscreenshotkit demo", ["demo", "acme.com"]]]) {
+      for (const [selector, why] of [["x-none /*", "it holds a comment"], ["#chat{", "it holds { outside quotes, where no selector has one"], ['[title="Close', "it opens a quote and does not close it"]]) {
+        const run = spawnSync(process.execPath, [CLI, ...args, "--hide", ".promo", `--hide=${selector}`, "--out", out], { encoding: "utf8", env: { ...process.env, CHROME_PATH: path.join(root, "no-browser") } });
+        assert.equal(run.status, 2, `${name} ${selector}`);
+        assert.equal(run.stderr.split("\n")[0], `${name}: --hide takes a CSS selector, and "${selector}" is not one: ${why}`);
+        assert.equal(fs.existsSync(out), false);
+      }
+      assert.equal(spawnSync(process.execPath, [CLI, ...args, "--hide", '[data-x="{"], #chat', "--help"], { encoding: "utf8" }).status, 0);
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("the CLI explains itself and refuses a missing address or a bad option", () => {
   const help = spawnSync(process.execPath, [CLI, "--help"], { encoding: "utf8" });
   assert.equal(help.status, 0);

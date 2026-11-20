@@ -170,6 +170,47 @@ test("steps: mistakes are caught with the step's number", () => {
   assert.deepEqual(targetOf("text='Sign in'", "x"), { text: "Sign in" });
 });
 
+// Each selector of hide becomes a rule of its own in the page, so one that
+// could reach past its rule is refused as the file is read, with what in it
+// would: two items, one opening a comment and the next closing it in a
+// quote, made the text between them rules of their own, which had the page
+// ask another program of this machine for a picture of every element. The
+// selectors a page could need stay, quotes, escapes and lists included.
+test("a steps file's hide takes CSS selectors that end where they end, and refuses one that opens a comment, a quote or a bracket it does not close or holds a brace, a semicolon or an @", () => {
+  const error = (hide) => {
+    try {
+      normalizeSteps({ hide, steps: [{ wait: 1 }] });
+    } catch (err) {
+      return err.message;
+    }
+    return null;
+  };
+  const pair = ["x-none /*", '[a="*/x-none{} *{background-image:url(http://127.0.0.1:9/x.png)} [b="]'];
+  assert.equal(error(pair), 'hide takes CSS selectors, and "x-none /*" is not one: it holds a comment');
+  assert.equal(error([pair[1], pair[0]]), 'hide takes CSS selectors, and "x-none /*" is not one: it holds a comment');
+  const refused = [
+    ["#chat {", '"#chat {"', "it holds { outside quotes, where no selector has one"],
+    ["x}", '"x}"', "it holds } outside quotes, where no selector has one"],
+    ["a;b", '"a;b"', "it holds ; outside quotes, where no selector has one"],
+    ["@media print", '"@media print"', "it holds @ outside quotes, where no selector has one"],
+    ['[title="Close', '"[title="Close"', "it opens a quote and does not close it"],
+    ["div[data-x", '"div[data-x"', "it opens a [ and does not close it"],
+    [":not(.a", '":not(.a"', "it opens a ( and does not close it"],
+    ["a)", '"a)"', "it holds a ) that nothing before it opens"],
+    ["[a)]", '"[a)]"', "it holds a ) that nothing before it opens"],
+    [".promo\\", '".promo\\"', "it ends in a backslash"],
+    [".a\nb", '".a%0Ab"', "it holds a line break or another control character"],
+  ];
+  for (const [selector, shown, why] of refused) assert.equal(error([selector]), `hide takes CSS selectors, and ${shown} is not one: ${why}`, selector);
+  // A long one is shown cut, and a character that would act on the
+  // terminal is written out.
+  assert.equal(error([`.${"a".repeat(80)}{`]), `hide takes CSS selectors, and ".${"a".repeat(56)}..." is not one: it holds { outside quotes, where no selector has one`);
+  assert.equal(error(["a\u202e{"]), 'hide takes CSS selectors, and "a%E2%80%AE{" is not one: it holds { outside quotes, where no selector has one');
+  for (const selector of [".cookie-banner", "#chat, .promo", '[data-x="{;}@/*"]', "[title='Close (x)']", ".a\\{b", "div:not(.x) > p:nth-child(2n+1)", "*", '[a="x\\"y"]', "iframe[title='chat widget']"]) {
+    assert.equal(error([selector]), null, selector);
+  }
+});
+
 test("a steps file is read from YAML or JSON, and a tour written back reads the same", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-steps-"));
   try {

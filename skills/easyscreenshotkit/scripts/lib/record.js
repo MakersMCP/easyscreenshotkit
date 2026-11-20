@@ -294,6 +294,7 @@ class Recorder {
   // viewport: the page's screen in CSS px.
   constructor(chrome, { dir, out = dir, base, fps = 30, viewport = { width: 1600, height: 900 }, hide = [], clean: tidy = true, theme = "light", lang = "", reducedMotion = false, log = () => {} }) {
     Object.assign(this, { chrome, dir, out, base, fps, viewport, hide, tidy, theme, lang, reducedMotion, log });
+    this.unread = new Set();
     this.v = 0;
     this.live = null;
     this.windows = [];
@@ -523,12 +524,18 @@ class Recorder {
     const m = await metrics(tab);
     await walk(tab, Math.min(m.height, this.viewport.height * WALK_SCREENS));
     let hidden = 0;
+    // A selector of hide the browser does not read as one hides nothing,
+    // and the demo's notes say so (unread).
+    const tidied = (done) => {
+      for (const selector of done.badSelectors || []) if (this.hide.includes(selector)) this.unread.add(selector);
+      return done.hidden;
+    };
     if (this.tidy) {
-      hidden = (await clean(tab, { hide: this.hide, viewport: this.viewport })).hidden;
+      hidden = tidied(await clean(tab, { hide: this.hide, viewport: this.viewport }));
       await this.eval(`${WATCH_FLOATING}(4000)`);
     } else if (this.hide.length) {
       // With --no-clean only what --hide names is hidden.
-      hidden = (await clean(tab, { hide: this.hide, viewport: this.viewport, auto: false })).hidden;
+      hidden = tidied(await clean(tab, { hide: this.hide, viewport: this.viewport, auto: false }));
     }
     await this.eval(STEADY);
     await waitForFonts(tab);

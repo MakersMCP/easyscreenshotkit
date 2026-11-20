@@ -19,6 +19,7 @@ const { setTimeLimit, sleep } = require("../skills/easyscreenshotkit/scripts/lib
 const { watchRequests, networkQuiet, showsLoadingSign, looksEmpty, waitForContent } = require("../skills/easyscreenshotkit/scripts/lib/page");
 const { LOCATE, Recorder } = require("../skills/easyscreenshotkit/scripts/lib/record");
 const { pngText } = require("../skills/easyscreenshotkit/scripts/lib/png");
+const { clean } = require("../skills/easyscreenshotkit/scripts/lib/clean");
 const programs = require("../skills/easyscreenshotkit/scripts/lib/programs");
 const { readPng, serve, near, descendants, relayBrowser, runUntilOver } = require("./helpers");
 const { noBus, privateBus, fakePortal } = require("./bus");
@@ -447,10 +448,13 @@ test("--no-clean keeps the floating boxes; --hide hides more; --json prints the 
     const said = (dir) => fs.readFileSync(path.join(root, dir, "SCREENSHOTS.md"), "utf8").split("\n")[4];
     assert.equal(said("raw"), "Use the files as they are: they are the real pages as they came, banners and bubbles included. Do not redraw the interface, and do not present them as another product's. Boxes are in each image's own pixels: x, y, width, height.");
 
-    const { manifest: hidden } = await takeShots(origin, { dir: path.join(root, "hide"), pages: 1, sizes: "desktop", hide: [".hero", "]bad["], timeLimit: 100_000 });
+    // A selector the browser does not read hides nothing, and the notes
+    // name it, where it went without a word.
+    const { manifest: hidden } = await takeShots(origin, { dir: path.join(root, "hide"), pages: 1, sizes: "desktop", hide: [".hero", "div:nope"], timeLimit: 100_000 });
     const png = readPng(path.join(root, "hide", hidden.pages[0].shots[0].file));
     assert.ok(near(css(png, 2, 200, 300), WHITE), `the hero hidden: ${css(png, 2, 200, 300)}`);
     assert.match(said("hide"), /^Use the files as they are: they are the real pages, with cookie banners, chat bubbles and other floating boxes hidden\./);
+    assert.deepEqual(hidden.notes.filter((note) => /to hide/.test(note)), ['The selector "div:nope" to hide hid nothing: the browser does not read it as a CSS selector.']);
 
     // --hide with --no-clean hides what it names, and only that: it was
     // dropped without a word, and SCREENSHOTS.md said the banners and
@@ -465,6 +469,52 @@ test("--no-clean keeps the floating boxes; --hide hides more; --json prints the 
     assert.equal(said("both"), "Use the files as they are: they are the real pages as they came, banners and bubbles included, with only what --hide names hidden. Do not redraw the interface, and do not present them as another product's. Boxes are in each image's own pixels: x, y, width, height.");
   } finally {
     server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// Each selector to hide is a rule of its own in the page. Joined into one
+// style text, two of them, one opening a comment and the next closing it
+// in a quote, made the text between them rules of their own: the page
+// asked another program of this machine for a picture of every element,
+// and the browser's hold on documents never saw it. Such a selector is
+// refused before any work; given to the page all the same, as here, the
+// one that opens the comment makes no rule, the other is one selector
+// hiding what it names, and the other program is asked for nothing.
+test("each selector to hide is a rule of its own in the page, and one that could reach past its rule is refused before any work", { skip: noBrowser, timeout: 120_000 }, async () => {
+  const seen = [];
+  const other = await serve((req, res) => {
+    seen.push(req.url);
+    res.writeHead(404).end();
+  });
+  const pair = ["x-none /*", `[a="*/x-none{} *{background-image:url(${other.origin}/x.png)} [b="]`];
+  const { server, origin } = await serve((req, res) => res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Acme", `<h1>Acme</h1><p class="promo" style="height:80px">Sale</p><div style="height:1400px"></div>`)));
+  const root = tempDir();
+  const chrome = await launch();
+  try {
+    chrome.guard = await guardFor(`${origin}/`);
+    const tab = await openTab(chrome, DEVICES.desktop);
+    try {
+      await navigate(tab, `${origin}/`);
+      const done = await clean(tab, { hide: [...pair, ".promo"], viewport: { width: 1600, height: 900 }, auto: false });
+      assert.deepEqual(done.badSelectors, [pair[0]]);
+      assert.equal(done.hidden, 1);
+      const { result } = await tab.send("Runtime.evaluate", { expression: '[...document.getElementById("easyscreenshotkit-hide").sheet.cssRules].map((rule) => rule.cssText)', returnByValue: true });
+      assert.equal(result.value.length, 2, result.value.join("\n"));
+      assert.match(result.value[1], /^\.promo \{ display: none !important; \}$/);
+      assert.ok(result.value[0].startsWith('[a="*/x-none{} *{background-image:url('), result.value[0]);
+      await sleep(1_500);
+      assert.deepEqual(seen, []);
+    } finally {
+      await closeTab(chrome, tab);
+    }
+    // The run refuses such a selector before any work.
+    await assert.rejects(takeShots(`${origin}/`, { dir: path.join(root, "shots"), pages: 1, sizes: "desktop", hide: pair, timeLimit: 60_000 }), { message: 'hide takes CSS selectors, and "x-none /*" is not one: it holds a comment' });
+    assert.equal(fs.existsSync(path.join(root, "shots")), false);
+  } finally {
+    await chrome.close();
+    server.close();
+    other.server.close();
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

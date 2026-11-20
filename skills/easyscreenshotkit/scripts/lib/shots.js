@@ -32,6 +32,7 @@ const { renderSheet } = require("./sheet");
 const { begin, checkDir, realFolder } = require("./outdir");
 const { setTimeLimit, timeLeft, sleep } = require("./time");
 const { guardFor, hostRefusals, unresolvedError, refusedError } = require("./address");
+const { hideRefusal, shownSelector } = require("./steps");
 const programs = require("./programs");
 const version = require("./version");
 
@@ -635,6 +636,12 @@ function alternateNote(alternate, lang, what) {
 }
 
 // Why a page that could not be opened is left out.
+// The note for a selector given to hide that the browser did not read as a
+// CSS selector: it hid nothing.
+function unreadNote(selector) {
+  return `The selector ${shownSelector(selector)} to hide hid nothing: the browser does not read it as a CSS selector.`;
+}
+
 function notOpened(err) {
   if (err.refused) return err.refused;
   return /timed out/.test(err.message) ? `too slow to answer (${err.message})` : `could not be opened: ${err.reason || err.message}`;
@@ -850,8 +857,14 @@ async function takeOpen(tab, nav, page, group, theme, ctx, { check, links, route
   else await scrollTo(tab, 0);
   const found = links || routes ? await readLinks(tab) : null;
   const m0 = await metrics(tab);
-  // With --no-clean only what --hide names is hidden.
-  const tidy = () => (ctx.clean || ctx.hide.length ? clean(tab, { hide: ctx.hide, viewport: { width: m0.width, height: m0.viewportHeight }, auto: ctx.clean }) : { hidden: 0, signs: 0, unlocked: false, badSelectors: [] });
+  // With --no-clean only what --hide names is hidden. A selector of hide
+  // the browser does not read as one hides nothing, and the run's notes
+  // say so.
+  const tidy = async () => {
+    const done = ctx.clean || ctx.hide.length ? await clean(tab, { hide: ctx.hide, viewport: { width: m0.width, height: m0.viewportHeight }, auto: ctx.clean }) : { hidden: 0, signs: 0, unlocked: false, badSelectors: [] };
+    for (const selector of done.badSelectors || []) if (ctx.unread && ctx.hide.includes(selector)) ctx.unread.add(selector);
+    return done;
+  };
   // Whether a view whose wait ended before it was ready shows a loading
   // sign by then, read before the clean-up: that hides a fixed box that
   // says Loading as it hides any other.
@@ -1157,6 +1170,12 @@ async function takeShots(rawUrl, options = {}) {
   // The addresses the host that runs the kit refuses: a setting that does
   // not parse stops the run before any work (see address.js).
   hostRefusals();
+  // A selector to hide that could reach past its own rule stops the run
+  // before any work too (see steps.js).
+  for (const selector of hide) {
+    const refused = hideRefusal(String(selector).trim(), "hide takes CSS selectors");
+    if (refused) throw new Error(refused);
+  }
   // The programs an earlier run in this process found are found again.
   programs.forget();
   const pageMs = reserveOf(PAGE_MS, timeLimit);
@@ -1178,7 +1197,9 @@ async function takeShots(rawUrl, options = {}) {
   // address's host were looked at.
   const run = openShots(target, { pwa });
   // The screenshots for a manifest are taken in the first theme only.
-  const ctx = { lang, hide, reducedMotion, clean: tidy, pwaTheme: pwa ? themes[0] : "", captureMs: reserveOf(CAPTURE_MS, timeLimit) };
+  // unread: the selectors of hide the browser did not read as one, each
+  // named once in the notes (see visit()).
+  const ctx = { lang, hide, reducedMotion, clean: tidy, pwaTheme: pwa ? themes[0] : "", captureMs: reserveOf(CAPTURE_MS, timeLimit), unread: new Set() };
   const notes = [...fragments];
   // Pages opened and left out come first in the manifest's list, then the
   // links left out without opening.
@@ -1539,6 +1560,7 @@ async function takeShots(rawUrl, options = {}) {
     if (kept.some((page) => page.notes.some((note) => /time ran out/.test(note)))) notes.push("Time ran out before every size was taken; give more with --timeout.");
     const left = leftOut(rejected, routes, skipped);
     if (left.routesPast) notes.push(`${left.routesPast === 1 ? "1 more #route link was" : `${left.routesPast} more #route links were`} left out past the ${LEFT_OUT} listed; give one with --page to take it.`);
+    for (const selector of ctx.unread) notes.push(unreadNote(selector));
     if (themes.includes("dark")) notes.push("Dark captures use the page's own dark theme, through prefers-color-scheme. A site without one looks the same in both.");
     if (pwa) pwaSaved = savePwa(kept, run);
     manifest = {
@@ -1665,4 +1687,4 @@ function leftOut(rejected, routes, links) {
   return { skipped: all.slice(0, LEFT_OUT), routesPast: all.slice(LEFT_OUT).filter((skip) => skip.reason === ROUTE_LINK).length };
 }
 
-module.exports = { takeShots, parseSizes, addPwaShots, normalizeUrl, fragmentNotes, prepareDir, openShots, slugOf, identity, movedOn, pagesAsked, waitForView, leftOut, siteName, readInfo, readLinks, rejectAtOnce, rejectReason, notOpened, alternateNote, barredNote, barredNotes, writeMarkdown, DEVICES, MAX_HEIGHT };
+module.exports = { takeShots, unreadNote, parseSizes, addPwaShots, normalizeUrl, fragmentNotes, prepareDir, openShots, slugOf, identity, movedOn, pagesAsked, waitForView, leftOut, siteName, readInfo, readLinks, rejectAtOnce, rejectReason, notOpened, alternateNote, barredNote, barredNotes, writeMarkdown, DEVICES, MAX_HEIGHT };

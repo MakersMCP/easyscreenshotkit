@@ -2491,6 +2491,39 @@ test("a demo's click opens no address the run does not open that a page had the 
   }
 });
 
+// A steps file's hide is held to the rule --hide is: a selector that could
+// reach past its own rule in the page, as one opening a comment that the
+// next closes in a quote, stops the demo as the file is read, before any
+// work, where the text between them became rules of their own that had
+// the page ask another program of this machine for a picture. A selector
+// the browser does not read hides nothing, and the notes name it.
+test("a steps file's hide refuses a selector that could reach past its rule before any work, and one the browser does not read is named in the notes", { skip: missing, timeout: 200_000 }, async () => {
+  const seen = [];
+  const other = await serve((req, res) => {
+    seen.push(req.url);
+    res.writeHead(404).end();
+  });
+  const { server, origin } = await serve((req, res) => {
+    if (req.url !== "/") return res.writeHead(404).end("not found");
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Acme | Tools", '<h1>Acme</h1><p class="promo" style="height:80px;background:rgb(200,0,0)">Sale</p><div style="height:1400px;background:rgb(0,160,0)"></div>'));
+  });
+  const root = tempDir();
+  const steps = path.join(root, "steps.yaml");
+  try {
+    fs.writeFileSync(steps, `hide:\n  - "x-none /*"\n  - ${JSON.stringify(`[a="*/x-none{} *{background-image:url(${other.origin}/x.png)} [b="]`)}\nsteps:\n  - visit: /\n  - wait: 1\n`);
+    await assert.rejects(makeDemo(origin, { dir: path.join(root, "refused"), steps, gif: false, timeLimit: 100_000 }), { message: 'steps.yaml: hide takes CSS selectors, and "x-none /*" is not one: it holds a comment' });
+    assert.equal(fs.existsSync(path.join(root, "refused")), false);
+    fs.writeFileSync(steps, 'hide:\n  - "div:nope"\n  - ".promo"\nsteps:\n  - visit: /\n  - wait: 1\n');
+    const { manifest } = await makeDemo(origin, { dir: path.join(root, "demo"), steps, gif: false, timeLimit: 150_000 });
+    assert.deepEqual(manifest.notes.filter((note) => /to hide/.test(note)), ['The selector "div:nope" to hide hid nothing: the browser does not read it as a CSS selector.']);
+    assert.deepEqual(seen, []);
+  } finally {
+    server.close();
+    other.server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a step that points at nothing stops the run with its number and leaves nothing behind", { skip: missing, timeout: 120_000 }, async () => {
   const { server, origin } = await fixture();
   const root = tempDir();

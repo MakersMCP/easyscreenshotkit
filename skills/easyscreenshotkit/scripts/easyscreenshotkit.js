@@ -4,6 +4,7 @@
 const fs = require("fs");
 const { takeShots, normalizeUrl } = require("./lib/shots");
 const { pathOf, readable, printable } = require("./lib/pick");
+const { hideRefusal } = require("./lib/steps");
 const { stopOnSignals } = require("./lib/outdir");
 const { checkManifest, describeCheck } = require("./lib/pwa");
 const { refusalsProblem } = require("./lib/address");
@@ -44,6 +45,12 @@ Options:
 Sizes: desktop is 1600x900 at 2x, mobile 360x640 at 3x (1080x1920), iphone
 440x956 at 3x (1320x2868), full the whole page at 1x, mobile-full the whole
 phone page at 2x. 1270x760@2 is a Product Hunt gallery image.
+
+--hide takes a CSS selector, as .cookie-bar or '#chat, .promo', which is a
+rule of its own on the page: one that opens a comment, a quote, a bracket
+or a parenthesis it does not close, or holds {, }, ; or @ outside its
+quotes, is refused before any work, and one the browser does not read as a
+selector hides nothing, with a note.
 
 A #route (#/ or #!) in the address or in --page is kept: the page opens on
 that view, waits in each window until the view's data has come and it shows
@@ -142,8 +149,11 @@ function parse(argv) {
     else if (name === "--sizes") options.sizes = value;
     else if (name === "--theme") options.theme = value.toLowerCase();
     else if (name === "--lang") options.lang = value;
-    else if (name === "--hide") options.hide.push(value);
-    else if (name === "--timeout") options.timeout = Number(value);
+    else if (name === "--hide") {
+      const refused = hideRefusal(value.trim(), "--hide takes a CSS selector");
+      if (refused) throw new Error(refused);
+      options.hide.push(value);
+    } else if (name === "--timeout") options.timeout = Number(value);
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];

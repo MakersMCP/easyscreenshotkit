@@ -17,10 +17,10 @@
 const fs = require("fs");
 const path = require("path");
 const { launch, browserProblem, busy, CRASHED } = require("./chrome");
-const { normalizeUrl, fragmentNotes, siteName } = require("./shots");
+const { normalizeUrl, fragmentNotes, siteName, unreadNote } = require("./shots");
 const { homeOf, siteOf, routeOf, viewKey, viewOf, pathOf, readable, printable } = require("./pick");
 const { Recorder } = require("./record");
-const { loadSteps, toYaml, targetText } = require("./steps");
+const { loadSteps, toYaml, targetText, hideRefusal } = require("./steps");
 const { pickPages, tourSteps } = require("./tour");
 const { layoutOf, LOOKS, backdropOf, checkBackdrop, renderVideo, renderStill } = require("./compose");
 const { cameraAt } = require("./motion");
@@ -65,6 +65,13 @@ Options:
   --json              print steps.json instead of a summary
   --timeout <s>       give up after this many seconds (default: 900)
   -h, --help          show this help
+
+--hide takes a CSS selector, as .cookie-bar or '#chat, .promo', and so does
+each item of a steps file's hide: each is a rule of its own on the page,
+and one that opens a comment, a quote, a bracket or a parenthesis it does
+not close, or holds {, }, ; or @ outside its quotes, is refused before any
+work. One the browser does not read as a selector hides nothing, with a
+note in steps.json.
 
 A #route (#/ or #!) in the address, in --page or in a visit step is kept,
 and every view the video shows, one a click opened included, is a page of
@@ -157,8 +164,11 @@ function parseDemo(argv) {
     else if (name === "--fps") options.fps = Number(value);
     else if (name === "--theme") options.theme = value.toLowerCase();
     else if (name === "--lang") options.lang = value;
-    else if (name === "--hide") options.hide.push(value);
-    else if (name === "--timeout") options.timeout = Number(value);
+    else if (name === "--hide") {
+      const refused = hideRefusal(value.trim(), "--hide takes a CSS selector");
+      if (refused) throw new Error(refused);
+      options.hide.push(value);
+    } else if (name === "--timeout") options.timeout = Number(value);
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -432,6 +442,12 @@ async function makeDemo(rawUrl, options = {}) {
   // The addresses the host that runs the kit refuses: a setting that does
   // not parse stops the demo before any work (see address.js).
   hostRefusals();
+  // A selector to hide that could reach past its own rule stops the demo
+  // before any work too (see steps.js).
+  for (const selector of hide) {
+    const refused = hideRefusal(String(selector).trim(), "hide takes CSS selectors");
+    if (refused) throw new Error(refused);
+  }
   // The programs an earlier run in this process found are found again.
   programs.forget();
   // Read without holding the process: a named pipe that nothing writes to
@@ -550,6 +566,7 @@ async function makeDemo(rawUrl, options = {}) {
     }
     if (!take.frames.length) throw new Error("No frame was recorded.");
     notes.push(...refusalNotes(take));
+    for (const selector of recorder.unread) notes.push(unreadNote(selector));
     if (take.slow) notes.push("A page drew slowly in this browser, so it was recorded in slow motion and played back at speed; its own animations look right, scripted ones may run fast.");
 
     // The video.
