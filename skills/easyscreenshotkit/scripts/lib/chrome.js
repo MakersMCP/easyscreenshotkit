@@ -747,7 +747,7 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
     });
     // It preloads nothing, as its profile asks (see above): one that says
     // it does, or cannot say, is not used.
-    preloading = await preloadingSaid(browser, left);
+    preloading = await preloadingSaid(browser, left, profile);
     if (preloading) throw new Error(preloading);
     // Read now: a browser that is quitting removes the link to it before
     // the folder, and a stop can land in between. In a profile that is the
@@ -813,10 +813,15 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
 // gives it that one's. A browser that answers Preload.enable with an error,
 // or tells no state, cannot be told to preload nothing either. left: the
 // time the start has left; a call with no answer in it fails as start()'s
-// others do.
+// others do. profile: the one the run made for it. On Linux one that
+// preloads is told apart from one that did not use that profile at all,
+// as a browser installed as a snap or a Flatpak does, which sees a temp
+// folder of its own where the profile's path names another folder, and as
+// one does that a program starts with a profile of its own: told to lift a
+// policy, the user of a snap had nothing to lift.
 const AHEAD = "so it was not used: a page could have it open an address the run does not open, before the run had judged that address.";
 
-async function preloadingSaid(browser, left) {
+async function preloadingSaid(browser, left, profile) {
   const { targetInfos = [] } = await browser.send("Target.getTargets", {}, left(), { fixed: true });
   const first = targetInfos.find((info) => info.type === "page");
   const made = !first;
@@ -840,14 +845,25 @@ async function preloadingSaid(browser, left) {
     // after.
     for (let i = 0; i < 10 && !state; i++) await sleep(50);
     if (!state) return `does not say whether it preloads pages, ${AHEAD} Point CHROME_PATH at another browser.`;
-    if (state.disabledByPreference !== true) return `preloads pages though its profile asks it not to, as a Chrome policy (NetworkPredictionOptions) or a program that starts it with a profile of its own can make it, ${AHEAD} Lift that policy, or point CHROME_PATH at the browser's own program.`;
-    return "";
+    if (state.disabledByPreference === true) return "";
+    if (process.platform === "linux" && !usesProfile(profile)) return `did not use the profile the run made for it in the temp folder, ${os.tmpdir()}, and preloads pages, ${AHEAD} A browser installed as a snap or a Flatpak sees a temp folder of its own, and a program that starts the browser can give it a profile of its own: point CHROME_PATH at a browser from its own package, as Google Chrome's, or at the browser's own program, or point TMPDIR at a folder that browser can reach.`;
+    return `preloads pages though its profile asks it not to, as a Chrome policy (NetworkPredictionOptions) or a program that starts it with a profile of its own can make it, ${AHEAD} Lift that policy, or point CHROME_PATH at the browser's own program.`;
   } finally {
     // A tab made for it is gone before the run opens its own; the first tab
     // is let go of.
     if (tab) tab.close();
     if (made) await browser.send("Target.closeTarget", { targetId }, Math.min(5_000, left()), { fixed: true, watched: false }).catch(() => {});
     else if (sessionId) browser.send("Target.detachFromTarget", { sessionId }, 5_000, { fixed: true, watched: false }).catch(() => {});
+  }
+}
+
+// Whether a browser that answers uses the profile the run made for it: on
+// Linux it holds its lock there from its start, a link named SingletonLock.
+function usesProfile(profile) {
+  try {
+    return fs.lstatSync(path.join(profile, "SingletonLock")).isSymbolicLink();
+  } catch {
+    return false;
   }
 }
 

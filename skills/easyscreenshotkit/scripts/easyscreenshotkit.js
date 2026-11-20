@@ -142,8 +142,9 @@ Needs Node 22 or newer and Chrome, Chromium, Edge or Brave. Set CHROME_PATH
 to pick the browser, as a path or a name on PATH; one the system cannot
 start stops the run before any work, with what is wrong with it, and so
 does one that preloads pages though its profile asks it not to, as a
-Chrome policy can make it. The run drives it over a pipe, so it opens no
-port.`;
+Chrome policy can make it, or that does not use that profile, as a snap's
+or a Flatpak's can, which sees a temp folder of its own. The run drives it
+over a pipe, so it opens no port.`;
 
 function parse(argv) {
   const options = { pages: 5, extra: [], hide: [], sizes: "desktop,mobile,full", theme: "light", lang: "", reducedMotion: false, clean: true, pwa: false, pwaCheck: "", json: false, timeout: 300 };

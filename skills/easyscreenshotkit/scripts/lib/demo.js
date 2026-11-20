@@ -152,8 +152,9 @@ Needs Node 22 or newer, Chrome, Chromium, Edge or Brave, and ffmpeg. Set
 CHROME_PATH or FFMPEG_PATH to pick them, as a path or a name on PATH; one
 the system cannot start stops the demo before any work, with what is wrong
 with it, and so does a browser that preloads pages though its profile asks
-it not to, as a Chrome policy can make it. The demo drives the browser over
-a pipe, so it opens no port.`;
+it not to, as a Chrome policy can make it, or that does not use that
+profile, as a snap's or a Flatpak's can, which sees a temp folder of its
+own. The demo drives the browser over a pipe, so it opens no port.`;
 
 function parseDemo(argv) {
   const options = { pages: 4, extra: [], hide: [], zoom: 1.5, frame: true, background: "", fps: 30, theme: "light", lang: "", reducedMotion: false, clean: true, gif: true, json: false, timeout: 900 };

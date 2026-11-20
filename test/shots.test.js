@@ -2261,12 +2261,16 @@ test("a browser that starts gets up to a minute to answer, as the run's time all
 // refuse downloads, as a browser too busy to take it can (mum), one that
 // answers each call 1.5 s after it came, as a browser on a busy machine can
 // (slow), one that answers every call but never opens a window
-// (windowless), and one that stops answering once it has opened a window,
-// as a browser stopped right then does (hushed). Each writes <mode>.json in
-// root, with its pid, its profile, what of its environment leads to the
-// desktop and the switches it was started with, and when root holds
-// wayland-client.py, what that Wayland client said when the stand-in started
-// it, as the browser starts a program.
+// (windowless), one that stops answering once it has opened a window, as a
+// browser stopped right then does (hushed), one that says it preloads pages,
+// as a Chrome policy has it do (preloading), one that does too and uses a
+// profile other than the one the kit made, as a snap's does (elsewhere),
+// and ones that cannot say or do not say whether they preload (unsaid,
+// untold). Each but elsewhere holds its lock in its profile, as Chrome does
+// on Linux. Each writes <mode>.json in root, with its pid, its profile, what
+// of its environment leads to the desktop and the switches it was started
+// with, and when root holds wayland-client.py, what that Wayland client said
+// when the stand-in started it, as the browser starts a program.
 // Returns the wrapper that starts a mode, for CHROME_PATH.
 function standIns(root) {
   const script = path.join(root, "browser.js");
@@ -2280,6 +2284,9 @@ const env = Object.fromEntries(["DISPLAY", "WAYLAND_DISPLAY", "WAYLAND_SOCKET", 
 const client = path.join(${JSON.stringify(root)}, "wayland-client.py");
 const wayland = fs.existsSync(client) ? String(spawnSync("python3", ["-I", client], { encoding: "utf8", timeout: 10000 }).stdout).trim() : null;
 fs.writeFileSync(path.join(${JSON.stringify(root)}, mode + ".json"), JSON.stringify({ pid: process.pid, profile, env, wayland, args }));
+// A browser holds its lock in the profile it uses, as Chrome does on Linux;
+// one in mode elsewhere uses another profile, as a snap's does.
+if (mode !== "elsewhere") try { fs.symlinkSync("stand-in-" + process.pid, path.join(profile, "SingletonLock")); } catch {}
 const output = fs.createWriteStream(null, { fd: 4 });
 output.on("error", () => {});
 const answer = (message) => output.write(JSON.stringify(message) + "\\0");
@@ -2303,7 +2310,7 @@ const take = (text) => {
     // A browser tells the state of its preloading as it takes Preload.enable,
     // before it answers: off, as the kit's profile asks, but for one that a
     // policy keeps preloading.
-    if (method === "Preload.enable" && !refuses && mode !== "untold") answer({ method: "Preload.preloadEnabledStateUpdated", sessionId, params: { disabledByPreference: mode !== "preloading", disabledByDataSaver: false, disabledByBatterySaver: false, disabledByHoldbackPrefetchSpeculationRules: false, disabledByHoldbackPrerenderSpeculationRules: false } });
+    if (method === "Preload.enable" && !refuses && mode !== "untold") answer({ method: "Preload.preloadEnabledStateUpdated", sessionId, params: { disabledByPreference: mode !== "preloading" && mode !== "elsewhere", disabledByDataSaver: false, disabledByBatterySaver: false, disabledByHoldbackPrefetchSpeculationRules: false, disabledByHoldbackPrerenderSpeculationRules: false } });
     answer(reply);
     if (method === "Browser.close") setTimeout(() => process.exit(0), 50);
   };
@@ -3903,10 +3910,11 @@ test("a page's speculation rules take the browser to no address the run does not
 // says it does, as a Chrome policy can keep it doing whatever its profile
 // says, or one started with a profile of a program's own, is not used, and
 // neither is one that cannot say. The profile the kit gives it asks it to
-// preload nothing.
+// preload nothing. On Linux one that did not use that profile, as a snap's
+// does, is said so, where it was told to lift a policy it did not have.
 test("a browser that preloads pages, or does not say whether it does, is not used", { skip: (process.platform === "win32" && "the stand-in browsers are shell scripts") || noTemp, timeout: 120_000 }, async () => {
   const root = tempDir();
-  const modes = ["preloading", "unsaid", "untold"];
+  const modes = ["preloading", "elsewhere", "unsaid", "untold"];
   const wrapper = standIns(root);
   const before = process.env.CHROME_PATH;
   const ahead = "so it was not used: a page could have it open an address the run does not open, before the run had judged that address.";
@@ -3918,8 +3926,10 @@ test("a browser that preloads pages, or does not say whether it does, is not use
         await chrome.close();
         assert.fail(`${mode}: the stand-in was taken for a browser`);
       }, (e) => e);
+      const policy = (name) => `${name} preloads pages though its profile asks it not to, as a Chrome policy (NetworkPredictionOptions) or a program that starts it with a profile of its own can make it, ${ahead} Lift that policy, or point CHROME_PATH at the browser's own program.`;
       const said = {
-        preloading: `preloading preloads pages though its profile asks it not to, as a Chrome policy (NetworkPredictionOptions) or a program that starts it with a profile of its own can make it, ${ahead} Lift that policy, or point CHROME_PATH at the browser's own program.`,
+        preloading: policy("preloading"),
+        elsewhere: process.platform === "linux" ? `elsewhere did not use the profile the run made for it in the temp folder, ${os.tmpdir()}, and preloads pages, ${ahead} A browser installed as a snap or a Flatpak sees a temp folder of its own, and a program that starts the browser can give it a profile of its own: point CHROME_PATH at a browser from its own package, as Google Chrome's, or at the browser's own program, or point TMPDIR at a folder that browser can reach.` : policy("elsewhere"),
         unsaid: `unsaid cannot say whether it preloads pages (Not allowed here), ${ahead} Point CHROME_PATH at another browser.`,
         untold: `untold does not say whether it preloads pages, ${ahead} Point CHROME_PATH at another browser.`,
       }[mode];
@@ -3946,7 +3956,9 @@ test("a browser that preloads pages, or does not say whether it does, is not use
 
 // The same of a real browser: the kit's profile asks it to preload nothing,
 // and a program that starts it with that setting taken out of the profile
-// has it preload, which the browser says, and it is not used.
+// has it preload, which the browser says, and it is not used; so does one
+// that starts it with a profile of its own, which on Linux is said to be
+// one that did not use the profile the run made.
 test("the browser's profile asks it to preload nothing, and a browser started with that taken out is not used", { skip: noBrowser || (process.platform === "win32" && "the wrappers are shell scripts"), timeout: 120_000 }, async () => {
   const root = tempDir();
   const kept = path.join(root, "preferences.json");
@@ -3956,6 +3968,10 @@ test("the browser's profile asks it to preload nothing, and a browser started wi
   fs.writeFileSync(reading, `#!/bin/sh\n${profileOf}\ncat "$d/Default/Preferences" > ${sh(kept)}\nexec ${sh(findChrome())} "$@"\n`, { mode: 0o755 });
   const emptied = path.join(root, "emptied");
   fs.writeFileSync(emptied, `#!/bin/sh\n${profileOf}\nprintf '{}' > "$d/Default/Preferences"\nexec ${sh(findChrome())} "$@"\n`, { mode: 0o755 });
+  // A profile of the wrapper's own, as the last --user-data-dir, which the
+  // browser takes.
+  const own = path.join(root, "own");
+  fs.writeFileSync(own, `#!/bin/sh\nexec ${sh(findChrome())} "$@" --user-data-dir=${sh(path.join(root, "own-profile"))}\n`, { mode: 0o755 });
   const before = process.env.CHROME_PATH;
   try {
     setTimeLimit(60_000);
@@ -3965,6 +3981,10 @@ test("the browser's profile asks it to preload nothing, and a browser started wi
     assert.deepEqual(JSON.parse(fs.readFileSync(kept, "utf8")).net, { network_prediction_options: 2 });
     process.env.CHROME_PATH = emptied;
     await assert.rejects(launch(), { message: "emptied preloads pages though its profile asks it not to, as a Chrome policy (NetworkPredictionOptions) or a program that starts it with a profile of its own can make it, so it was not used: a page could have it open an address the run does not open, before the run had judged that address. Lift that policy, or point CHROME_PATH at the browser's own program." });
+    if (process.platform === "linux") {
+      process.env.CHROME_PATH = own;
+      await assert.rejects(launch(), { message: `own did not use the profile the run made for it in the temp folder, ${os.tmpdir()}, and preloads pages, so it was not used: a page could have it open an address the run does not open, before the run had judged that address. A browser installed as a snap or a Flatpak sees a temp folder of its own, and a program that starts the browser can give it a profile of its own: point CHROME_PATH at a browser from its own package, as Google Chrome's, or at the browser's own program, or point TMPDIR at a folder that browser can reach.` });
+    }
   } finally {
     if (before === undefined) delete process.env.CHROME_PATH;
     else process.env.CHROME_PATH = before;
