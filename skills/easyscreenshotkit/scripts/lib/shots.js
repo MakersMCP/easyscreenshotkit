@@ -1576,7 +1576,20 @@ async function takeShots(rawUrl, options = {}) {
         if (got.rejected) rejected.push({ url: candidate.url, reason: got.rejected });
         else keep(page, got);
       }
-      leftover = queue.slice(0, 20).map(({ url, kind, score, why }) => ({ url, kind, score, why }));
+      // The pages it could take besides, listed for --page, are ones the
+      // run's rule opens: each is judged first, and one it refuses, as a
+      // menu's link to another port of the site's own host or, from a site
+      // on this machine, to another program of it, is listed with the pages
+      // left out, with the reason, as when the tour opens one; an address
+      // only the sitemap names is not, as a link left out there is not
+      // (see rankLinks()). Listed with the pages it could take, such a link
+      // had an agent run again with it as --page, which the run refused.
+      for (const { url, kind, score, why, where } of queue) {
+        if (leftover.length >= 20) break;
+        const barred = await chrome.guard.refuses(url);
+        if (!barred) leftover.push({ url, kind, score, why });
+        else if (where !== "sitemap") rejected.push({ url, reason: barred });
+      }
       // The views of an app that the home page, the address given and each
       // --page link to by #route, and those the sitemap lists: the tour
       // does not follow them, so they are listed for --page. A page the

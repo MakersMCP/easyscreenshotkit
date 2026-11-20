@@ -4133,6 +4133,75 @@ test("a home page that moves on to another site makes that site the tour's, in t
   }
 }));
 
+// The pages a run could take besides, which SCREENSHOTS.md and
+// manifest.json list for --page, are judged by the run's rule first: a
+// menu's link to another port of the site's own host on the public
+// internet, and from a site on this machine one to another program of it,
+// are listed with the pages left out, with the reason, as when the tour
+// opens one; one only the sitemap names is not listed at all, as a page
+// left out there is not. Listed with the pages it could take, an agent ran
+// again with such a page as --page, which the run then refused. Here the
+// site on the public internet leads the browser and the kit's own requests
+// to a server of this machine, and the other program is a server that
+// notes what it is asked.
+test("the pages a run could take besides are ones its rule opens: a link it refuses is listed as left out, with the reason", { skip: noBrowser || (process.platform === "win32" && "the wrapper is a shell script"), timeout: 200_000 }, () => withNames({ "public.example": "93.184.215.14" }, async () => {
+  const seen = [];
+  const other = await serve((req, res) => {
+    seen.push(req.url);
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Inside", "<h1>Inside</h1>"));
+  });
+  const otherPort = new URL(other.origin).port;
+  const html = { "Content-Type": "text/html; charset=utf-8" };
+  const { server, origin } = await serve((req, res) => {
+    const host = String(req.headers.host || "").replace(/:\d+$/, "");
+    const away = host === "public.example" ? "http://public.example:8443/x" : `http://127.0.0.1:${otherPort}/other`;
+    if (req.url === "/") return res.writeHead(200, html).end(page("Acme | Tools for teams", `<header><nav><a href="/pricing">Pricing</a> <a href="${away}">Elsewhere</a></nav></header><h1>Acme</h1><div style="height:1400px"></div>`));
+    if (req.url === "/pricing") return res.writeHead(200, html).end(page("Pricing | Acme", "<h1>Pricing</h1><p>The plans of Acme.</p><div style=\"height:1400px\"></div>"));
+    if (host === "public.example" && req.url === "/robots.txt") return res.end("Sitemap: http://public.example/sitemap.xml\n");
+    if (host === "public.example" && req.url === "/sitemap.xml") return res.end("<urlset><url><loc>http://public.example:8443/docs</loc></url></urlset>");
+    res.writeHead(404).end("not found");
+  });
+  const port = new URL(origin).port;
+  const http = require("node:http");
+  const get = http.get;
+  // The kit's own requests for the site's name go to the site's server.
+  http.get = (url, options, done) => {
+    const where = new URL(String(url));
+    if (where.hostname !== "public.example") return get(url, options, done);
+    const { lookup, ...rest } = options || {};
+    return get(`http://127.0.0.1:${port}${where.pathname}${where.search}`, { ...rest, headers: { ...((rest && rest.headers) || {}), Host: "public.example" } }, done);
+  };
+  const root = tempDir();
+  const browser = path.join(root, "mapped-chrome");
+  fs.writeFileSync(browser, `#!/bin/sh\nexec ${sh(findChrome())} --host-resolver-rules="MAP public.example 127.0.0.1:${port}" ${sh(publicAt(port))} "$@"\n`, { mode: 0o755 });
+  const saved = process.env.CHROME_PATH;
+  process.env.CHROME_PATH = browser;
+  try {
+    const cases = [
+      ["http://public.example/", "http://public.example:8443/x", "on port 8443, not 80 or 443, and not on the scheme, host and port given"],
+      [`${origin}/`, `http://127.0.0.1:${otherPort}/other`, "not on the public internet, and not on the host and port given"],
+    ];
+    for (const [i, [given, away, reason]] of cases.entries()) {
+      const dir = path.join(root, `shots-${i}`);
+      const { manifest } = await takeShots(given, { dir, pages: 2, sizes: "desktop", timeLimit: 120_000 });
+      assert.deepEqual(manifest.pages.map((p) => p.slug), ["home", "pricing"]);
+      assert.deepEqual(manifest.candidates.map((c) => c.url), []);
+      assert.deepEqual(manifest.skipped.map((skip) => [skip.url, skip.reason]), [[away, reason]]);
+      const md = fs.readFileSync(path.join(dir, "SCREENSHOTS.md"), "utf8");
+      assert.ok(md.includes(`## Left out\n\n- ${away}: ${reason}\n`), md);
+      assert.doesNotMatch(md, /Other pages it could take/);
+    }
+    assert.deepEqual(seen, []);
+  } finally {
+    http.get = get;
+    if (saved === undefined) delete process.env.CHROME_PATH;
+    else process.env.CHROME_PATH = saved;
+    server.close();
+    other.server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}));
+
 // An address written without a scheme, as localhost:3000, is read as
 // https://, and a site on this machine that serves plain http failed it in
 // the browser's words alone, net::ERR_SSL_PROTOCOL_ERROR: the run says to
