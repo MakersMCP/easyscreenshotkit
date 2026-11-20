@@ -316,6 +316,18 @@ const LOOPBACK = [
   { address: "::1", family: 6 },
 ];
 
+// A host as a URL gives it, as its addresses are asked for and kept (see
+// addressesOf()): without the brackets of an IPv6 address and the one dot
+// that can end a name. standing(), lookupWhy() and addressesFor() read it
+// so, and the lookup each request of the kit's connects with hands
+// addressesFor() the name as the request asks for it (see lookupFor()), so
+// a request goes to the answer its host was judged by. When that lookup
+// took a dot off before addressesFor() took another, a host written with
+// two dots at its end, as cdn.evil.example.., was judged by the answer for
+// cdn.evil.example., and its request went to a second answer of the DNS,
+// for cdn.evil.example, which a site's DNS server gave as 127.0.0.1.
+const lookupKey = (hostname) => String(hostname || "").replace(/^\[|\]$/g, "").replace(/\.$/, "");
+
 // What a host name resolves to here: {list} of {address, family}, or
 // {error}. Each name is asked once in a run, for 10 s at most.
 const LOOKUP_MS = 10_000;
@@ -341,7 +353,7 @@ function addressesOf(host) {
 // looked up here, "" for one on the public internet. A failed lookup is
 // kept as unknown for the run, never as public.
 async function standing(hostname) {
-  const host = String(hostname || "").replace(/^\[|\]$/g, "").replace(/\.$/, "");
+  const host = lookupKey(hostname);
   if (!host) return "inside";
   if (net.isIP(host)) return notPublicIp(host) ? "inside" : "";
   if (localName(host)) return "inside";
@@ -356,8 +368,7 @@ async function hostNotPublic(hostname) {
 
 // Why a name could not be looked up, in a few words.
 async function lookupWhy(hostname) {
-  const host = String(hostname || "").replace(/\.$/, "");
-  const { error } = await addressesOf(host);
+  const { error } = await addressesOf(lookupKey(hostname));
   const code = (error && error.code) || "";
   if (code === "ENOTFOUND" || code === "ENODATA" || !error) return "no such name";
   if (code === "ETIMEOUT") return `no answer in ${LOOKUP_MS / 1000} s`;
@@ -380,7 +391,7 @@ const hostOf = (url) => url.hostname.replace(/\.$/, "");
 // itself, the browser's own for a name under localhost, or what the name
 // resolves to (see addressesOf). {list} of {address, family}, or {error}.
 function addressesFor(hostname) {
-  const host = String(hostname || "").replace(/^\[|\]$/g, "").replace(/\.$/, "");
+  const host = lookupKey(hostname);
   const family = net.isIP(bareIp(host));
   if (family) return Promise.resolve({ list: [{ address: bareIp(host), family }] });
   if (localName(host)) return Promise.resolve({ list: LOOPBACK });
@@ -477,20 +488,30 @@ async function guardFor(start) {
     // For a request the kit makes itself, to an address refuses() took: the
     // lookup that connects it to the addresses refuses() judged, the answer
     // the name was asked for once (see addressesOf()), and not to a second
-    // answer of the DNS; undefined where any address goes. refuses() has
-    // already refused a name with an address that is not public, or that
-    // MAKERSMCP_REFUSE_ADDRESSES names, from that same answer, so the lookup
-    // judges none again.
+    // answer of the DNS; undefined where any address goes. It reads the
+    // host as refuses() does (see lookupKey()), and refuses again an answer
+    // that is not public, away from the host and port given, or that
+    // MAKERSMCP_REFUSE_ADDRESSES names, failing the request before it
+    // connects, with the reason as refuses() gives it. refuses() refuses
+    // such a name first, from the same answer; with this refusal taken out,
+    // a host the lookup read otherwise than refuses(), one written with two
+    // dots at its end, had the kit's request connect to 127.0.0.1.
     lookupFor(raw) {
       const url = parse(raw);
       if (!url || (given(url) && !refusals.size)) return undefined;
       return (hostname, options, callback) => {
-        const host = String(hostname).replace(/\.$/, "");
-        addressesFor(host).then(({ list, error }) => {
+        const refuse = (why) => callback(Object.assign(new Error(`${hostname} is ${why}`), { code: "ENOTPUBLIC", hostname, refused: `it is ${why}`, why, at: url.href }));
+        // The host and port given on this machine or its network, asked for
+        // by its own name: every address of it goes, as the run opens it.
+        const inside = given(url) && lookupKey(hostname) === lookupKey(url.hostname);
+        addressesFor(hostname).then(({ list, error }) => {
           if (error) return callback(error);
+          const hit = list.find((answer) => refusals.has(answer.address));
+          if (hit) return refuse(refusedHere(hit.address));
+          if (!inside && list.some((answer) => notPublicIp(answer.address))) return refuse(local ? NOT_GIVEN : NOT_PUBLIC);
           const family = options && options.family;
           const fit = family ? list.filter((answer) => answer.family === family) : list;
-          if (!fit.length) return callback(Object.assign(new Error(`${host} has no address`), { code: "ENOTFOUND", hostname: host }));
+          if (!fit.length) return callback(Object.assign(new Error(`${hostname} has no address`), { code: "ENOTFOUND", hostname }));
           if (options && options.all) callback(null, fit);
           else callback(null, fit[0].address, fit[0].family);
         });

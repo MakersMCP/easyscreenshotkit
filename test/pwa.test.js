@@ -14,7 +14,7 @@ const { imageInfo, checkScreenshots, labelOf, planPwa, manifestLink, checkManife
 const { parseSizes, addPwaShots, openShots } = require("../skills/easyscreenshotkit/scripts/lib/shots");
 const { parse } = require("../skills/easyscreenshotkit/scripts/easyscreenshotkit");
 const { guardFor } = require("../skills/easyscreenshotkit/scripts/lib/address");
-const { pngOf, serve } = require("./helpers");
+const { pngOf, serve, withRebinding } = require("./helpers");
 
 const CLI = path.resolve(__dirname, "../skills/easyscreenshotkit/scripts/easyscreenshotkit.js");
 
@@ -433,6 +433,32 @@ test("the screenshots of a manifest are read at the address their host was judge
   } finally {
     dns.lookup = lookup;
     https.get = saved;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// The same for a host written with two dots at its end, which the rule
+// reads with one dot taken off, as shots.example.: the request's lookup asks
+// for that name too, and the DNS is asked once. The lookup took off a
+// second dot, asked the DNS again for shots.example, and the request went
+// to that later answer, 127.0.0.1. From a manifest file, and from a
+// manifest on the web, here on a server of this machine given to the check.
+test("a screenshot on a host written with two dots at its end is read at the address its host was judged by", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-pwa-"));
+  const shot = (host) => ({ src: `http://${host}../s/wide.png`, sizes: "1920x1080", type: "image/png", form_factor: "wide" });
+  const { server, origin } = await serve((req, res) => res.writeHead(200, { "Content-Type": "application/manifest+json" }).end(JSON.stringify({ name: "Acme", screenshots: [shot("two-dots-web.example")] })));
+  try {
+    await withRebinding(["two-dots-file.example", "two-dots-web.example"], async ({ reached, asked }) => {
+      const file = path.join(dir, "manifest.json");
+      fs.writeFileSync(file, JSON.stringify({ name: "Acme", screenshots: [shot("two-dots-file.example")] }));
+      const fromFile = await checkManifest({ file });
+      const fromWeb = await checkManifest({ url: `${origin}/manifest.json` });
+      assert.deepEqual([fromFile, fromWeb].map((report) => report.screenshots.map((one) => one.unread)), [[""], [""]]);
+      assert.deepEqual(await reached(), ["93.184.215.14", "93.184.215.14"]);
+      assert.deepEqual(asked(), ["two-dots-file.example.", "two-dots-web.example."]);
+    });
+  } finally {
+    server.close();
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });

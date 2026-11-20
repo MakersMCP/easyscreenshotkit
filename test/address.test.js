@@ -339,6 +339,33 @@ test("a request the kit makes itself goes to the address the name was judged by,
   }
 });
 
+// The lookup a request of the kit's connects with refuses again what the
+// rule refuses of the answer it hands back, before a connection: an address
+// that is not public, away from the host and port given on this machine,
+// and one MAKERSMCP_REFUSE_ADDRESSES names, with the rule's reason.
+// refuses() refuses such a name first, from the same answer, so a request
+// meets this only when it asks for a name in another spelling than
+// refuses() read, as one written with two dots at its end did; here the
+// lookup is asked for other names directly.
+test("the lookup a request of the kit's connects with hands back no address the rule refuses", () =>
+  withNames({ "site.example": "93.184.215.14", "inside.example": ["93.184.215.15", "127.0.0.1"], "refused.example": "93.184.215.99" }, async () => {
+    const ask = (resolve, host) => new Promise((done) => resolve(host, { all: true }, (err, list) => done(err ? [err.code, err.refused, err.at] : list.map((one) => one.address))));
+    await withSetting("93.184.215.99", async () => {
+      const guard = await guardFor("https://site.example/");
+      const resolve = guard.lookupFor("https://site.example/sitemap.xml");
+      assert.deepEqual(await ask(resolve, "site.example"), ["93.184.215.14"]);
+      assert.deepEqual(await ask(resolve, "inside.example"), ["ENOTPUBLIC", `it is ${NOT_PUBLIC}`, "https://site.example/sitemap.xml"]);
+      assert.deepEqual(await ask(resolve, "refused.example"), ["ENOTPUBLIC", `it is ${here("93.184.215.99")}`, "https://site.example/sitemap.xml"]);
+      // From the host and port given on this machine: its own name hands
+      // back its addresses, and any other name that leads to this machine
+      // is not on the host and port given.
+      const own = (await guardFor("http://localhost:3000/")).lookupFor("http://localhost:3000/robots.txt");
+      assert.deepEqual(await ask(own, "localhost"), ["127.0.0.1", "::1"]);
+      assert.deepEqual(await ask(own, "inside.example"), ["ENOTPUBLIC", `it is ${NOT_GIVEN}`, "http://localhost:3000/robots.txt"]);
+      assert.deepEqual(await ask(own, "refused.example"), ["ENOTPUBLIC", `it is ${here("93.184.215.99")}`, "http://localhost:3000/robots.txt"]);
+    });
+  }));
+
 // A name that cannot be looked up here, as the DNS fails or answers late,
 // is refused, and stays refused for the run: it counted as public, was
 // kept so, and was left to the browser's own lookup, which the same DNS

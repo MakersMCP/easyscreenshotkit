@@ -7,7 +7,7 @@ const assert = require("node:assert/strict");
 const zlib = require("node:zlib");
 const test = require("node:test");
 const pick = require("../skills/easyscreenshotkit/scripts/lib/pick");
-const { serve } = require("./helpers");
+const { serve, withRebinding } = require("./helpers");
 
 const HOME = "https://acme.com/";
 const page = (path) => new URL(path, HOME);
@@ -283,6 +283,31 @@ test("the site index reads robots.txt and a gzipped sitemap index, and stops at 
     assert.equal(index.robots.rules[0].path, "/secret");
     assert.deepEqual(index.urls.slice(0, 2), [`${origin}/pricing`, `${origin}/features`]);
     assert.equal(index.urls.length, 500);
+  } finally {
+    server.close();
+  }
+});
+
+// A sitemap robots.txt names is read at the address its host was judged
+// by, a host written with two dots at its end too, which the rule reads
+// with one dot taken off: the request's lookup asks for that name too, and
+// the DNS is asked once. It took off a second dot, asked the DNS again, and
+// the request went to that later answer, 127.0.0.1 (see helpers.js
+// withRebinding). The site is a server of this machine, given as the
+// address.
+test("a sitemap robots.txt names on a host written with two dots at its end is read at the address its host was judged by", async () => {
+  const { server, origin } = await serve((req, res) => {
+    if (req.url === "/robots.txt") return res.end("User-agent: *\nSitemap: http://two-dots-map.example../sitemap.xml\n");
+    res.statusCode = 404;
+    res.end();
+  });
+  try {
+    await withRebinding(["two-dots-map.example"], async ({ reached, asked }) => {
+      const index = await pick.readSiteIndex(origin);
+      assert.deepEqual(index.urls, []);
+      assert.deepEqual(await reached(), ["93.184.215.14"]);
+      assert.deepEqual(asked(), ["two-dots-map.example."]);
+    });
   } finally {
     server.close();
   }

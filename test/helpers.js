@@ -304,4 +304,47 @@ function publicAt(...servers) {
   return `--ip-address-space-overrides=${ports.map((port) => `127.0.0.1:${port}=public`).join(",")}`;
 }
 
-module.exports = { readPng, pngOf, serve, near, descendants, relayBrowser, runUntilOver, tempProblem, sh, publicAt };
+// A DNS server of a site's that answers the first question for each name of
+// `names` with a public address, 93.184.215.14, and each later one with
+// 127.0.0.1, as such a server can. A name is the same to it with the dots
+// at its end or without, as the system's lookup asks it for cdn.example.
+// and for cdn.example alike. Each request of the kit's to such a name stops
+// before it connects, and reached() resolves to the addresses the lookup it
+// was given hands back, the ones it would connect to; asked(): the names
+// the DNS was asked for. Other names are looked up, and requests to other
+// hosts sent, as they would be.
+async function withRebinding(names, body) {
+  const dns = require("node:dns");
+  const https = require("node:https");
+  const bare = (host) => String(host).replace(/\.+$/, "").toLowerCase();
+  const held = (host) => names.includes(bare(host));
+  const lookup = dns.lookup;
+  const asked = [];
+  dns.lookup = (host, options, callback) => {
+    if (typeof options === "function") [options, callback] = [{}, options];
+    if (!held(host)) return lookup(host, options, callback);
+    const before = asked.filter((one) => bare(one) === bare(host)).length;
+    asked.push(host);
+    const address = before ? "127.0.0.1" : "93.184.215.14";
+    process.nextTick(callback, null, options && options.all ? [{ address, family: 4 }] : address, 4);
+  };
+  const reached = [];
+  const saved = [http, https].map((client) => client.get);
+  [http, https].forEach((client, i) => {
+    client.get = (url, options, ...rest) => {
+      const at = url instanceof URL ? url : new URL(String(url));
+      if (!held(at.hostname)) return saved[i].call(client, url, options, ...rest);
+      const resolve = (options && options.lookup) || dns.lookup;
+      reached.push(new Promise((done) => resolve(at.hostname, { all: true }, (err, list) => done(err ? err.code : list.map((one) => one.address).join(",")))));
+      throw new Error(`no request leaves this machine in a test: ${at.href}`);
+    };
+  });
+  try {
+    return await body({ reached: () => Promise.all(reached), asked: () => [...asked] });
+  } finally {
+    dns.lookup = lookup;
+    [http, https].forEach((client, i) => (client.get = saved[i]));
+  }
+}
+
+module.exports = { readPng, pngOf, serve, near, descendants, relayBrowser, runUntilOver, tempProblem, sh, publicAt, withRebinding };
