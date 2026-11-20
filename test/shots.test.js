@@ -21,6 +21,7 @@ const { LOCATE, Recorder } = require("../skills/easyscreenshotkit/scripts/lib/re
 const { pickPages } = require("../skills/easyscreenshotkit/scripts/lib/tour");
 const { pngText } = require("../skills/easyscreenshotkit/scripts/lib/png");
 const { clean } = require("../skills/easyscreenshotkit/scripts/lib/clean");
+const { hideProblem } = require("../skills/easyscreenshotkit/scripts/lib/steps");
 const programs = require("../skills/easyscreenshotkit/scripts/lib/programs");
 const { readPng, pngOf, serve, near, descendants, relayBrowser, runUntilOver, tempProblem, sh, publicAt } = require("./helpers");
 const { noBus, privateBus, fakePortal } = require("./bus");
@@ -507,8 +508,19 @@ test("each selector to hide is a rule of its own in the page, and one that could
       // that names a brace: each is a display:none rule of its own and
       // nothing else, as insertRule reads one rule or throws.
       const taken = ["a\\{", '[title="}{;@"]', ':is(.x, [data-y="/*"])', "& .z", "a\\7b b"];
-      const done = await clean(tab, { hide: [...pair, ".promo", ...taken], viewport: { width: 1600, height: 900 }, auto: false });
-      assert.deepEqual(done.badSelectors, [pair[0]]);
+      // And ones the run's check passes, as their quote stands inside
+      // url(, where CSS opens no string, so CSS reads a block, an @import,
+      // a ; or a comment there: the browser does not read them as
+      // selectors, and they add no rule.
+      const read = [
+        `*:is(url(a"b)){background:url(${other.origin}/brace)} *:is("))`,
+        `*:is(url(a"b));@import url(${other.origin}/import.css);*:is("))`,
+        '*:is(url(a"b))/* a comment */*:is("))',
+        `*:is(\\75 rl(a"b)){background:url(${other.origin}/escaped)} *:is("))`,
+      ];
+      for (const selector of read) assert.equal(hideProblem(selector), "", selector);
+      const done = await clean(tab, { hide: [...pair, ".promo", ...taken, ...read], viewport: { width: 1600, height: 900 }, auto: false });
+      assert.deepEqual(done.badSelectors, [pair[0], ...read]);
       assert.equal(done.hidden, 1);
       const { result } = await tab.send("Runtime.evaluate", { expression: '[...document.getElementById("easyscreenshotkit-hide").sheet.cssRules].map((rule) => rule.cssText)', returnByValue: true });
       assert.equal(result.value.length, 2 + taken.length, result.value.join("\n"));
