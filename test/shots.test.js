@@ -4193,7 +4193,8 @@ test("the browser's profile asks it to preload nothing, and a browser started wi
   // Each wrapper reads the profile from the browser's command line.
   const profileOf = 'for a in "$@"; do case "$a" in --user-data-dir=*) d="${a#--user-data-dir=}";; esac; done';
   const reading = path.join(root, "reading");
-  fs.writeFileSync(reading, `#!/bin/sh\n${profileOf}\ncat "$d/Default/Preferences" > ${sh(kept)}\nexec ${sh(findChrome())} "$@"\n`, { mode: 0o755 });
+  const keptProfile = path.join(root, "profile.txt");
+  fs.writeFileSync(reading, `#!/bin/sh\n${profileOf}\ncat "$d/Default/Preferences" > ${sh(kept)}\nprintf '%s' "$d" > ${sh(keptProfile)}\nexec ${sh(findChrome())} "$@"\n`, { mode: 0o755 });
   const emptied = path.join(root, "emptied");
   fs.writeFileSync(emptied, `#!/bin/sh\n${profileOf}\nprintf '{}' > "$d/Default/Preferences"\nexec ${sh(findChrome())} "$@"\n`, { mode: 0o755 });
   // A profile of the wrapper's own, as the last --user-data-dir, which the
@@ -4206,7 +4207,10 @@ test("the browser's profile asks it to preload nothing, and a browser started wi
     process.env.CHROME_PATH = reading;
     const chrome = await launch();
     await chrome.close();
-    assert.deepEqual(JSON.parse(fs.readFileSync(kept, "utf8")).net, { network_prediction_options: 2 });
+    const preferences = JSON.parse(fs.readFileSync(kept, "utf8"));
+    assert.deepEqual(preferences.net, { network_prediction_options: 2 });
+    // Its downloads go in a folder of the profile (see downloadsIn()).
+    assert.deepEqual(preferences.download, { default_directory: path.join(fs.readFileSync(keptProfile, "utf8"), "Downloads"), prompt_for_download: false });
     process.env.CHROME_PATH = emptied;
     await assert.rejects(launch(), { message: "emptied preloads pages though its profile asks it not to, as a Chrome policy (NetworkPredictionOptions) or a program that starts it with a profile of its own can make it, so it was not used: a page could have it open an address the run does not open, before the run had judged that address. Lift that policy, or point CHROME_PATH at the browser's own program." });
     if (process.platform === "linux") {

@@ -1027,9 +1027,12 @@ function configIn(profile) {
 // user-dirs.dirs names the profile's Downloads folder, which goes with the
 // profile. That folder links to every other entry of the user's own config
 // folder, so the browser reads the user's fonts and other settings as
-// before; the links go with the profile and what they lead to stays. The
-// profile's Preferences name that folder for downloads too (see start()).
-// Gives what to add to the browser's environment.
+// before; the links go with the profile and what they lead to stays. On
+// Linux that config folder is what moves the file: with the profile's
+// Preferences naming the Downloads folder alone, Chrome still wrote it in
+// the user's. The Preferences name that folder too (see start()), for the
+// other systems, which no run has tried. Gives what to add to the
+// browser's environment.
 function downloadsIn(profile) {
   if (process.platform !== "linux") return {};
   const config = path.resolve(profile, "easyscreenshotkit-config");
