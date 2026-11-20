@@ -131,7 +131,9 @@ the earlier run's files as they were and adds nothing.
 --pwa takes each page's first screen at 1920x1080 and on a phone at
 1080x1920, checks them against Chrome's rules for its richer install
 dialog, and writes pwa/manifest-screenshots.json with the entries for them.
---pwa-check needs no browser; it exits with 1 when something needs fixing.
+--pwa-check needs no browser; it exits with 1 when something needs fixing,
+or when it did not read a screenshot Chrome looks at, as one on another
+port that a manifest file names: the manifest's own address there reads it.
 
 For a demo video of the site instead, run easyscreenshotkit demo <url>; see
 easyscreenshotkit demo --help.

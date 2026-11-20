@@ -22,7 +22,7 @@ const { pickPages } = require("../skills/easyscreenshotkit/scripts/lib/tour");
 const { pngText } = require("../skills/easyscreenshotkit/scripts/lib/png");
 const { clean } = require("../skills/easyscreenshotkit/scripts/lib/clean");
 const programs = require("../skills/easyscreenshotkit/scripts/lib/programs");
-const { readPng, serve, near, descendants, relayBrowser, runUntilOver, tempProblem, sh } = require("./helpers");
+const { readPng, pngOf, serve, near, descendants, relayBrowser, runUntilOver, tempProblem, sh } = require("./helpers");
 const { noBus, privateBus, fakePortal } = require("./bus");
 
 const CLI = path.resolve(__dirname, "../skills/easyscreenshotkit/scripts/easyscreenshotkit.js");
@@ -4805,6 +4805,50 @@ test("--pwa reads no manifest the home page links at an address the run does not
     assert.deepEqual(manifest.pwa.site, { manifest: `${elsewhere}/app.webmanifest`, error: `Could not read ${elsewhere}/app.webmanifest: it is ${NOT_GIVEN}` });
     // What the browser reads for itself, as it reads the manifest a page
     // links, is the browser's; the kit itself read nothing there.
+    assert.deepEqual(seen.filter((request) => /easyscreenshotkit/.test(request.agent)), []);
+  } finally {
+    server.close();
+    other.server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// The site's own manifest that lists a screenshot at such an address: the
+// run does not read that one, and says it cannot tell what Chrome makes of
+// it, where it counted it as one Chrome cannot show.
+test("--pwa says which screenshots of the site's manifest it did not read, and counts them as not known", { skip: noBrowser, timeout: 150_000 }, async () => {
+  const seen = [];
+  const other = await serve((req, res) => {
+    seen.push({ url: req.url, agent: String(req.headers["user-agent"] || "") });
+    res.writeHead(200, { "Content-Type": "image/png" }).end(pngOf(1920, 1080, () => [0, 0, 220]));
+  });
+  const elsewhere = other.origin;
+  const { server, origin } = await serve((req, res) => {
+    if (req.url === "/") return res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Acme | Tools for teams", '<h1>Acme</h1><div style="height:1400px"></div>', { head: '<link rel="manifest" href="/app.webmanifest">' }));
+    if (req.url === "/app.webmanifest") {
+      const screenshots = [
+        { src: `${elsewhere}/wide.png`, sizes: "1920x1080", type: "image/png", form_factor: "wide", label: "Elsewhere" },
+        { src: "/here.png", sizes: "1920x1080", type: "image/png", form_factor: "wide", label: "Here" },
+        { src: `${elsewhere}/narrow.png`, sizes: "1080x1920", type: "image/png", form_factor: "narrow", label: "Phone" },
+      ];
+      return res.writeHead(200, { "Content-Type": "application/manifest+json" }).end(JSON.stringify({ name: "Acme", screenshots }));
+    }
+    if (req.url === "/here.png") return res.writeHead(200, { "Content-Type": "image/png" }).end(pngOf(1920, 1080, () => [0, 160, 0]));
+    res.writeHead(404).end("not found");
+  });
+  const root = tempDir();
+  try {
+    const dir = path.join(root, "shots");
+    const { manifest } = await takeShots(origin, { dir, pages: 1, sizes: "desktop", pwa: true, timeLimit: 130_000 });
+    const { site, note } = manifest.pwa;
+    assert.deepEqual([site.desktop, site.phone], [[2], []]);
+    assert.deepEqual(site.unchecked, [
+      "Phones: the check did not read screenshot 3, so it cannot say whether they get the richer install dialog.",
+      `Screenshots 1 and 3: not read, as it is ${NOT_GIVEN}: the check cannot say whether Chrome shows it.`,
+    ]);
+    assert.ok(!site.problems.some((text) => /plain install dialog/.test(text)), site.problems.join("\n"));
+    assert.equal(note, `The site's manifest, ${origin}/app.webmanifest, lists 3 screenshots already: of those the run read, Chrome shows 1 on desktops and 0 on phones, and SCREENSHOTS.md names the ones it did not read.`);
+    assert.match(fs.readFileSync(path.join(dir, "SCREENSHOTS.md"), "utf8"), /\nNot checked in the site's manifest:\n\n- Phones: the check did not read screenshot 3/);
     assert.deepEqual(seen.filter((request) => /easyscreenshotkit/.test(request.agent)), []);
   } finally {
     server.close();

@@ -1064,7 +1064,7 @@ async function checkSite(href, home, added, guard) {
   } catch (err) {
     return { site: { manifest: href, error: err.message }, note: `The site's manifest could not be checked: ${err.message}` };
   }
-  const site = { manifest: report.manifest, screenshots: report.screenshots.length, desktop: report.desktop, phone: report.phone, problems: report.problems, tips: report.tips };
+  const site = { manifest: report.manifest, screenshots: report.screenshots.length, desktop: report.desktop, phone: report.phone, problems: report.problems, tips: report.tips, unchecked: report.unchecked };
   const folder = new URL(".", report.manifest);
   const where = folder.origin === new URL(home).origin ? `${folder.pathname} on the site` : folder.href;
   if (!site.screenshots) {
@@ -1072,9 +1072,11 @@ async function checkSite(href, home, added, guard) {
   }
   // Added after the ones there, the new ones could fall past the first 8.
   const room = added && site.screenshots + added > LOOKED_AT ? ` Chrome looks at the first ${LOOKED_AT} entries of the list only, so put the new ones before the old ones, or in their place.` : "";
+  // Of those the run's rule did not read, it cannot say what Chrome shows.
+  const shows = site.unchecked.length ? `of those the run read, Chrome shows ${site.desktop.length} on desktops and ${site.phone.length} on phones, and SCREENSHOTS.md names the ones it did not read` : `Chrome shows ${site.desktop.length} on desktops and ${site.phone.length} on phones`;
   return {
     site,
-    note: `The site's manifest, ${report.manifest}, lists ${site.screenshots === 1 ? "1 screenshot" : `${site.screenshots} screenshots`} already: Chrome shows ${site.desktop.length} on desktops and ${site.phone.length} on phones.${room}`,
+    note: `The site's manifest, ${report.manifest}, lists ${site.screenshots === 1 ? "1 screenshot" : `${site.screenshots} screenshots`} already: ${shows}.${room}`,
   };
 }
 
@@ -1098,6 +1100,7 @@ function pwaMarkdown(pwa, pages) {
   if (pwa.leftOut.length) lines.push("Left out:", "", ...pwa.leftOut.map((item) => `- ${name(item.page)}, ${item.form_factor}: ${item.reason}`), "");
   if (pwa.problems.length) lines.push("Against Chrome's rules:", "", ...pwa.problems.map((text) => `- ${text}`), "");
   if (pwa.note) lines.push(pwa.note, "");
+  if (pwa.site && pwa.site.unchecked && pwa.site.unchecked.length) lines.push("Not checked in the site's manifest:", "", ...pwa.site.unchecked.map((text) => `- ${text}`), "");
   if (pwa.site && pwa.site.problems && pwa.site.problems.length) lines.push("To fix in the site's manifest:", "", ...pwa.site.problems.map((text) => `- ${text}`), "");
   if (pwa.site && pwa.site.tips && pwa.site.tips.length) lines.push("Worth adding to it:", "", ...pwa.site.tips.map((text) => `- ${text}`), "");
   return lines;

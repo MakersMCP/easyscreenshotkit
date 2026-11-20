@@ -13,6 +13,7 @@ const test = require("node:test");
 const { imageInfo, checkScreenshots, labelOf, planPwa, manifestLink, checkManifest, describeCheck } = require("../skills/easyscreenshotkit/scripts/lib/pwa");
 const { parseSizes, addPwaShots, openShots } = require("../skills/easyscreenshotkit/scripts/lib/shots");
 const { parse } = require("../skills/easyscreenshotkit/scripts/easyscreenshotkit");
+const { guardFor } = require("../skills/easyscreenshotkit/scripts/lib/address");
 const { pngOf, serve } = require("./helpers");
 
 const CLI = path.resolve(__dirname, "../skills/easyscreenshotkit/scripts/easyscreenshotkit.js");
@@ -338,6 +339,28 @@ test("--pwa-check: a value that is no address is one line, and a false ok with -
   }
 });
 
+// A screenshot the check does not read leaves its side not known, and the
+// check does not pass, saying which address reads it: the command line's
+// words and exit code.
+test("--pwa-check of a manifest file with a screenshot it does not read says so, and exits with 1", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-pwa-"));
+  try {
+    fs.mkdirSync(path.join(dir, "s"));
+    fs.writeFileSync(path.join(dir, "s", "narrow.png"), pngHead(1080, 1920));
+    const file = path.join(dir, "manifest.json");
+    fs.writeFileSync(file, JSON.stringify({ name: "Acme", description: "Acme's app.", screenshots: [{ src: "http://127.0.0.1:9/wide.png", sizes: "1920x1080", type: "image/png", form_factor: "wide", label: "Home" }, { src: "s/narrow.png", sizes: "1080x1920", type: "image/png", form_factor: "narrow", label: "Phone" }] }));
+    const run = spawnSync(process.execPath, [CLI, "--pwa-check", file], { encoding: "utf8" });
+    assert.equal(run.status, 1, run.stdout + run.stderr);
+    assert.match(run.stdout, /^ {2}Desktop {2}not known: the check did not read screenshot 1$/m);
+    assert.match(run.stdout, /^ {2}Phone {4}the richer install dialog, with screenshot 2$/m);
+    assert.match(run.stdout, /\nNot checked:\n {2}- Desktops: the check did not read screenshot 1, so it cannot say whether they get the richer install dialog\.\n {2}- Screenshot 1 \(http:\/\/127\.0\.0\.1:9\/wide\.png\): not read, as it is not on the public internet: the check cannot say whether Chrome shows it\.\n {2}- To have a screenshot on http:\/\/127\.0\.0\.1:9 read, give --pwa-check the manifest's own address on its host and port/);
+    assert.match(run.stdout, /\nNothing to fix in the screenshots the check read\.$/m);
+    assert.doesNotMatch(run.stdout, /plain install dialog/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("--pwa-check: a site's address leads to the manifest its page links", async () => {
   assert.equal(manifestLink('<link href="/app.webmanifest" rel="manifest">', "https://acme.com/a/"), "https://acme.com/app.webmanifest");
   assert.equal(manifestLink("<link rel='icon' href='/i.png'><link rel=manifest href=m.json?v=1&amp;x=2>", "https://acme.com/a/"), "https://acme.com/a/m.json?v=1&x=2");
@@ -371,10 +394,14 @@ test("--pwa-check: a site's address leads to the manifest its page links", async
 // nothing MAKERSMCP_REFUSE_ADDRESSES names: a manifest a page links there, a
 // screenshot there or a redirect to one is not read, and nothing connects
 // there, where 0.1.3 read a screenshot on any port of a host on the public
-// internet. From a manifest file, the web ports only. Here a host on the
-// public internet is a name that resolves to a public address for the
-// check's rule, and the check's own requests there go to a stand-in that
-// notes them, so nothing leaves this machine.
+// internet. From a manifest file, the web ports only. A screenshot not read
+// is one the check cannot say Chrome shows or not, which the report says,
+// and it does not count as one Chrome cannot show: a manifest file with its
+// one wide screenshot on the site's own port 8443 was said to give
+// desktops the plain install dialog. Here a host on the public internet is
+// a name that resolves to a public address for the check's rule, and the
+// check's own requests there go to a stand-in that notes them, so nothing
+// leaves this machine.
 test("--pwa-check reads no manifest or screenshot on another port than 80 and 443 away from the address given, nor at an address MAKERSMCP_REFUSE_ADDRESSES names", async () => {
   const dns = require("node:dns");
   const http = require("node:http");
@@ -417,18 +444,53 @@ test("--pwa-check reads no manifest or screenshot on another port than 80 and 44
     await assert.rejects(checkManifest({ url: `${origin}/` }), { message: `Could not read http://cdn.example:8443/app.webmanifest, the manifest ${origin}/ links: it is ${PORT_8443}` });
     const report = await checkManifest({ url: `${origin}/app.webmanifest` });
     assert.deepEqual(
-      report.screenshots.map((shot) => [shot.n, shot.error, Boolean(shot.image)]),
+      report.screenshots.map((shot) => [shot.n, shot.unread, shot.error, Boolean(shot.image)]),
       [
-        [1, `it is ${PORT_8443}`, false],
-        [2, `it leads to https://cdn.example:8443/moved.png, which is ${PORT_8443}`, false],
-        [3, "it is at 93.184.215.99, an address MAKERSMCP_REFUSE_ADDRESSES refuses", false],
-        [4, "", true],
+        [1, `it is ${PORT_8443}`, "", false],
+        [2, `it leads to https://cdn.example:8443/moved.png, which is ${PORT_8443}`, "", false],
+        [3, "it is at 93.184.215.99, an address MAKERSMCP_REFUSE_ADDRESSES refuses", "", false],
+        [4, "", "", true],
       ],
     );
+    assert.deepEqual(report.desktop, [4]);
+    assert.equal(report.ok, false);
+    assert.deepEqual(report.unchecked, [
+      `Screenshot 1 (https://cdn.example:8443/wide.png): not read, as it is ${PORT_8443}: the check cannot say whether Chrome shows it.`,
+      `Screenshot 2 (/moved.png): not read, as it leads to https://cdn.example:8443/moved.png, which is ${PORT_8443}: the check cannot say whether Chrome shows it.`,
+      "Screenshot 3 (https://refused.example/wide.png): not read, as it is at 93.184.215.99, an address MAKERSMCP_REFUSE_ADDRESSES refuses: the check cannot say whether Chrome shows it.",
+    ]);
     const file = path.join(dir, "manifest.json");
-    fs.writeFileSync(file, JSON.stringify({ name: "Acme", screenshots: [{ src: "https://cdn.example:8443/wide.png", sizes: "1920x1080", type: "image/png", form_factor: "wide" }] }));
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        name: "Acme",
+        screenshots: [
+          { src: "https://cdn.example:8443/wide.png", sizes: "1920x1080", type: "image/png", form_factor: "wide" },
+          { src: "s/missing.png", sizes: "1080x1920", type: "image/png", form_factor: "narrow" },
+          { src: "https://refused.example:8443/wide.png", sizes: "1920x1080", type: "image/png", form_factor: "wide" },
+        ],
+      }),
+    );
     const fromFile = await checkManifest({ file });
-    assert.deepEqual(fromFile.screenshots.map((shot) => shot.error), ["it is on port 8443, not 80 or 443"]);
+    assert.deepEqual(fromFile.screenshots.map((shot) => [shot.unread, shot.error]), [["it is on port 8443, not 80 or 443", ""], ["", `there is no file ${path.join(dir, "s", "missing.png")}`], ["it is at 93.184.215.99, an address MAKERSMCP_REFUSE_ADDRESSES refuses", ""]]);
+    // The ones not read leave desktops not known, and the address that
+    // reads one on another port is named, not one for an address the
+    // setting refuses; the one that could not be loaded is a problem still.
+    assert.deepEqual(fromFile.unchecked, [
+      "Desktops: the check did not read screenshots 1 and 3, so it cannot say whether they get the richer install dialog.",
+      "Screenshot 1 (https://cdn.example:8443/wide.png): not read, as it is on port 8443, not 80 or 443: the check cannot say whether Chrome shows it.",
+      "Screenshot 3 (https://refused.example:8443/wide.png): not read, as it is at 93.184.215.99, an address MAKERSMCP_REFUSE_ADDRESSES refuses: the check cannot say whether Chrome shows it.",
+      "To have a screenshot on https://cdn.example:8443 read, give --pwa-check the manifest's own address on its host and port: the host and port of the address it is given are the check's own.",
+    ]);
+    assert.ok(!fromFile.problems.some((text) => /^Desktops/.test(text)), fromFile.problems.join("\n"));
+    assert.ok(fromFile.problems.includes("Phones get the plain install dialog: Chrome can show none of the screenshots for phones."), fromFile.problems.join("\n"));
+    const text = describeCheck(fromFile);
+    assert.match(text, /^ {2}Desktop {2}not known: the check did not read screenshots 1 and 3$/m);
+    assert.match(text, /^ {3}1 {2}https:\/\/cdn\.example:8443\/wide\.png +not read +wide +not known$/m);
+    assert.match(text, /\nNot checked:\n {2}- Desktops: the check did not read screenshots 1 and 3/);
+    // Given the manifest's own address there, the check reads it.
+    const fromItsAddress = await guardFor("https://cdn.example:8443/manifest.json");
+    assert.equal(await fromItsAddress.refuses("https://cdn.example:8443/wide.png"), "");
     // The address given is refused too when the setting names it.
     process.env.MAKERSMCP_REFUSE_ADDRESSES = "127.0.0.0/8";
     await assert.rejects(checkManifest({ url: `${origin}/app.webmanifest` }), { message: `Could not read ${origin}/app.webmanifest: it is at 127.0.0.1, an address MAKERSMCP_REFUSE_ADDRESSES refuses` });
@@ -476,7 +538,7 @@ test("--pwa-check reads nothing from an address on this machine other than the o
     await assert.rejects(checkManifest({ url: `${origin}/` }), { message: `Could not read ${elsewhere}/app.webmanifest, the manifest ${origin}/ links: it is ${NOT_GIVEN}` });
     const report = await checkManifest({ url: `${origin}/app.webmanifest` });
     assert.deepEqual(
-      report.screenshots.map((shot) => [shot.n, shot.error, Boolean(shot.image)]),
+      report.screenshots.map((shot) => [shot.n, shot.unread, Boolean(shot.image)]),
       [
         [1, `it is ${NOT_GIVEN}`, false],
         [2, `it leads to ${elsewhere}/moved.png, which is ${NOT_GIVEN}`, false],
@@ -486,7 +548,8 @@ test("--pwa-check reads nothing from an address on this machine other than the o
     const file = path.join(dir, "manifest.json");
     fs.writeFileSync(file, JSON.stringify({ name: "Acme", screenshots: [{ src: `${elsewhere}/wide.png`, sizes: "1920x1080", type: "image/png", form_factor: "wide" }, { src: `${origin}/here.png`, sizes: "1920x1080", type: "image/png", form_factor: "wide" }] }));
     const fromFile = await checkManifest({ file });
-    assert.deepEqual(fromFile.screenshots.map((shot) => shot.error), ["it is not on the public internet", "it is not on the public internet"]);
+    assert.deepEqual(fromFile.screenshots.map((shot) => shot.unread), ["it is not on the public internet", "it is not on the public internet"]);
+    assert.equal(fromFile.unchecked.at(-1), `To have a screenshot on ${elsewhere} or ${origin} read, give --pwa-check the manifest's own address on its host and port: the host and port of the address it is given are the check's own.`);
     assert.deepEqual(seen, []);
   } finally {
     server.close();

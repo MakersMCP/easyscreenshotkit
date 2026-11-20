@@ -27,7 +27,7 @@ const fs = require("fs");
 const path = require("path");
 const { pngSize } = require("./png");
 const { oneLine } = require("./pick");
-const { guardFor, getChecked } = require("./address");
+const { guardFor, getChecked, otherPort, NOT_PUBLIC } = require("./address");
 const version = require("./version");
 
 const MIN_SIDE = 320;
@@ -112,8 +112,9 @@ const span = (list) => {
 const numbers = (list) => `${list.length === 1 ? "screenshot" : "screenshots"} ${span(list)}`;
 
 // One entry of the list. image: {format, width, height} as read from its
-// file, {error} when it could not be read, undefined when it was not looked
-// at.
+// file, {error} when it could not be read, {unread} when the check's rule
+// for the addresses it reads did not read it, with why (see
+// checkManifest), undefined when it was not looked at.
 function readEntry(raw, i, image) {
   const entry = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
   const text = (key) => (typeof entry[key] === "string" ? entry[key].trim() : "");
@@ -124,8 +125,9 @@ function readEntry(raw, i, image) {
     type: text("type"),
     label: text("label"),
     formFactor: text("form_factor"),
-    image: image && !image.error ? image : null,
+    image: image && !image.error && !image.unread ? image : null,
     error: image && image.error ? image.error : "",
+    unread: image && image.unread ? image.unread : "",
     shownOn: [],
     leftOut: "",
     problems: [],
@@ -177,10 +179,16 @@ function sizeProblem(shot) {
 // Applies Chrome's rules to a manifest's screenshots: which ones a desktop
 // and a phone show, and what to fix (problems) or add (tips). images[i] is
 // what was read of screenshot i's file (see readEntry); description, the
-// manifest's own, when the whole manifest is checked.
+// manifest's own, when the whole manifest is checked. A screenshot the
+// check did not read, as one on another port than 80 and 443 that a
+// manifest file names, is one it cannot say Chrome shows or not: unchecked
+// says so, and a side with no screenshot shown and one not read is not
+// said to get the plain install dialog. It was, and the check failed a
+// manifest whose screenshots Chrome shows.
 function checkScreenshots(list, images = [], options = {}) {
   const problems = [];
   const tips = [];
+  const unchecked = [];
   if (list !== undefined && list !== null && !Array.isArray(list)) problems.push('"screenshots" is not a list, so Chrome reads none of it.');
   const shots = (Array.isArray(list) ? list : []).map((raw, i) => readEntry(raw, i, images[i]));
   for (const shot of shots) {
@@ -225,17 +233,22 @@ function checkScreenshots(list, images = [], options = {}) {
       shot.shownOn.push(platform);
     }
   }
+  // The screenshots of each side the check did not read, of those Chrome
+  // looks at.
+  const unread = (desktop) => shots.slice(0, LOOKED_AT).filter((shot) => shot.unread && isWide(shot) === desktop).map((shot) => shot.n);
   if (!shots.length) problems.push("There are no screenshots, so Chrome shows its plain install dialog on desktops and on phones.");
   else {
     const wide = shots.filter(isWide);
-    if (!shown.desktop.length) {
+    if (!shown.desktop.length && unread(true).length) unchecked.push(`Desktops: the check did not read ${numbers(unread(true))}, so it cannot say whether they get the richer install dialog.`);
+    else if (!shown.desktop.length) {
       problems.push(
         wide.length
           ? "Desktops get the plain install dialog: Chrome can show none of the wide screenshots."
           : 'Desktops get the plain install dialog: no screenshot has form_factor "wide".',
       );
     }
-    if (!shown.phone.length) {
+    if (!shown.phone.length && unread(false).length) unchecked.push(`Phones: the check did not read ${numbers(unread(false))}, so it cannot say whether they get the richer install dialog.`);
+    else if (!shown.phone.length) {
       problems.push(
         wide.length < shots.length
           ? "Phones get the plain install dialog: Chrome can show none of the screenshots for phones."
@@ -247,23 +260,24 @@ function checkScreenshots(list, images = [], options = {}) {
     }
   }
   // The same words for several screenshots come once, with their numbers.
-  const grouped = (key) => {
+  const grouped = (of) => {
     const texts = new Map();
-    for (const shot of shots) for (const text of shot[key]) texts.set(text, [...(texts.get(text) || []), shot]);
+    for (const shot of shots) for (const text of of(shot)) texts.set(text, [...(texts.get(text) || []), shot]);
     return [...texts].map(([text, list]) => {
       const one = list.length === 1 && list[0].src ? ` (${list[0].src.length > 60 ? `${list[0].src.slice(0, 57)}...` : list[0].src})` : "";
       const name = numbers(list.map((shot) => shot.n));
       return `${name.charAt(0).toUpperCase()}${name.slice(1)}${one}: ${text}.`;
     });
   };
-  problems.push(...grouped("problems"));
-  tips.push(...grouped("tips"));
+  problems.push(...grouped((shot) => shot.problems));
+  tips.push(...grouped((shot) => shot.tips));
+  unchecked.push(...grouped((shot) => (shot.unread ? [`not read, as ${shot.unread}: the check cannot say whether Chrome shows it`] : [])));
   if ("description" in options) {
     const text = typeof options.description === "string" ? options.description.trim() : "";
     if (!text) tips.push(`There is no description. Chrome shows it above the screenshots, about ${DESCRIPTION_SHOWN} characters of it.`);
     else if (text.length > DESCRIPTION_SHOWN) tips.push(`The description has ${text.length} characters, and Chrome shows about ${DESCRIPTION_SHOWN} of them.`);
   }
-  return { ok: problems.length === 0, desktop: shown.desktop, phone: shown.phone, screenshots: shots, problems, tips };
+  return { ok: problems.length === 0 && unchecked.length === 0, desktop: shown.desktop, phone: shown.phone, screenshots: shots, problems, tips, unchecked };
 }
 
 // A screenshot's label, read out by screen readers: the main heading on that
@@ -454,41 +468,69 @@ async function checkManifest(target, { guard: given = null } = {}) {
   const found = await loadManifest(target, guard);
   const json = found.json && typeof found.json === "object" && !Array.isArray(found.json) ? found.json : {};
   const list = Array.isArray(json.screenshots) ? json.screenshots : [];
+  // A screenshot the check's rule refuses is one it did not read, not one
+  // that could not be loaded: Chrome reads it by rules of its own.
+  const refused = (err) => Boolean(err && (err.refused || ((err.cause || err).code === "ENOTPUBLIC")));
   const images = await Promise.all(
     list.slice(0, LOOKED_AT).map((entry) => {
       const src = entry && typeof entry.src === "string" ? entry.src.trim() : "";
-      return src ? loadImage(src, found.base, guard).catch((err) => ({ error: reasonOf(err) })) : undefined;
+      return src ? loadImage(src, found.base, guard).catch((err) => (refused(err) ? { unread: reasonOf(err) } : { error: reasonOf(err) })) : undefined;
     }),
   );
   // A file with screenshots and nothing else, such as the
   // manifest-screenshots.json of a run, is a part of a manifest: its
   // description is not looked for.
   const whole = ["name", "short_name", "description", "start_url", "icons"].some((key) => key in json);
+  const report = checkScreenshots(json.screenshots, images, whole ? { description: json.description } : {});
+  // From a manifest file the check reads port 80 and 443 of hosts on the
+  // public internet only; given the manifest's own address on another
+  // port, or on this machine, it reads the screenshots on that host and
+  // port too, as a run given that address opens its pages. Not one that a
+  // redirect leads away from, nor one MAKERSMCP_REFUSE_ADDRESSES refuses or
+  // whose name cannot be looked up, which that address would not read
+  // either.
+  if (target.file) {
+    const elsewhere = new Set();
+    for (const shot of report.screenshots) {
+      if (!shot.unread || !/^https?:\/\//i.test(shot.src)) continue;
+      try {
+        const url = new URL(shot.src);
+        if (shot.unread === `it is ${NOT_PUBLIC}` || (url.port && shot.unread === `it is ${otherPort(url.port, false)}`)) elsewhere.add(url.origin);
+      } catch {
+        // No address to name.
+      }
+    }
+    if (elsewhere.size) report.unchecked.push(`To have a screenshot on ${[...elsewhere].join(" or ")} read, give --pwa-check the manifest's own address on its host and port: the host and port of the address it is given are the check's own.`);
+  }
   return {
     manifest: found.where,
     page: found.page || "",
     name: String(json.name || json.short_name || ""),
-    ...checkScreenshots(json.screenshots, images, whole ? { description: json.description } : {}),
+    ...report,
   };
 }
 
 // A check as text, for people.
 function describeCheck(report) {
   const lines = [`Checked ${report.manifest}${report.page ? `, the manifest of ${report.page}` : ""}`, ""];
-  const dialog = (shown) => (shown.length ? `the richer install dialog, with ${numbers(shown)}` : "the plain install dialog");
-  lines.push(`  Desktop  ${dialog(report.desktop)}`, `  Phone    ${dialog(report.phone)}`);
+  // A side with none shown and one not read: the check cannot say.
+  const unreadOn = (desktop) => report.screenshots.filter((shot) => shot.unread && isWide(shot) === desktop && shot.n <= LOOKED_AT).map((shot) => shot.n);
+  const dialog = (shown, desktop) => (shown.length ? `the richer install dialog, with ${numbers(shown)}` : unreadOn(desktop).length ? `not known: the check did not read ${numbers(unreadOn(desktop))}` : "the plain install dialog");
+  lines.push(`  Desktop  ${dialog(report.desktop, true)}`, `  Phone    ${dialog(report.phone, false)}`);
   if (report.screenshots.length) {
     lines.push("");
     const width = Math.min(44, Math.max(...report.screenshots.map((shot) => shot.src.length), 3));
     for (const shot of report.screenshots) {
       const src = shot.src.length > width ? `${shot.src.slice(0, width - 3)}...` : shot.src || "(no src)";
       const file = shot.image ? `${shot.image.width && shot.image.height ? dims(shot.image) : "?"} ${NAMES[shot.image.format] || "not an image"}` : shot.error ? "not loaded" : "not read";
-      const where = shot.shownOn.length ? `shown on ${shot.shownOn.map((platform) => `${platform}s`).join(" and ")}` : "left out";
+      const where = shot.shownOn.length ? `shown on ${shot.shownOn.map((platform) => `${platform}s`).join(" and ")}` : shot.unread ? "not known" : "left out";
       lines.push(`  ${String(shot.n).padStart(2)}  ${src.padEnd(width)}  ${file.padEnd(14)}  ${(shot.formFactor || "none").padEnd(6)}  ${where}`);
     }
   }
+  const unchecked = report.unchecked || [];
+  if (unchecked.length) lines.push("", "Not checked:", ...unchecked.map((text) => `  - ${text}`));
   if (report.problems.length) lines.push("", "To fix:", ...report.problems.map((text) => `  - ${text}`));
-  else lines.push("", "Nothing to fix: Chrome shows them as they are.");
+  else lines.push("", unchecked.length ? "Nothing to fix in the screenshots the check read." : "Nothing to fix: Chrome shows them as they are.");
   if (report.tips.length) lines.push("", "Worth adding:", ...report.tips.map((text) => `  - ${text}`));
   // What the manifest says (a src, a type) stays on its line.
   return lines.map(oneLine).join("\n");
