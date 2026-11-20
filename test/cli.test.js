@@ -1138,8 +1138,10 @@ test("a browser or an ffmpeg that cannot be started stops a run before any work 
       ["a text file with no #! line", "text", () => "a text file with no #! line, not a program", true],
       ["a text file with no #! line that /bin/sh runs to its end", "echoes", () => "a text file with no #! line, not a program", true],
       ["a script whose interpreter is not there", "missing-interpreter", () => "a script whose first line names /nonexistent/sh, which is not on this machine", true],
-      ["a script whose interpreter is a folder", "folder-interpreter", () => `a script whose first line names ${root}, a folder, not a program`, true],
-      ["a script whose interpreter may not be run", "locked-interpreter", () => `a script whose first line names ${at("readme.txt")}, a file this user may not run`, true, asRoot && "root may run it"],
+      // A #! line ends its program's path at the first space, so these two
+      // cannot be made in a temp folder whose path holds one.
+      ["a script whose interpreter is a folder", "folder-interpreter", () => `a script whose first line names ${root}, a folder, not a program`, true, /\s/.test(root) && "a #! line cannot name a path with a space in it"],
+      ["a script whose interpreter may not be run", "locked-interpreter", () => `a script whose first line names ${at("readme.txt")}, a file this user may not run`, true, (asRoot && "root may run it") || (/\s/.test(root) && "a #! line cannot name a path with a space in it")],
       ["an empty file", "empty", () => "an empty file, not a program"],
       ["a file without the permission to run it", "unmarked", () => "a file without the permission to run it, which chmod +x gives", false, asRoot && "root may run it"],
       ["a file only other users may run", "others", () => "a file this user may not run, as only other users have the permission to run it", false, asRoot && "root may run it"],
@@ -1298,7 +1300,7 @@ test("a browser or an ffmpeg that cannot be started stops a run before any work 
       await t.test(`a launcher script of ${folder === "arm" ? "a program for another processor" : "a program that needs a shared library the machine lacks"}`, { skip }, () => {
         for (const shell of ["/bin/sh", "/bin/bash"].filter((file) => fs.existsSync(file))) {
           const launcher = at(`launch-${folder}-${path.basename(shell)}`);
-          fs.writeFileSync(launcher, `#!${shell}\nexec ${at(folder, "chrome")} "$@"\n`, { mode: 0o755 });
+          fs.writeFileSync(launcher, `#!${shell}\nexec ${sh(at(folder, "chrome"))} "$@"\n`, { mode: 0o755 });
           const line = spawnSync(launcher, { encoding: "utf8" }).stderr.trim().split("\n")[0];
           refused({ CHROME_PATH: launcher }, SHOTS, `easyscreenshotkit: ${path.basename(launcher)} did not start: it printed "${quote(line)}". ${advice}`);
         }
