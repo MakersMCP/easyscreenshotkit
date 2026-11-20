@@ -160,9 +160,10 @@ test("from a public address a run opens web addresses on the public internet onl
 // server's redirect can send it: that is the program the address names.
 // http on the port of an https address given is not, unless the port is 80
 // or 443. A site on this machine given keeps its host and port, as before.
-// A host is the one given with or without the dot that can end a name.
+// A host is the one given with or without the dot that can end a name, and
+// its www form is another host, as the README says.
 test("away from the address given a run opens port 80 and 443 only, and the scheme, host and port given on any port", () =>
-  withNames({ "public.example": "93.184.215.14", "other.example": "93.184.215.15", "inside.example": "10.0.0.7" }, async () => {
+  withNames({ "public.example": "93.184.215.14", "www.public.example": "93.184.215.14", "other.example": "93.184.215.15", "inside.example": "10.0.0.7" }, async () => {
     const fromPublic = await guardFor("https://public.example/");
     for (const [url, why] of [
       ["https://public.example/", ""],
@@ -201,9 +202,12 @@ test("away from the address given a run opens port 80 and 443 only, and the sche
       ["http://public.example:8443/", port(8443)],
       ["https://public.example:9443/", port(9443)],
       ["https://other.example:8443/", port(8443)],
-      // The host with the dot that can end a name is the same host.
+      // The host with the dot that can end a name is the same host, and
+      // its www form another one.
       ["https://public.example.:8443/", ""],
       ["https://other.example.:8443/", port(8443)],
+      ["https://www.public.example:8443/", port(8443)],
+      ["https://www.public.example/", ""],
     ]) {
       assert.equal(await fromPort.refuses(url), why, url);
     }
