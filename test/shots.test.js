@@ -3567,6 +3567,104 @@ test("a host the run finds on the public internet that the browser reaches on th
   }
 }));
 
+// A frame of another site or a window whose answer the browser says
+// nothing of is not loaded, with the reason: the browser could have
+// reached it anywhere. Here a relay answers the kit's order to say where
+// they reach (Network.enable) with an error for each target the kit did not
+// attach itself (see relayBrowser()), so the browser says nothing of a
+// frame of another site the page moves later, nor of a window: each is
+// refused, though each is a site on the public internet, while the tab's
+// own pages and the frame's first page, which the tab hears, open.
+test("a frame of another site or a window whose answer the browser says nothing of is not loaded", { skip: noBrowser || (process.platform === "win32" && "the relay's wrapper is a shell script"), timeout: 120_000 }, () => withNames({ "framed.example": "93.184.215.15", "public.example": "93.184.215.14" }, async () => {
+  const seen = [];
+  const framed = await serve((req, res) => {
+    seen.push(req.url);
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Framed", `<h2>Framed ${req.url}</h2>`));
+  });
+  const html = { "Content-Type": "text/html; charset=utf-8" };
+  const published = await serve((req, res) => {
+    if (req.url !== "/framed") return res.writeHead(200, html).end(page("Public", "<h1>Public</h1>"));
+    const later = '<script>setTimeout(() => { document.getElementById("later").src = "http://framed.example/later"; }, 500);</script>';
+    res.writeHead(200, html).end(page("Framed | Acme", `<h1>Framed</h1><iframe id="later" src="http://framed.example/frame"></iframe><button id="open" onclick="window.open('http://public.example/window')">Open</button>${later}`));
+  });
+  const framedPort = new URL(framed.origin).port;
+  const publicPort = new URL(published.origin).port;
+  const root = tempDir();
+  const relay = relayBrowser(root, findChrome(), { withholdNetwork: true });
+  const saved = process.env.CHROME_PATH;
+  process.env.CHROME_PATH = relay.browser;
+  let chrome = null;
+  try {
+    chrome = await launch({ args: [`--host-resolver-rules=MAP framed.example 127.0.0.1:${framedPort}, MAP public.example 127.0.0.1:${publicPort}`, publicAt(framedPort, publicPort)] });
+    chrome.guard = await guardFor("http://public.example/");
+    const tab = await openTab(chrome, DEVICES.desktop);
+    const barred = [];
+    tab.on(BARRED, (b) => barred.push(b));
+    try {
+      assert.equal((await navigate(tab, "http://public.example/framed")).status, 200);
+      await sleep(1_500);
+      await tab.send("Runtime.evaluate", { expression: 'document.getElementById("open").click()', userGesture: true });
+      const until = Date.now() + 5_000;
+      while (barred.length < 2 && Date.now() < until) await sleep(100);
+      const said = Object.fromEntries(barred.map((b) => [new URL(b.url).pathname, [b.why, b.main, b.window]]));
+      assert.deepEqual(said, {
+        "/later": ["on a host the browser reached at an address it did not name", false, false],
+        "/window": ["on a host the browser reached at an address it did not name", false, true],
+      });
+      assert.deepEqual(seen, ["/frame", "/later"]);
+    } finally {
+      await closeTab(chrome, tab);
+    }
+  } finally {
+    if (chrome) await chrome.close();
+    if (saved === undefined) delete process.env.CHROME_PATH;
+    else process.env.CHROME_PATH = saved;
+    framed.server.close();
+    published.server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}));
+
+// What the browser says of where it reached an answer can come after the
+// answer it is of: the answer is held until it comes, 5 s at most, and
+// judged by it then. Here a relay holds it 300 ms (see relayBrowser()):
+// the page the browser reached on this machine is refused still, and the
+// one it reached on the public internet opens.
+test("where the browser reached an answer is waited for when the browser says it after the answer", { skip: noBrowser || (process.platform === "win32" && "the relay's wrapper is a shell script"), timeout: 120_000 }, () => withNames({ "rebind.example": "93.184.215.16", "public.example": "93.184.215.14" }, async () => {
+  const seen = [];
+  const other = await serve((req, res) => {
+    seen.push(req.url);
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Inside", "<h1>Inside</h1>"));
+  });
+  const published = await serve((req, res) => res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Public", "<h1>Public</h1>")));
+  const otherPort = new URL(other.origin).port;
+  const publicPort = new URL(published.origin).port;
+  const root = tempDir();
+  const relay = relayBrowser(root, findChrome(), { holdSpacesMs: 300 });
+  const saved = process.env.CHROME_PATH;
+  process.env.CHROME_PATH = relay.browser;
+  let chrome = null;
+  try {
+    chrome = await launch({ args: [`--host-resolver-rules=MAP rebind.example 127.0.0.1:${otherPort}, MAP public.example 127.0.0.1:${publicPort}`, publicAt(publicPort)] });
+    chrome.guard = await guardFor("http://public.example/");
+    const tab = await openTab(chrome, DEVICES.desktop);
+    try {
+      await assert.rejects(navigate(tab, "http://rebind.example/"), { message: `Could not open http://rebind.example/: it is ${REACHED}.` });
+      assert.equal((await navigate(tab, "http://public.example/")).status, 200);
+      assert.deepEqual(seen, ["/"]);
+    } finally {
+      await closeTab(chrome, tab);
+    }
+  } finally {
+    if (chrome) await chrome.close();
+    if (saved === undefined) delete process.env.CHROME_PATH;
+    else process.env.CHROME_PATH = saved;
+    other.server.close();
+    published.server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}));
+
 // The same in a run: the address given on such a host stops it before any
 // file is saved, and from a site on this machine a --page that redirects
 // there is left out and a frame there is not loaded, each named with the

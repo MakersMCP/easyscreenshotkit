@@ -172,9 +172,15 @@ function descendants(pid) {
 // the target it was attached by. holdMs: how long the answer to each input
 // event is held before it goes on, so that a frame's move a moment after
 // the answer came, which the browser tells only once the frame has moved,
-// still drops it. Returns the wrapper to set CHROME_PATH to, and dropped():
-// what it dropped, a line each.
-function relayBrowser(root, browser, { holdMs = 0 } = {}) {
+// still drops it. withholdNetwork: Network.enable for a target the kit did
+// not attach itself, a frame of another site or a window it is held at the
+// start of, is answered with an error and never reaches the browser, as a
+// browser that does not take it would do. holdSpacesMs: how long what the
+// browser says of where it reached an answer (Network.responseReceivedExtraInfo)
+// is held before it goes on, so it comes after the answer it is of. Returns
+// the wrapper to set CHROME_PATH to, and dropped(): what it dropped, a line
+// each.
+function relayBrowser(root, browser, { holdMs = 0, withholdNetwork = false, holdSpacesMs = 0 } = {}) {
   const script = path.join(root, "relay.js");
   const log = path.join(root, "dropped.log");
   fs.writeFileSync(
@@ -212,6 +218,10 @@ const split = (stream, take) => {
 };
 split(fromKit, (text) => {
   const msg = JSON.parse(text);
+  if (${Boolean(withholdNetwork)} && msg.method === "Network.enable" && msg.sessionId && !mainOf.has(msg.sessionId)) {
+    toKit.write(JSON.stringify({ id: msg.id, sessionId: msg.sessionId, error: { code: -32000, message: "withheld by the test" } }) + "\\0");
+    return;
+  }
   if (/^Input\\./.test(msg.method)) inputs.set(msg.id, { session: msg.sessionId, what: msg.method + " " + msg.params.type });
   if (msg.method === "Target.attachToTarget") attaching.set(msg.id, msg.params.targetId);
   child.stdio[3].write(text + "\\0");
@@ -229,6 +239,10 @@ split(child.stdio[4], (text) => {
     const was = frameUrls.get(frame.targetId);
     frameUrls.set(frame.targetId, frame.url);
     if (was !== undefined && was !== frame.url) for (const [session, main] of mainOf) if (main === frame.parentFrameId) dropFor(session, "a frame of the page moved on to " + frame.url);
+  }
+  if (${Number(holdSpacesMs)} > 0 && msg.method === "Network.responseReceivedExtraInfo") {
+    setTimeout(() => toKit.write(text + "\\0"), ${Number(holdSpacesMs)});
+    return;
   }
   if (inputs.has(msg.id)) {
     if (dropped.has(msg.id)) return void inputs.delete(msg.id);
