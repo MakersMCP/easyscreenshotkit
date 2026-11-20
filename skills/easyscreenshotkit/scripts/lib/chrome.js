@@ -530,17 +530,20 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
     removeProfile(profile);
     return { unguarded: apart.problem };
   }
-  // The browser preloads nothing (network_prediction_options 2, never):
-  // with its default, a page's speculation rules had it prefetch or
+  // The browser's own preloading is off (network_prediction_options 2,
+  // never): with its default, a page's speculation rules had it prefetch or
   // prerender an address and then serve the page's move there from that
   // copy, which the guard never saw (see guardBrowser()), so a page of a
   // site took the run to another program of this machine or of the site's
   // host; and it connected ahead to the address of a page's move, a frame,
   // a window and a link under the pointer before the guard had judged it.
-  // Whether the browser took it is asked of it once it answers (see
-  // preloadingSaid()). Its downloads go in the profile too, behind the
-  // order that refuses them (see below), with what the browser writes of a
-  // download as it refuses it (see downloadsIn()).
+  // A page's own <link rel="prefetch"> is a request of the page's, as a
+  // picture is, which the browser still sends by its own rules, and the
+  // run's rule leaves to it (see address.js); a move to such an address is
+  // refused all the same. Whether the browser took the setting is asked of
+  // it once it answers (see preloadingSaid()). Its downloads go in the
+  // profile too, behind the order that refuses them (see below), with what
+  // the browser writes of a download as it refuses it (see downloadsIn()).
   let downloads = {};
   try {
     fs.mkdirSync(path.join(profile, "Default"));
