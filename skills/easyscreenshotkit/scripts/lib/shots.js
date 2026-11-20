@@ -143,7 +143,11 @@ function parseAddress(raw) {
 // net::ERR_SSL_PROTOCOL_ERROR, or in Node's, EPROTO, for what the kit reads
 // itself, which said nothing of giving http://. err with the address to
 // give then, when raw has no scheme and err is that failure of an address
-// on asked's host and port; else err as it is.
+// on asked's host and port; else err as it is. The address to give is the
+// one asked with http:// in place of https://, its path, query and #route
+// kept: one that named the host and port alone sent a run asked for one
+// page of a local app, a demo of a #route or the check of a manifest to the
+// site's root.
 function schemeHint(err, raw, asked) {
   if (!err || !err.message || /^\s*[a-z][a-z0-9+.-]*:\/\//i.test(String(raw || ""))) return err;
   let url;
@@ -154,7 +158,7 @@ function schemeHint(err, raw, asked) {
   }
   const at = [`Could not open ${url.origin}/`, `Could not read ${url.origin}/`].some((words) => err.message.includes(words));
   if (url.protocol !== "https:" || !at || !/net::ERR_SSL_PROTOCOL_ERROR|: EPROTO\b/.test(err.message)) return err;
-  const said = `${err.message.replace(/\.$/, "")}. An address written without a scheme is read as https://, and http://${url.host}/ is the one to give if the site has no https.`;
+  const said = `${err.message.replace(/\.$/, "")}. An address written without a scheme is read as https://, and http://${url.href.slice("https://".length)} is the one to give if the site has no https.`;
   return Object.assign(new Error(said), { reason: err.reason, refused: err.refused });
 }
 

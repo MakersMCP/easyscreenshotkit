@@ -2531,13 +2531,16 @@ test("a steps file's hide refuses a selector that could reach past its rule befo
 });
 
 // A demo of an address written without a scheme, which a plain http server
-// answers, says to give http://, as the screenshots do.
+// answers, says to give http://, as the screenshots do: the address asked,
+// with its path and #route, where it named the site's root and a demo given
+// it again recorded the app's first view.
 test("a demo of an address with no scheme that a plain http server answers says to give http://", { skip: missing, timeout: 120_000 }, async () => {
   const { server, origin } = await serve((req, res) => res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Dev", "<h1>Dev</h1>")));
   const port = new URL(origin).port;
   const root = tempDir();
   try {
     await assert.rejects(makeDemo(`localhost:${port}`, { dir: path.join(root, "demo"), pages: 1, gif: false, timeLimit: 100_000 }), { message: `Could not open https://localhost:${port}/: net::ERR_SSL_PROTOCOL_ERROR. An address written without a scheme is read as https://, and http://localhost:${port}/ is the one to give if the site has no https.` });
+    await assert.rejects(makeDemo(`localhost:${port}/app/#/plans`, { dir: path.join(root, "route"), pages: 1, gif: false, timeLimit: 100_000 }), { message: `Could not open https://localhost:${port}/app/#/plans: net::ERR_SSL_PROTOCOL_ERROR. An address written without a scheme is read as https://, and http://localhost:${port}/app/#/plans is the one to give if the site has no https.` });
   } finally {
     server.close();
     fs.rmSync(root, { recursive: true, force: true });

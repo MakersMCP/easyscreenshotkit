@@ -3724,13 +3724,16 @@ test("of a menu's link to a page on another port and the footer's on the site's 
 // An address written without a scheme, as localhost:3000, is read as
 // https://, and a site on this machine that serves plain http failed it in
 // the browser's words alone, net::ERR_SSL_PROTOCOL_ERROR: the run says to
-// give http:// then, and only for an address written without a scheme.
+// give http:// then, and only for an address written without a scheme. The
+// address it names is the one asked, its path and query too, where it named
+// the site's root and a run given it again took the home page.
 test("an address with no scheme that a plain http server answers says to give http://", { skip: noBrowser, timeout: 120_000 }, async () => {
   const { server, origin } = await serve((req, res) => res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Dev", "<h1>Dev</h1>")));
   const port = new URL(origin).port;
   const root = tempDir();
   try {
     await assert.rejects(takeShots(`localhost:${port}`, { dir: path.join(root, "bare"), pages: 1, sizes: "desktop", timeLimit: 60_000 }), { message: `Could not open https://localhost:${port}/: net::ERR_SSL_PROTOCOL_ERROR. An address written without a scheme is read as https://, and http://localhost:${port}/ is the one to give if the site has no https.` });
+    await assert.rejects(takeShots(`localhost:${port}/docs/setup?v=2`, { dir: path.join(root, "deep"), pages: 1, sizes: "desktop", timeLimit: 60_000 }), { message: `Could not open https://localhost:${port}/docs/setup?v=2: net::ERR_SSL_PROTOCOL_ERROR. An address written without a scheme is read as https://, and http://localhost:${port}/docs/setup?v=2 is the one to give if the site has no https.` });
     await assert.rejects(takeShots(`https://localhost:${port}`, { dir: path.join(root, "written"), pages: 1, sizes: "desktop", timeLimit: 60_000 }), { message: `Could not open https://localhost:${port}/: net::ERR_SSL_PROTOCOL_ERROR` });
     const { manifest } = await takeShots(`http://localhost:${port}`, { dir: path.join(root, "http"), pages: 1, sizes: "desktop", timeLimit: 60_000 });
     assert.equal(manifest.pages[0].url, `http://localhost:${port}/`);

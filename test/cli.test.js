@@ -155,7 +155,8 @@ test("--hide refuses a selector that opens a comment, a quote or a bracket it do
 
 // An address written without a scheme is read as https://, and a site on
 // this machine that serves plain http fails it in Node's words alone, as
-// the browser fails it in its own: the run says to give http:// then. An
+// the browser fails it in its own: the run says to give http:// then, for
+// the manifest's own address too, where it named the site's root. An
 // address written with https:// gets no such words.
 test("--pwa-check of an address with no scheme that a plain http server answers says to give http://", async () => {
   const http = require("node:http");
@@ -171,6 +172,8 @@ test("--pwa-check of an address with no scheme that a plain http server answers 
   try {
     const bare = await run(`localhost:${port}`);
     assert.deepEqual([bare.status, bare.stderr], [1, `easyscreenshotkit: Could not read https://localhost:${port}/: EPROTO. An address written without a scheme is read as https://, and http://localhost:${port}/ is the one to give if the site has no https.\n`]);
+    const deep = await run(`localhost:${port}/static/app.webmanifest?v=3`);
+    assert.deepEqual([deep.status, deep.stderr], [1, `easyscreenshotkit: Could not read https://localhost:${port}/static/app.webmanifest?v=3: EPROTO. An address written without a scheme is read as https://, and http://localhost:${port}/static/app.webmanifest?v=3 is the one to give if the site has no https.\n`]);
     const written = await run(`https://localhost:${port}`);
     assert.deepEqual([written.status, written.stderr], [1, `easyscreenshotkit: Could not read https://localhost:${port}/: EPROTO\n`]);
   } finally {
