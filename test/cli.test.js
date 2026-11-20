@@ -200,6 +200,37 @@ test("--pwa-check of an address with no scheme that a plain http server answers 
   }
 });
 
+// The workflows hold the runners the README names, Node.js 22 and 24, the
+// line that says which ffmpeg ran, the step that lets Chrome start before
+// the tests, and a publish that waits for every test job; and no sentence
+// of their comments calls Ubuntu 22.04's ffmpeg 4.4.2 the hosted service's,
+// which runs the pinned FFmpeg 9.0.2. No test read them, so a workflow edit
+// that dropped a runner or let publish run without the tests showed only at
+// a release.
+test("the workflows test on Ubuntu 22.04, 24.04 and the latest on Node.js 22 and 24, let Chrome start first, publish only after every test, and call 4.4.2 no hosted ffmpeg", () => {
+  for (const name of ["test.yml", "publish.yml"]) {
+    const text = fs.readFileSync(path.join(__dirname, "..", ".github", "workflows", name), "utf8");
+    assert.match(text, /fail-fast: false\n\s+matrix:\n\s+os: \[ubuntu-22\.04, ubuntu-24\.04, ubuntu-latest\]\n\s+node: \[22, 24\]\n\s+runs-on: \$\{\{ matrix\.os \}\}/, `${name} does not run the tests on each Ubuntu and each Node.js`);
+    assert.match(text, /\n {2}test:\n[\s\S]*?node-version: \$\{\{ matrix\.node \}\}/, `${name} does not test on the matrix's Node.js`);
+    assert.match(text, /ffmpeg && ffmpeg -version \| head -1/, `${name} does not say which ffmpeg the tests ran on`);
+    // 22.04 has no such setting, and sysctl fails on a key it does not have.
+    const step = text.indexOf("if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0; fi");
+    assert.ok(step > 0, `${name} has no step that lets Chrome start`);
+    assert.ok(step < text.indexOf("npm test"), `${name} lets Chrome start only after the tests`);
+    const comments = text
+      .split("\n")
+      .filter((line) => /^\s*#/.test(line))
+      .map((line) => line.replace(/^\s*#\s?/, ""))
+      .join(" ");
+    // A point that ends a sentence is followed by a space, where one in a
+    // version (22.04, 4.4.2) is not.
+    for (const sentence of comments.split(/\.\s+/)) assert.ok(!(/\b4\.4/.test(sentence) && /hosted/i.test(sentence)), `${name}: ${sentence}`);
+  }
+  assert.match(fs.readFileSync(path.join(__dirname, "..", ".github", "workflows", "test.yml"), "utf8"), /ffmpeg 4\.4\.2, the oldest the kit supports/);
+  // Nothing is published unless the tests passed on all of them.
+  assert.match(fs.readFileSync(path.join(__dirname, "..", ".github", "workflows", "publish.yml"), "utf8"), /\n {2}publish:\n {4}needs: test\n/);
+});
+
 test("the CLI explains itself and refuses a missing address or a bad option", () => {
   const help = spawnSync(process.execPath, [CLI, "--help"], { encoding: "utf8" });
   assert.equal(help.status, 0);

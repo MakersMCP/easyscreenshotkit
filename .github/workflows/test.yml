@@ -6,19 +6,21 @@ on:
 
 jobs:
   test:
-    # Ubuntu 22.04, as the hosted service runs it, with its ffmpeg 4.4.2,
+    # Ubuntu 22.04 with its ffmpeg 4.4.2, the oldest the kit supports,
     # Ubuntu 24.04 with its ffmpeg 6.1, and ubuntu-latest, the newest Ubuntu
-    # GitHub runs. Each comes with Google Chrome.
+    # GitHub runs. Each comes with Google Chrome. Node.js 22 is the oldest
+    # the kit takes, and the tests run on Node.js 24 too.
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-22.04, ubuntu-24.04, ubuntu-latest]
+        node: [22, 24]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22
+          node-version: ${{ matrix.node }}
       # Ubuntu 24.04 and later block the user namespaces Chrome's sandbox
       # needs; 22.04 has no such setting.
       - name: Let Chrome start
