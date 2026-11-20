@@ -2501,8 +2501,9 @@ test("a demo's click opens no address the run does not open that a page had the 
 // reach past its own rule in the page, as one opening a comment that the
 // next closes in a quote, stops the demo as the file is read, before any
 // work, where the text between them became rules of their own that had
-// the page ask another program of this machine for a picture. A selector
-// the browser does not read hides nothing, and the notes name it.
+// the page ask another program of this machine for a picture, and so is
+// the hide of a call to makeDemo. A selector the browser does not read
+// hides nothing, and the notes name it.
 test("a steps file's hide refuses a selector that could reach past its rule before any work, and one the browser does not read is named in the notes", { skip: missing, timeout: 200_000 }, async () => {
   const seen = [];
   const other = await serve((req, res) => {
@@ -2519,6 +2520,9 @@ test("a steps file's hide refuses a selector that could reach past its rule befo
     fs.writeFileSync(steps, `hide:\n  - "x-none /*"\n  - ${JSON.stringify(`[a="*/x-none{} *{background-image:url(${other.origin}/x.png)} [b="]`)}\nsteps:\n  - visit: /\n  - wait: 1\n`);
     await assert.rejects(makeDemo(origin, { dir: path.join(root, "refused"), steps, gif: false, timeLimit: 100_000 }), { message: 'steps.yaml: hide takes CSS selectors, and "x-none /*" is not one: it holds a comment' });
     assert.equal(fs.existsSync(path.join(root, "refused")), false);
+    // A call's own hide, as a program that calls makeDemo gives it, the same.
+    await assert.rejects(makeDemo(origin, { dir: path.join(root, "called"), hide: [".promo", "x-none /*"], pages: 1, gif: false, timeLimit: 100_000 }), { message: 'hide takes CSS selectors, and "x-none /*" is not one: it holds a comment' });
+    assert.equal(fs.existsSync(path.join(root, "called")), false);
     fs.writeFileSync(steps, 'hide:\n  - "div:nope"\n  - ".promo"\nsteps:\n  - visit: /\n  - wait: 1\n');
     const { manifest } = await makeDemo(origin, { dir: path.join(root, "demo"), steps, gif: false, timeLimit: 150_000 });
     assert.deepEqual(manifest.notes.filter((note) => /to hide/.test(note)), ['The selector "div:nope" to hide hid nothing: the browser does not read it as a CSS selector.']);
