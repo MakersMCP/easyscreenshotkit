@@ -1588,7 +1588,7 @@ test("a demo that fails or is stopped leaves an earlier demo as it was and adds 
 // that. A demo went on, wrote a video of the page standing still (a steps
 // file) or cut the tour short (a tour), and replaced the earlier demo.
 test("a demo whose browser ends or whose tab crashes in the middle of it fails, and leaves an earlier demo as it was", { skip: missing || (process.platform !== "linux" && "the browser's processes are read from /proc"), timeout: 300_000 }, async () => {
-  const { server, origin } = await fixture();
+  const { server, origin, seen } = await fixture();
   const root = tempDir();
   const dir = path.join(root, "demo");
   const steps = path.join(root, "wait.yaml");
@@ -1596,6 +1596,12 @@ test("a demo whose browser ends or whose tab crashes in the middle of it fails, 
   const browser = /The browser ended in the middle of the demo \(it crashed, or was killed\), so no demo was saved\./;
   const tab = /The browser's tab crashed in the middle of the demo, so no demo was saved\./;
   const renderers = (all) => all.filter(({ args }) => /--type=renderer/.test(args));
+  // Whether the site has answered the home page since the case began: a
+  // tab's page killed while the browser still waited for that answer ends
+  // the navigation in the browser's words, net::ERR_ABORTED, as a busy
+  // machine had it do, and there is no page to crash yet.
+  let homeBefore = 0;
+  const homeServed = () => seen.filter((at) => at === "/").length > homeBefore;
   // ready: what has to be running before the kill is timed, as a tab that
   // is not there yet cannot crash. delay: from then.
   const cases = [
@@ -1610,7 +1616,7 @@ test("a demo whose browser ends or whose tab crashes in the middle of it fails, 
     { args: ["--steps", steps], line: /^Drawing \d+ frames/m, delay: 50, kill: (all) => all.filter(({ args }) => /--user-data-dir/.test(args) && !/--type=/.test(args)), told: browser },
     // The tab that reads the home page for the tour, its page killed: the
     // browser's first page and this tab's.
-    { args: ["--pages", "2"], line: /^Opening http/m, ready: (all) => renderers(all).length >= 2, delay: 300, kill: renderers, told: tab },
+    { args: ["--pages", "2"], line: /^Opening http/m, ready: (all) => homeServed() && renderers(all).length >= 2, delay: 300, kill: renderers, told: tab },
     // The tabs that draw the frames, their pages killed once a second one
     // is there, so the first has its page.
     { args: ["--steps", steps], line: /^Drawing \d+ frames/m, ready: (all) => renderers(all).length >= 3, delay: 100, kill: renderers, told: tab },
@@ -1619,6 +1625,7 @@ test("a demo whose browser ends or whose tab crashes in the middle of it fails, 
     await makeDemo(origin, { dir, steps, gif: false, timeLimit: 200_000 });
     const before = snapshot(dir);
     for (const [i, { args, line, ready, delay, kill, told }] of cases.entries()) {
+      homeBefore = seen.filter((at) => at === "/").length;
       const child = spawn(process.execPath, [CLI, "demo", origin, ...args, "--no-gif", "--out", dir]);
       let stderr = "";
       let killed = [];
