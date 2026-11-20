@@ -502,13 +502,20 @@ test("each selector to hide is a rule of its own in the page, and one that could
     const tab = await openTab(chrome, DEVICES.desktop);
     try {
       await navigate(tab, `${origin}/`);
-      const done = await clean(tab, { hide: [...pair, ".promo"], viewport: { width: 1600, height: 900 }, auto: false });
+      // Selectors the run takes that hold a brace, a semicolon, an @ or a
+      // comment's opening in quotes or escaped, a nested & and an escape
+      // that names a brace: each is a display:none rule of its own and
+      // nothing else, as insertRule reads one rule or throws.
+      const taken = ["a\\{", '[title="}{;@"]', ':is(.x, [data-y="/*"])', "& .z", "a\\7b b"];
+      const done = await clean(tab, { hide: [...pair, ".promo", ...taken], viewport: { width: 1600, height: 900 }, auto: false });
       assert.deepEqual(done.badSelectors, [pair[0]]);
       assert.equal(done.hidden, 1);
       const { result } = await tab.send("Runtime.evaluate", { expression: '[...document.getElementById("easyscreenshotkit-hide").sheet.cssRules].map((rule) => rule.cssText)', returnByValue: true });
-      assert.equal(result.value.length, 2, result.value.join("\n"));
+      assert.equal(result.value.length, 2 + taken.length, result.value.join("\n"));
       assert.match(result.value[1], /^\.promo \{ display: none !important; \}$/);
       assert.ok(result.value[0].startsWith('[a="*/x-none{} *{background-image:url('), result.value[0]);
+      const rules = await tab.send("Runtime.evaluate", { expression: '[...document.getElementById("easyscreenshotkit-hide").sheet.cssRules].map((rule) => [rule.type, rule.style.length, rule.style.getPropertyValue("display"), rule.style.getPropertyPriority("display"), rule.cssRules ? rule.cssRules.length : 0])', returnByValue: true });
+      assert.deepEqual(rules.result.value, Array(2 + taken.length).fill([1, 1, "none", "important", 0]));
       await sleep(1_500);
       assert.deepEqual(seen, []);
     } finally {

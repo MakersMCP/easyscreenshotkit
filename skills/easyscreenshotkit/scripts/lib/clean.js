@@ -66,10 +66,13 @@ const KNOWN = [
 // others as text: joined, a comment or a quote one selector opened ran on
 // into the next, and the text between them became rules of their own, one
 // that had the page ask an address the run does not open for a picture of
-// every element. A selector the browser cannot read, and one whose rule
-// comes out as anything but its own display:none, is not used and is
-// named in bad. Returns how many elements were showing, and how many of
-// those showed a loading sign (signIn, see page.js).
+// every element. A selector the browser cannot read is not used and is
+// named in bad. One it reads is its own display:none rule: querySelectorAll
+// reads it as a selector, insertRule reads the text as one rule or throws,
+// and what could reach past the rule, a comment, a quote or a bracket left
+// open, a brace, a semicolon or an @, is refused before any work (see
+// steps.js hideProblem). Returns how many elements were showing, and how
+// many of those showed a loading sign (signIn, see page.js).
 const HIDE_SELECTORS = `(function (selectors, signIn) {
   var style = document.getElementById("easyscreenshotkit-hide");
   if (!style) {
@@ -103,17 +106,9 @@ const HIDE_SELECTORS = `(function (selectors, signIn) {
       shown.push(el);
     });
     if (sheet) {
-      var at;
       try {
-        at = sheet.insertRule(selector + "{display:none!important}", sheet.cssRules.length);
+        sheet.insertRule(selector + "{display:none!important}", sheet.cssRules.length);
       } catch (e) {
-        bad.push(selector);
-        return;
-      }
-      var rule = sheet.cssRules[at];
-      var own = rule && rule.type === 1 && rule.style.length === 1 && rule.style.getPropertyValue("display") === "none" && rule.style.getPropertyPriority("display") === "important" && !(rule.cssRules && rule.cssRules.length);
-      if (!own) {
-        sheet.deleteRule(at);
         bad.push(selector);
         return;
       }
