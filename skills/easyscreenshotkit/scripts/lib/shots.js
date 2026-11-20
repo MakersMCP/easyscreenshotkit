@@ -660,13 +660,13 @@ function alternateNote(alternate, lang, what) {
   return `The home page names its ${alternate.lang} version at ${alternate.href}, ${what}, and the home page was taken with ${lang} as the browser's language.`;
 }
 
-// Why a page that could not be opened is left out.
 // The note for a selector given to hide that the browser did not read as a
 // CSS selector: it hid nothing.
 function unreadNote(selector) {
   return `The selector ${shownSelector(selector)} to hide hid nothing: the browser does not read it as a CSS selector.`;
 }
 
+// Why a page that could not be opened is left out.
 function notOpened(err) {
   if (err.refused) return err.refused;
   return /timed out/.test(err.message) ? `too slow to answer (${err.message})` : `could not be opened: ${err.reason || err.message}`;
