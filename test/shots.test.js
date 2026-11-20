@@ -520,15 +520,26 @@ test("each selector to hide is a rule of its own in the page, and one that could
         `*:is(\\75 rl(a"b)){background:url(${other.origin}/escaped)} *:is("))`,
       ];
       for (const selector of read) assert.equal(hideProblem(selector), "", selector);
-      const done = await clean(tab, { hide: [...pair, ".promo", ...taken, ...read], viewport: { width: 1600, height: 900 }, auto: false });
+      // And ones whose block, ; or @import stands inside :is(), whose list
+      // forgives what the browser does not read: querySelectorAll takes
+      // them, the browser drops that part, and each is still one
+      // display:none rule of its own, with no block or import in it.
+      const forgiven = [
+        `*:is(url(a"b) {background:url(${other.origin}/nested-brace)} url(c"d))`,
+        `*:is(url(a"b) ;@import url(${other.origin}/nested-import.css); url(c"d))`,
+        `.promo:is(url(a"b) {background:url(${other.origin}/nested-promo)} url(c"d)), .promo`,
+      ];
+      for (const selector of forgiven) assert.equal(hideProblem(selector), "", selector);
+      const done = await clean(tab, { hide: [...pair, ".promo", ...taken, ...read, ...forgiven], viewport: { width: 1600, height: 900 }, auto: false });
       assert.deepEqual(done.badSelectors, [pair[0], ...read]);
       assert.equal(done.hidden, 1);
       const { result } = await tab.send("Runtime.evaluate", { expression: '[...document.getElementById("easyscreenshotkit-hide").sheet.cssRules].map((rule) => rule.cssText)', returnByValue: true });
-      assert.equal(result.value.length, 2 + taken.length, result.value.join("\n"));
+      assert.equal(result.value.length, 2 + taken.length + forgiven.length, result.value.join("\n"));
       assert.match(result.value[1], /^\.promo \{ display: none !important; \}$/);
       assert.ok(result.value[0].startsWith('[a="*/x-none{} *{background-image:url('), result.value[0]);
+      for (const text of result.value.slice(-forgiven.length)) assert.match(text, /^[^{}@;]*\{ display: none !important; \}$/);
       const rules = await tab.send("Runtime.evaluate", { expression: '[...document.getElementById("easyscreenshotkit-hide").sheet.cssRules].map((rule) => [rule.type, rule.style.length, rule.style.getPropertyValue("display"), rule.style.getPropertyPriority("display"), rule.cssRules ? rule.cssRules.length : 0])', returnByValue: true });
-      assert.deepEqual(rules.result.value, Array(2 + taken.length).fill([1, 1, "none", "important", 0]));
+      assert.deepEqual(rules.result.value, Array(2 + taken.length + forgiven.length).fill([1, 1, "none", "important", 0]));
       await sleep(1_500);
       assert.deepEqual(seen, []);
     } finally {

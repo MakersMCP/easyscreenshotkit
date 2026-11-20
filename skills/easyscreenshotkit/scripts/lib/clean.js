@@ -68,14 +68,17 @@ const KNOWN = [
 // that had the page ask an address the run does not open for a picture of
 // every element. A selector the browser cannot read is not used and is
 // named in bad. One it reads is its own display:none rule: querySelectorAll
-// throws on a selector that CSS reads with a block, a ; or an at-rule in
-// it, and insertRule takes the text as one rule or throws. Before any work
-// steps.js hideProblem refuses what plainly could reach past a rule, a
-// comment, a quote or a bracket left open, a brace, a semicolon or an @
-// outside quotes; a selector it passes that CSS reads otherwise, as one
-// whose quote stands inside url(, where CSS opens no string, is one
-// querySelectorAll throws on. Returns how many elements were showing, and
-// how many of those showed a loading sign (signIn, see page.js).
+// throws on a selector that CSS reads with a block, a ; or an at-rule at
+// its top level; inside :is() or :where(), whose list forgives what the
+// browser does not read, the browser drops such a part, so the selector is
+// read without it; and insertRule takes the text as one rule or throws.
+// Before any work steps.js hideProblem refuses what plainly could reach
+// past a rule, a comment, a quote or a bracket left open, a brace, a
+// semicolon or an @ outside quotes; a selector it passes that CSS reads
+// otherwise, as one whose quote stands inside url(, where CSS opens no
+// string, is one querySelectorAll throws on, or one whose :is() drops that
+// part. Returns how many elements were showing, and how many of those
+// showed a loading sign (signIn, see page.js).
 const HIDE_SELECTORS = `(function (selectors, signIn) {
   var style = document.getElementById("easyscreenshotkit-hide");
   if (!style) {
