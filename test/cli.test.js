@@ -1382,7 +1382,11 @@ test("a browser or an ffmpeg that cannot be started stops a run before any work 
 // program by its first bytes all the same, as the browser and as ffmpeg.
 // Where a user namespace can have a binfmt_misc of its own (Linux 6.7 and
 // later, with unshare), the test registers such a program there, as
-// binfmt-support registers run-detectors, and runs the kit inside it.
+// binfmt-support registers run-detectors, and runs the kit inside it. Its
+// register line ends the program's path at a :, so a temp folder whose
+// path holds one skips the test with that reason, where it was skipped as
+// one with no binfmt_misc of its own; and the line is written with printf,
+// as dash's echo reads a backslash of the path.
 test("a Windows program that the system hands to a program of its own, as binfmt-support does, is named a Windows program", { skip: process.platform !== "linux" && "binfmt_misc is Linux's", timeout: 120_000 }, (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-binfmt-"));
   try {
@@ -1391,8 +1395,9 @@ test("a Windows program that the system hands to a program of its own, as binfmt
     fs.mkdirSync(path.join(root, "pe"));
     const pe = Buffer.concat([Buffer.from("4d5a90000300000004000000ffff0000b800000000000000400000000000000000", "hex"), Buffer.alloc(4096)]);
     for (const name of ["chrome", "ffmpeg"]) fs.writeFileSync(path.join(root, "pe", name), pe, { mode: 0o755 });
+    if (detectors.includes(":")) return t.skip(`the temp folder's path, ${os.tmpdir()}, has a : in it, which binfmt_misc's register line cannot hold in a program's path`);
     // A binfmt_misc of the namespace's own, with run-detectors for MZ.
-    const inside = (args, options = {}) => spawnSync("unshare", ["-rm", "sh", "-c", 'mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc && echo ":cli:M::MZ::$1:" > /proc/sys/fs/binfmt_misc/register && shift && exec "$@"', "sh", detectors, ...args], { encoding: "utf8", ...options });
+    const inside = (args, options = {}) => spawnSync("unshare", ["-rm", "sh", "-c", "mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc && printf ':cli:M::MZ::%s:\\n' \"$1\" > /proc/sys/fs/binfmt_misc/register && shift && exec \"$@\"", "sh", detectors, ...args], { encoding: "utf8", ...options });
     const handed = inside([path.join(root, "pe", "chrome")]);
     if (handed.status !== 2 || handed.stderr !== `run-detectors: unable to find an interpreter for ${path.join(root, "pe", "chrome")}\n`) return t.skip("needs a binfmt_misc of a user namespace's own, with unshare");
     const { CHROME_PATH, FFMPEG_PATH, ...base } = process.env;
