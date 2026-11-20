@@ -154,9 +154,12 @@ test("from a public address a run opens web addresses on the public internet onl
 // or of another one on the public internet reached another program there,
 // as a mail, a database or an admin server is, and 0.1.3 opened it and
 // saved what answered. The scheme, host and port given are the run's own,
-// whatever the port, as a site that serves on 8443 is given; another scheme
-// on that port is not, unless the port is 80 or 443. A site on this machine
-// given keeps its host and port, as before.
+// whatever the port, as a site that serves on 8443 is given, and so is
+// https on the host and port of an http address given, where the browser
+// goes itself for a host that asks for https (every .dev name does) and a
+// server's redirect can send it: that is the program the address names.
+// http on the port of an https address given is not, unless the port is 80
+// or 443. A site on this machine given keeps its host and port, as before.
 test("away from the address given a run opens port 80 and 443 only, and the scheme, host and port given on any port", () =>
   withNames({ "public.example": "93.184.215.14", "other.example": "93.184.215.15", "inside.example": "10.0.0.7" }, async () => {
     const fromPublic = await guardFor("https://public.example/");
@@ -201,19 +204,36 @@ test("away from the address given a run opens port 80 and 443 only, and the sche
     ]) {
       assert.equal(await fromPort.refuses(url), why, url);
     }
-    // A site on this machine given: its host and port as before, another
-    // scheme on that port only on 80 or 443, the web ports on the public
-    // internet, and no other port there.
+    // An http address given on another port: https on that host and port
+    // too, and no other port of it or of another host.
+    const fromHttp = await guardFor("http://public.example:8080/");
+    for (const [url, why] of [
+      ["http://public.example:8080/pricing", ""],
+      ["https://public.example:8080/", ""],
+      ["https://public.example:8080/login", ""],
+      ["https://public.example:8081/", port(8081)],
+      ["https://other.example:8080/", port(8080)],
+      ["https://inside.example:8080/", NOT_PUBLIC],
+    ]) {
+      assert.equal(await fromHttp.refuses(url), why, url);
+    }
+    // A site on this machine given: its host and port as before, https of
+    // its http, http of its https only on 80 or 443, the web ports on the
+    // public internet, and no other port there.
     const fromLocal = await guardFor("http://localhost:3000/");
     for (const [url, why] of [
       ["http://localhost:3000/pricing", ""],
-      ["https://localhost:3000/", port(3000)],
+      ["https://localhost:3000/", ""],
       ["http://localhost:3001/", NOT_GIVEN],
+      ["https://localhost:3001/", NOT_GIVEN],
       ["https://public.example/", ""],
       ["https://public.example:3000/", port(3000)],
     ]) {
       assert.equal(await fromLocal.refuses(url), why, url);
     }
+    const fromLocalHttps = await guardFor("https://127.0.0.1:3443/");
+    assert.equal(await fromLocalHttps.refuses("https://127.0.0.1:3443/x"), "");
+    assert.equal(await fromLocalHttps.refuses("http://127.0.0.1:3443/x"), port(3443));
     const fromLocalWeb = await guardFor("http://localhost/");
     assert.equal(await fromLocalWeb.refuses("https://localhost:80/"), "");
     assert.equal(await fromLocalWeb.refuses("https://localhost/"), NOT_GIVEN);

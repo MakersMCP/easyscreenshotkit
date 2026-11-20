@@ -305,9 +305,15 @@ async function guardFor(start) {
   const local = at === "inside";
   // The host and port given on this machine or its network, which the run
   // opens though they are not on the public internet; and the scheme, host
-  // and port given, which the run opens on any port.
+  // and port given, which the run opens on any port, and https on the host
+  // and port of an http address given, the same program: the browser goes
+  // there itself for a host that asks for https, as every .dev and .app
+  // name does (HSTS), and a server can redirect there on its own port, so
+  // http://myapp.dev:8080/ stopped the run on the address the browser
+  // itself opened for it. A move from https down to http on that port is
+  // not the address given.
   const given = (url) => local && url.hostname === from.hostname && portOf(url) === portOf(from);
-  const own = (url) => web && url.protocol === from.protocol && url.hostname === from.hostname && portOf(url) === portOf(from);
+  const own = (url) => web && url.hostname === from.hostname && portOf(url) === portOf(from) && (url.protocol === from.protocol || (from.protocol === "http:" && url.protocol === "https:"));
   const parse = (raw) => {
     try {
       return new URL(String(raw));

@@ -434,6 +434,19 @@ function whyOf(where, text, url) {
   return label ? `${WHERE_NAME[where]} "${label}"` : `${WHERE_NAME[where]} to ${url.pathname}`;
 }
 
+// Whether the run opens an address of the site on its port: on port 80 or
+// 443, or on the host and port of the home page, over its scheme or, from
+// http, over https (see address.js guardFor). Of two links to one page, one
+// on another port and one the run opens, the one it opens is kept: the
+// page's key has no port, and a menu's link to another port of the site
+// outranked its footer's link to the same page on 443, so the run refused
+// the one it kept and never tried the other.
+function opensPort(url, homeUrl) {
+  const port = (u) => u.port || (u.protocol === "https:" ? "443" : "80");
+  if (port(url) === "80" || port(url) === "443") return true;
+  return url.hostname === homeUrl.hostname && port(url) === port(homeUrl) && (url.protocol === homeUrl.protocol || (homeUrl.protocol === "http:" && url.protocol === "https:"));
+}
+
 // Ranks the home page's links and the sitemap's addresses. links:
 // [{href, text, where}] with where header, hero, body or footer. exclude:
 // the addresses of pages taken already; keys: their keys (pageKey or
@@ -468,7 +481,9 @@ function rankLinks(links, sitemap, { home, robots = null, alternates = [], exclu
     if (!kind) return;
     const candidate = { url: url.href, kind: kind.kind, score: scoreOf(kind, where, url), where, why: whyOf(where, text, url), order };
     const known = byKey.get(key);
-    const better = !known || candidate.score > known.score || (candidate.score === known.score && WHERE_ORDER.indexOf(where) < WHERE_ORDER.indexOf(known.where));
+    const opens = opensPort(url, homeUrl);
+    const knownOpens = Boolean(known) && opensPort(new URL(known.url), homeUrl);
+    const better = !known || (opens && !knownOpens) || (opens === knownOpens && (candidate.score > known.score || (candidate.score === known.score && WHERE_ORDER.indexOf(where) < WHERE_ORDER.indexOf(known.where))));
     if (better) byKey.set(key, known ? { ...candidate, order: known.order } : candidate);
   };
   for (const link of links) consider(link.href, link.text, link.where);

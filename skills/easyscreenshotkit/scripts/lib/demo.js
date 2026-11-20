@@ -89,22 +89,22 @@ one drawn before it does, as a page that thanks for a download, is shown as
 it is drawn, with a note in steps.json.
 
 From the address given a demo opens web addresses on the public internet
-only, on port 80 or 443 unless they are on the scheme, host and port
-given, and that host and port when the address given is on this machine or
-its network, as a site you run there is; a steps file's url is the address
-given when the command line gives none. A visit step to localhost,
-127.0.0.1, a private network or another address of that kind, to another
-port of a host on the public internet, or to a page that redirects to one
-or moves on to one before it has loaded, stops the demo, and so does
-a click on a link to a page that moves on so; a click on a link to one, or
-to a page that redirects to one, leaves the page where it was, with a note
-in steps.json, and a frame or a window a page opens there is not loaded; a
-tour leaves such a page out and says so. A host whose name does not
-resolve here, or gives no answer in 10 s, is not opened either, and an
-address given on one stops the demo. The rule is for the pages the demo
-opens: a page's own pictures, styles, scripts and the data it fetches are
-left to the browser's own rules, and on a site you run on your machine
-they can come from other ports of it.
+only, on port 80 or 443 unless they are on the scheme, host and port given
+or at https on the host and port of an http address given, and that host and
+port when the address given is on this machine or its network, as a site you
+run there is; a steps file's url is the address given when the command line
+gives none. A visit step to localhost, 127.0.0.1, a private network or
+another address of that kind, to another port of a host on the public
+internet, or to a page that redirects to one or moves on to one before it
+has loaded, stops the demo, and so does a click on a link to a page that
+moves on so; a click on a link to one, or to a page that redirects to one,
+leaves the page where it was, with a note in steps.json, and a frame or a
+window a page opens there is not loaded; a tour leaves such a page out and
+says so. A host whose name does not resolve here, or gives no answer in
+10 s, is not opened either, and an address given on one stops the demo. The
+rule is for the pages the demo opens: a page's own pictures, styles, scripts
+and the data it fetches are left to the browser's own rules, and on a site
+you run on your machine they can come from other ports of it.
 
 MAKERSMCP_REFUSE_ADDRESSES, a comma list of IP addresses and CIDR ranges,
 names addresses the machine refuses besides, as a service that runs the

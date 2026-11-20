@@ -119,6 +119,29 @@ test("ranking: menu links first, a sitemap only as a fallback, reasons kept for 
   );
 });
 
+// The page's key has no port: a menu's link to a page on another port of
+// the site, which the run does not open, outranked the footer's link to the
+// same page on 443, and the page was lost though the run could open it. The
+// link the run opens is kept; one on another port alone stays, for the
+// run's rule to refuse with its reason. A site given on another port keeps
+// its own links there, and https of an http one.
+test("of two links to one page, the one the run opens by its port is kept", () => {
+  const links = [
+    { href: "https://dup.example:8443/pricing", text: "Pricing", where: "header" },
+    { href: "https://dup.example:8443/features", text: "Features", where: "header" },
+    { href: "https://dup.example:8443/customers", text: "Customers", where: "header" },
+    { href: "/pricing", text: "Pricing", where: "footer" },
+    { href: "https://www.dup.example/features", text: "Features", where: "footer" },
+  ];
+  const { candidates } = pick.rankLinks(links, ["https://dup.example:9443/integrations", "https://dup.example/integrations"], { home: "https://dup.example/" });
+  assert.deepEqual(candidates.map((c) => c.url).sort(), ["https://dup.example/integrations", "https://dup.example/pricing", "https://dup.example:8443/customers", "https://www.dup.example/features"]);
+  // Given on 8443: that port is the site's own, and another one is not.
+  const onPort = pick.rankLinks([{ href: "/pricing", text: "Pricing", where: "header" }, { href: "https://dup.example:9443/pricing", text: "Pricing", where: "header" }, { href: "https://dup.example/pricing", text: "Pricing", where: "footer" }], [], { home: "https://dup.example:8443/" });
+  assert.deepEqual(onPort.candidates.map((c) => c.url), ["https://dup.example:8443/pricing"]);
+  const upgraded = pick.rankLinks([{ href: "http://dup.example:9443/pricing", text: "Pricing", where: "header" }, { href: "https://dup.example:8080/pricing", text: "Pricing", where: "footer" }], [], { home: "http://dup.example:8080/" });
+  assert.deepEqual(upgraded.candidates.map((c) => c.url), ["https://dup.example:8080/pricing"]);
+});
+
 test("a #route is a view of its own; #/, #! and an anchor are not", () => {
   assert.equal(pick.routeOf("https://acme.com/app/#/plants"), "#/plants");
   assert.equal(pick.routeOf("https://acme.com/#/plant/Fern"), "#/plant/Fern");

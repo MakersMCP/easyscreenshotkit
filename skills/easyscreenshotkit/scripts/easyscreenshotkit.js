@@ -71,21 +71,22 @@ drawn before it does, as a page that thanks for a download, is taken as
 it is drawn, with a note.
 
 From the address given the run opens web addresses on the public internet
-only, on port 80 or 443 unless they are on the scheme, host and port
-given, and that host and port when the address given is on this machine or
-its network, as a site you run there is: a page, a redirect or a sitemap
-at localhost, 127.0.0.1, a private network or another address of that kind
-is not opened, and the report names it with the reason, and neither is a
-frame or a window a page opens there, nor one on another port of a host on
-the public internet, nor a host whose name does not resolve here or gives
-no answer in 10 s; an address given on such a host stops the run. A page
-that moves on to one before it has loaded is refused as a redirect there
-is. --pwa and --pwa-check read a manifest and its screenshots by the same
-rule, and from a manifest file no screenshot at such an address or on
-another port than 80 and 443. The rule is for the pages the run opens and
-the files it reads itself: a page's own pictures, styles, scripts and the
-data it fetches are left to the browser's own rules, and on a site you run
-on your machine they can come from other ports of it.
+only, on port 80 or 443 unless they are on the scheme, host and port given
+or at https on the host and port of an http address given, and that host and
+port when the address given is on this machine or its network, as a site you
+run there is: a page, a redirect or a sitemap at localhost, 127.0.0.1, a
+private network or another address of that kind is not opened, and the
+report names it with the reason, and neither is a frame or a window a page
+opens there, nor one on another port of a host on the public internet, nor a
+host whose name does not resolve here or gives no answer in 10 s; an address
+given on such a host stops the run. A page that moves on to one before it
+has loaded is refused as a redirect there is. --pwa and --pwa-check read a
+manifest and its screenshots by the same rule, and from a manifest file no
+screenshot at such an address or on another port than 80 and 443. The rule
+is for the pages the run opens and the files it reads itself: a page's own
+pictures, styles, scripts and the data it fetches are left to the browser's
+own rules, and on a site you run on your machine they can come from other
+ports of it.
 
 MAKERSMCP_REFUSE_ADDRESSES, a comma list of IP addresses and CIDR ranges,
 names addresses the machine refuses besides, as a service that runs the

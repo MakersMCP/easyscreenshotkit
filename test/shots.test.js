@@ -18,6 +18,7 @@ const { guardFor } = require("../skills/easyscreenshotkit/scripts/lib/address");
 const { setTimeLimit, sleep } = require("../skills/easyscreenshotkit/scripts/lib/time");
 const { watchRequests, networkQuiet, showsLoadingSign, looksEmpty, waitForContent } = require("../skills/easyscreenshotkit/scripts/lib/page");
 const { LOCATE, Recorder } = require("../skills/easyscreenshotkit/scripts/lib/record");
+const { pickPages } = require("../skills/easyscreenshotkit/scripts/lib/tour");
 const { pngText } = require("../skills/easyscreenshotkit/scripts/lib/png");
 const { clean } = require("../skills/easyscreenshotkit/scripts/lib/clean");
 const programs = require("../skills/easyscreenshotkit/scripts/lib/programs");
@@ -3502,6 +3503,141 @@ test("from a public site the browser opens no other port than 80 and 443 away fr
     await chrome.close();
     server.close();
     other.server.close();
+  }
+}));
+
+// An http address given on another port than 80 and 443 is opened at https
+// on that host and port too, the same program: the browser goes there itself
+// for a host that asks for https, as every .dev name does, and a server can
+// redirect there on its own port. The run stopped on it as on another
+// scheme. A move from https down to http on such a port is still refused.
+// The test's server answers both on one port, and its certificate, made
+// here, is taken by a browser told to take any.
+const openssl = spawnSync("openssl", ["version"], { encoding: "utf8" });
+const noOpenssl = (openssl.error || openssl.status !== 0) && "no openssl to make the test's certificate";
+
+test("an http address given on another port is taken at https on that host and port, where the browser or the site's server sends it, and https is not taken down to http there", { skip: noBrowser || noOpenssl, timeout: 120_000 }, () => withNames({ "myapp.dev": "93.184.215.14", "public.example": "93.184.215.14" }, async () => {
+  const root = tempDir();
+  const key = path.join(root, "key.pem");
+  const cert = path.join(root, "cert.pem");
+  const made = spawnSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", cert, "-days", "1", "-subj", "/CN=myapp.dev", "-addext", "subjectAltName=DNS:myapp.dev,DNS:public.example"], { encoding: "utf8" });
+  assert.equal(made.status, 0, made.stderr);
+  const https = require("node:https");
+  const http = require("node:http");
+  const seen = [];
+  const handler = (scheme) => (req, res) => {
+    seen.push(`${scheme} ${req.headers.host}${req.url}`);
+    if (scheme === "http" && req.url === "/up") return res.writeHead(301, { Location: `https://${req.headers.host}/` }).end();
+    if (scheme === "https" && req.url === "/down") return res.writeHead(302, { Location: `http://${req.headers.host}/` }).end();
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Acme", `<h1>Acme over ${scheme}</h1>`));
+  };
+  const secure = https.createServer({ key: fs.readFileSync(key), cert: fs.readFileSync(cert) }, handler("https"));
+  const plain = http.createServer(handler("http"));
+  await Promise.all([secure, plain].map((server) => new Promise((resolve) => server.listen(0, "127.0.0.1", resolve))));
+  // One port for both, told apart by the first byte, 22 for a TLS hello,
+  // each connection handed on to the server it is for.
+  const both = net.createServer((socket) => {
+    socket.on("error", () => {});
+    socket.once("data", (first) => {
+      const on = net.connect((first[0] === 22 ? secure : plain).address().port, "127.0.0.1", () => {
+        on.write(first);
+        socket.pipe(on).pipe(socket);
+      });
+      on.on("error", () => socket.destroy());
+    });
+  });
+  await new Promise((resolve) => both.listen(0, "127.0.0.1", resolve));
+  const port = both.address().port;
+  const chrome = await launch({ args: ["--host-resolver-rules=MAP myapp.dev 127.0.0.1, MAP public.example 127.0.0.1", "--ignore-certificate-errors"] });
+  try {
+    for (const [given, opened, landed] of [
+      // The browser goes to https itself: myapp.dev asks for it.
+      [`http://myapp.dev:${port}/`, `http://myapp.dev:${port}/`, `https://myapp.dev:${port}/`],
+      // The site's server sends it there.
+      [`http://public.example:${port}/`, `http://public.example:${port}/up`, `https://public.example:${port}/`],
+    ]) {
+      chrome.guard = await guardFor(given);
+      const tab = await openTab(chrome, DEVICES.desktop);
+      try {
+        const nav = await navigate(tab, opened);
+        assert.deepEqual([nav.status, nav.url], [200, landed], opened);
+      } finally {
+        await closeTab(chrome, tab);
+      }
+    }
+    chrome.guard = await guardFor(`https://public.example:${port}/`);
+    const tab = await openTab(chrome, DEVICES.desktop);
+    try {
+      await assert.rejects(navigate(tab, `https://public.example:${port}/down`), { message: `Could not open https://public.example:${port}/down: it leads to http://public.example:${port}/, which is ${OTHER_PORT(port)}.` });
+    } finally {
+      await closeTab(chrome, tab);
+    }
+    assert.ok(seen.includes(`https myapp.dev:${port}/`) && seen.includes(`https public.example:${port}/`), seen.join("\n"));
+    assert.ok(!seen.includes(`http public.example:${port}/`), seen.join("\n"));
+  } finally {
+    await chrome.close();
+    for (const server of [both, secure, plain]) {
+      server.close();
+      if (server.closeAllConnections) server.closeAllConnections();
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}));
+
+// Two links to one page, the menu's on another port of the site and the
+// footer's on its own port: the page's key has no port, the menu's link
+// outranked the footer's, the run refused it, and the page was lost though
+// the footer's was there to take, in the screenshots and in a demo's tour.
+// The link the run opens is the one kept now. Here the site's name leads
+// the browser to this machine whatever the port, and the kit's own
+// requests for it, robots.txt and the sitemap, to the same server.
+test("of a menu's link to a page on another port and the footer's on the site's own, the screenshots and a demo's tour take the footer's", { skip: noBrowser || (process.platform === "win32" && "the wrapper is a shell script"), timeout: 200_000 }, () => withNames({ "dup.example": "93.184.215.14" }, async () => {
+  const html = { "Content-Type": "text/html; charset=utf-8" };
+  const pages = { "/pricing": "Pricing", "/features": "Features", "/customers": "Customers", "/about": "About us" };
+  const { server, origin } = await serve((req, res) => {
+    const path = req.url.split("?")[0];
+    if (path === "/") return res.writeHead(200, html).end(page("Dup | Tools for teams", `<header><nav><a href="https://dup.example:8443/pricing">Pricing</a> <a href="https://dup.example:8443/features">Features</a> <a href="/customers">Customers</a></nav></header><h1>Dup</h1><div style="height:1400px"></div><footer><a href="/pricing">Pricing</a> <a href="/features">Features</a> <a href="/about">About</a></footer>`));
+    if (pages[path]) return res.writeHead(200, html).end(page(`${pages[path]} | Dup`, `<h1>${pages[path]}</h1><p>The ${pages[path].toLowerCase()} page of Dup, which makes tools for teams.</p><div style="height:1400px"></div>`));
+    res.writeHead(404).end("not found");
+  });
+  const port = new URL(origin).port;
+  const http = require("node:http");
+  const get = http.get;
+  // The kit's own requests for the site's name go to the site's server.
+  http.get = (url, options, done) => {
+    const where = new URL(String(url));
+    if (where.hostname !== "dup.example") return get(url, options, done);
+    const { lookup, ...rest } = options || {};
+    return get(`http://127.0.0.1:${port}${where.pathname}${where.search}`, { ...rest, headers: { ...((rest && rest.headers) || {}), Host: "dup.example" } }, done);
+  };
+  const root = tempDir();
+  const quote = (text) => `'${String(text).replace(/'/g, "'\\''")}'`;
+  const browser = path.join(root, "mapped-chrome");
+  fs.writeFileSync(browser, `#!/bin/sh\nexec ${quote(findChrome())} --host-resolver-rules="MAP dup.example 127.0.0.1:${port}" "$@"\n`, { mode: 0o755 });
+  const saved = process.env.CHROME_PATH;
+  process.env.CHROME_PATH = browser;
+  try {
+    const { manifest } = await takeShots("http://dup.example/", { dir: path.join(root, "shots"), pages: 4, sizes: "desktop", timeLimit: 180_000 });
+    assert.deepEqual(manifest.pages.map((p) => p.url).sort(), ["http://dup.example/", "http://dup.example/customers", "http://dup.example/features", "http://dup.example/pricing"]);
+    assert.deepEqual(manifest.skipped.filter((skip) => /:8443\//.test(skip.url)), []);
+    // The same of a demo's tour, which looks for pages while four minutes
+    // of the demo are left.
+    setTimeLimit(400_000);
+    const chrome = await launch();
+    try {
+      chrome.guard = await guardFor("http://dup.example/");
+      const tour = await pickPages(chrome, "http://dup.example/", { pages: 4 });
+      assert.deepEqual(tour.pages.map((p) => p.url).sort(), ["http://dup.example/", "http://dup.example/customers", "http://dup.example/features", "http://dup.example/pricing"]);
+    } finally {
+      await chrome.close();
+      setTimeLimit(120_000);
+    }
+  } finally {
+    http.get = get;
+    if (saved === undefined) delete process.env.CHROME_PATH;
+    else process.env.CHROME_PATH = saved;
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
   }
 }));
 
