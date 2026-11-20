@@ -5080,7 +5080,7 @@ test("--pwa says which screenshots of the site's manifest it did not read, and c
     assert.deepEqual([site.desktop, site.phone], [[2], []]);
     assert.deepEqual(site.unchecked, [
       "Phones: the check did not read screenshot 3, so it cannot say whether they get the richer install dialog.",
-      `Screenshots 1 and 3: not read, as it is ${NOT_GIVEN}: the check cannot say whether Chrome shows it.`,
+      `Screenshots 1 and 3: not read, as they are ${NOT_GIVEN}: the check cannot say whether Chrome shows them.`,
     ]);
     assert.ok(!site.problems.some((text) => /plain install dialog/.test(text)), site.problems.join("\n"));
     assert.equal(note, `The site's manifest, ${origin}/app.webmanifest, lists 3 screenshots already: of those the run read, Chrome shows 1 on desktops and 0 on phones, and SCREENSHOTS.md names the ones it did not read.`);

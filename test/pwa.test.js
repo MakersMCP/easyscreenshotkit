@@ -353,7 +353,7 @@ test("--pwa-check of a manifest file with a screenshot it does not read says so,
     assert.equal(run.status, 1, run.stdout + run.stderr);
     assert.match(run.stdout, /^ {2}Desktop {2}not known: the check did not read screenshot 1$/m);
     assert.match(run.stdout, /^ {2}Phone {4}the richer install dialog, with screenshot 2$/m);
-    assert.match(run.stdout, /\nNot checked:\n {2}- Desktops: the check did not read screenshot 1, so it cannot say whether they get the richer install dialog\.\n {2}- Screenshot 1 \(http:\/\/127\.0\.0\.1:9\/wide\.png\): not read, as it is not on the public internet: the check cannot say whether Chrome shows it\.\n {2}- To have a screenshot on http:\/\/127\.0\.0\.1:9 read, give --pwa-check the manifest's own address on its host and port/);
+    assert.match(run.stdout, /\nNot checked:\n {2}- Desktops: the check did not read screenshot 1, so it cannot say whether they get the richer install dialog\.\n {2}- Screenshot 1 \(http:\/\/127\.0\.0\.1:9\/wide\.png\): not read, as it is not on the public internet: the check cannot say whether Chrome shows it\.\n {2}- To have a screenshot on http:\/\/127\.0\.0\.1:9 read, give the check the manifest's own address on its host and port/);
     assert.match(run.stdout, /\nNothing to fix in the screenshots the check read\.$/m);
     assert.doesNotMatch(run.stdout, /plain install dialog/);
   } finally {
@@ -433,6 +433,101 @@ test("the screenshots of a manifest are read at the address their host was judge
   } finally {
     dns.lookup = lookup;
     https.get = saved;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// A screenshot no visitor's Chrome loads either is one that could not be
+// loaded, a fault to fix, as 0.1.3 had it: one on a host whose name does not
+// exist, as a typo in a CDN's host, and one at an address of this machine in
+// a manifest of a site on the public internet, as a localhost address left
+// from development. Each was listed as not read, with nothing to fix, and
+// the side it was for as not known. A screenshot on another port, or on a
+// host whose lookup gave no answer, is not read; and several with the same
+// reason are spoken of together. Here public-site.example is a site on the
+// public internet for the check's rule, whose requests go to a server of
+// this process.
+test("--pwa-check counts a screenshot on a host that does not exist, or on this machine in a site's manifest on the public internet, as one that could not be loaded, and words several as several", async () => {
+  const dns = require("node:dns");
+  const http = require("node:http");
+  const names = { "public-site.example": "93.184.215.14", "cdn-other.example": "93.184.215.15" };
+  const failing = { "cdn-typo.example": "ENOTFOUND", "cdn-busy.example": "EAI_AGAIN" };
+  const lookup = dns.lookup;
+  dns.lookup = (host, options, callback) => {
+    if (typeof options === "function") [options, callback] = [{}, options];
+    if (failing[host]) return process.nextTick(callback, Object.assign(new Error(`getaddrinfo ${failing[host]} ${host}`), { code: failing[host], hostname: host }));
+    if (!names[host]) return lookup(host, options, callback);
+    process.nextTick(callback, null, options && options.all ? [{ address: names[host], family: 4 }] : names[host], 4);
+  };
+  const screenshots = [
+    { src: "https://cdn-typo.example/s/wide.png", sizes: "1920x1080", type: "image/png", form_factor: "wide" },
+    { src: "http://localhost:9/s/narrow.png", sizes: "1080x1920", type: "image/png", form_factor: "narrow" },
+    { src: "https://cdn-busy.example/s/wide.png", sizes: "1920x1080", type: "image/png", form_factor: "wide" },
+    { src: "https://cdn-other.example:8443/s/one.png", sizes: "1920x1080", type: "image/png", form_factor: "wide" },
+    { src: "https://cdn-other.example:8443/s/two.png", sizes: "1920x1080", type: "image/png", form_factor: "wide" },
+    { src: "https://cdn-typo.example/s/again.png", sizes: "1080x1920", type: "image/png", form_factor: "narrow" },
+    { src: "/s/moved.png", sizes: "1080x1920", type: "image/png", form_factor: "narrow" },
+  ];
+  const { server, origin } = await serve((req, res) => {
+    if (req.url === "/app.webmanifest") return res.writeHead(200, { "Content-Type": "application/manifest+json" }).end(JSON.stringify({ name: "Acme", screenshots }));
+    if (req.url === "/s/moved.png") return res.writeHead(302, { Location: "mailto:shots@acme.example" }).end();
+    res.writeHead(404).end();
+  });
+  const saved = http.get;
+  http.get = (url, options, done) => {
+    const at = new URL(url);
+    if (at.hostname !== "public-site.example") return saved(url, options, done);
+    return saved(`${origin}${at.pathname}`, { ...options, lookup: undefined }, done);
+  };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-pwa-"));
+  const HOST = "on a host whose name could not be looked up";
+  try {
+    const report = await checkManifest({ url: "http://public-site.example/app.webmanifest" });
+    assert.deepEqual(
+      report.screenshots.map((shot) => [shot.n, shot.unread, shot.error]),
+      [
+        [1, "", `it is ${HOST}`],
+        [2, "", "it is not on the public internet"],
+        [3, `it is ${HOST}`, ""],
+        [4, "it is on port 8443, not 80 or 443, and not on the scheme, host and port given", ""],
+        [5, "it is on port 8443, not 80 or 443, and not on the scheme, host and port given", ""],
+        [6, "", `it is ${HOST}`],
+        [7, "", "it leads to mailto:shots@acme.example, which is not a web address"],
+      ],
+    );
+    assert.equal(report.ok, false);
+    assert.ok(report.problems.includes(`Screenshots 1 and 6: could not be loaded (they are ${HOST}).`), report.problems.join("\n"));
+    assert.ok(report.problems.includes("Screenshot 2 (http://localhost:9/s/narrow.png): could not be loaded (it is not on the public internet)."), report.problems.join("\n"));
+    assert.ok(report.problems.includes("Phones get the plain install dialog: Chrome can show none of the screenshots for phones."), report.problems.join("\n"));
+    assert.deepEqual(report.unchecked, [
+      "Desktops: the check did not read screenshots 3 to 5, so it cannot say whether they get the richer install dialog.",
+      `Screenshot 3 (https://cdn-busy.example/s/wide.png): not read, as it is ${HOST}: the check cannot say whether Chrome shows it.`,
+      "Screenshots 4 and 5: not read, as they are on port 8443, not 80 or 443, and not on the scheme, host and port given: the check cannot say whether Chrome shows them.",
+    ]);
+    assert.match(describeCheck(report), /^ {2}Phone {4}the plain install dialog$/m);
+    // From a manifest file the same, but for this machine's address, which
+    // a site on this machine could serve: not read, with the address that
+    // reads it.
+    const file = path.join(dir, "manifest.json");
+    fs.writeFileSync(file, JSON.stringify({ name: "Acme", screenshots }));
+    const fromFile = await checkManifest({ file });
+    assert.deepEqual(
+      fromFile.screenshots.map((shot) => [shot.n, shot.unread, shot.error]),
+      [
+        [1, "", `it is ${HOST}`],
+        [2, "it is not on the public internet", ""],
+        [3, `it is ${HOST}`, ""],
+        [4, "it is on port 8443, not 80 or 443", ""],
+        [5, "it is on port 8443, not 80 or 443", ""],
+        [6, "", `it is ${HOST}`],
+        [7, "", `there is no file ${path.join(dir, "s", "moved.png")}`],
+      ],
+    );
+    assert.ok(fromFile.unchecked.includes("To have a screenshot on http://localhost:9 or https://cdn-other.example:8443 read, give the check the manifest's own address on its host and port: the host and port of the address it is given are the check's own."), fromFile.unchecked.join("\n"));
+  } finally {
+    dns.lookup = lookup;
+    http.get = saved;
+    server.close();
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -527,7 +622,7 @@ test("--pwa-check reads no manifest or screenshot on another port than 80 and 44
       "Desktops: the check did not read screenshots 1 and 3, so it cannot say whether they get the richer install dialog.",
       "Screenshot 1 (https://cdn.example:8443/wide.png): not read, as it is on port 8443, not 80 or 443: the check cannot say whether Chrome shows it.",
       "Screenshot 3 (https://refused.example:8443/wide.png): not read, as it is at 93.184.215.99, an address MAKERSMCP_REFUSE_ADDRESSES refuses: the check cannot say whether Chrome shows it.",
-      "To have a screenshot on https://cdn.example:8443 read, give --pwa-check the manifest's own address on its host and port: the host and port of the address it is given are the check's own.",
+      "To have a screenshot on https://cdn.example:8443 read, give the check the manifest's own address on its host and port: the host and port of the address it is given are the check's own.",
     ]);
     assert.ok(!fromFile.problems.some((text) => /^Desktops/.test(text)), fromFile.problems.join("\n"));
     assert.ok(fromFile.problems.includes("Phones get the plain install dialog: Chrome can show none of the screenshots for phones."), fromFile.problems.join("\n"));
@@ -596,7 +691,7 @@ test("--pwa-check reads nothing from an address on this machine other than the o
     fs.writeFileSync(file, JSON.stringify({ name: "Acme", screenshots: [{ src: `${elsewhere}/wide.png`, sizes: "1920x1080", type: "image/png", form_factor: "wide" }, { src: `${origin}/here.png`, sizes: "1920x1080", type: "image/png", form_factor: "wide" }] }));
     const fromFile = await checkManifest({ file });
     assert.deepEqual(fromFile.screenshots.map((shot) => shot.unread), ["it is not on the public internet", "it is not on the public internet"]);
-    assert.equal(fromFile.unchecked.at(-1), `To have a screenshot on ${elsewhere} or ${origin} read, give --pwa-check the manifest's own address on its host and port: the host and port of the address it is given are the check's own.`);
+    assert.equal(fromFile.unchecked.at(-1), `To have a screenshot on ${elsewhere} or ${origin} read, give the check the manifest's own address on its host and port: the host and port of the address it is given are the check's own.`);
     assert.deepEqual(seen, []);
   } finally {
     server.close();

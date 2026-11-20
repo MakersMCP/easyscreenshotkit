@@ -27,7 +27,7 @@ const fs = require("fs");
 const path = require("path");
 const { pngSize } = require("./png");
 const { oneLine } = require("./pick");
-const { guardFor, getChecked, otherPort, NOT_PUBLIC } = require("./address");
+const { guardFor, getChecked, otherPort, NOT_PUBLIC, NOT_WEB, UNRESOLVED } = require("./address");
 const version = require("./version");
 
 const MIN_SIDE = 320;
@@ -259,19 +259,24 @@ function checkScreenshots(list, images = [], options = {}) {
       problems.push(`Chrome looks at the first ${LOOKED_AT} screenshots of the list only, wide and narrow together, so ${numbers(shots.slice(LOOKED_AT).map((shot) => shot.n))} never show.`);
     }
   }
-  // The same words for several screenshots come once, with their numbers.
-  const grouped = (of) => {
+  // The same words for several screenshots come once, with their numbers,
+  // and speak of them all (worded, given the words and whether there are
+  // several).
+  const grouped = (of, worded = (text) => text) => {
     const texts = new Map();
     for (const shot of shots) for (const text of of(shot)) texts.set(text, [...(texts.get(text) || []), shot]);
     return [...texts].map(([text, list]) => {
       const one = list.length === 1 && list[0].src ? ` (${list[0].src.length > 60 ? `${list[0].src.slice(0, 57)}...` : list[0].src})` : "";
       const name = numbers(list.map((shot) => shot.n));
-      return `${name.charAt(0).toUpperCase()}${name.slice(1)}${one}: ${text}.`;
+      return `${name.charAt(0).toUpperCase()}${name.slice(1)}${one}: ${worded(text, list.length > 1)}.`;
     });
   };
-  problems.push(...grouped((shot) => shot.problems));
+  // A reason as said of one screenshot, "it is ..." or "it leads to ...",
+  // said of several.
+  const they = (why, many) => (many ? why.replace(/^it is /, "they are ").replace(/^it leads to /, "they lead to ") : why);
+  problems.push(...grouped((shot) => shot.problems, (text, many) => text.replace(/^(could not be loaded \()(.*)\)$/s, (all, head, why) => `${head}${they(why, many)})`)));
   tips.push(...grouped((shot) => shot.tips));
-  unchecked.push(...grouped((shot) => (shot.unread ? [`not read, as ${shot.unread}: the check cannot say whether Chrome shows it`] : [])));
+  unchecked.push(...grouped((shot) => (shot.unread ? [shot.unread] : []), (why, many) => `not read, as ${they(why, many)}: the check cannot say whether Chrome shows ${many ? "them" : "it"}`));
   if ("description" in options) {
     const text = typeof options.description === "string" ? options.description.trim() : "";
     if (!text) tips.push(`There is no description. Chrome shows it above the screenshots, about ${DESCRIPTION_SHOWN} characters of it.`);
@@ -453,6 +458,25 @@ async function loadImage(src, base, guard) {
   return imageInfo(fs.readFileSync(path.join(base.dir, name.replace(/^\/+/, ""))));
 }
 
+// Whether a screenshot the check's rule refused is one it did not read, or
+// one that could not be loaded. Not read: one Chrome could load by rules of
+// its own, where the check cannot say whether it shows it, on another port,
+// at an address MAKERSMCP_REFUSE_ADDRESSES names, on this machine or its
+// network named by a manifest file, or at another address of this machine
+// named by a manifest of a site given there, and one on a host whose
+// lookup gave no answer in time. Could not be loaded: one no visitor's
+// Chrome loads either, on a host whose name does not exist, as a typo in a
+// CDN's host, not on the public internet in a manifest of a site on it, as
+// a localhost address left from development, or that leads to an address
+// that is no web address. Each was listed as not read, with nothing to fix.
+async function unreadAs(err, guard, target) {
+  if (!err || !err.refused) return false;
+  if (err.why === NOT_WEB) return false;
+  if (err.why === NOT_PUBLIC) return Boolean(target.file);
+  if (err.why === UNRESOLVED) return (await guard.lookupWhy(err.at)) !== "no such name";
+  return true;
+}
+
 // --pwa-check: the manifest read, its screenshots' files read (the first 8,
 // as Chrome does), and Chrome's rules applied. The check reads the address
 // it is given, and from there web addresses on the public internet only, or
@@ -467,13 +491,10 @@ async function checkManifest(target, { guard: given = null } = {}) {
   const found = await loadManifest(target, guard);
   const json = found.json && typeof found.json === "object" && !Array.isArray(found.json) ? found.json : {};
   const list = Array.isArray(json.screenshots) ? json.screenshots : [];
-  // A screenshot the check's rule refuses is one it did not read, not one
-  // that could not be loaded: Chrome reads it by rules of its own.
-  const refused = (err) => Boolean(err && err.refused);
   const images = await Promise.all(
     list.slice(0, LOOKED_AT).map((entry) => {
       const src = entry && typeof entry.src === "string" ? entry.src.trim() : "";
-      return src ? loadImage(src, found.base, guard).catch((err) => (refused(err) ? { unread: reasonOf(err) } : { error: reasonOf(err) })) : undefined;
+      return src ? loadImage(src, found.base, guard).catch(async (err) => ((await unreadAs(err, guard, target)) ? { unread: reasonOf(err) } : { error: reasonOf(err) })) : undefined;
     }),
   );
   // A file with screenshots and nothing else, such as the
@@ -499,7 +520,7 @@ async function checkManifest(target, { guard: given = null } = {}) {
         // No address to name.
       }
     }
-    if (elsewhere.size) report.unchecked.push(`To have a screenshot on ${[...elsewhere].join(" or ")} read, give --pwa-check the manifest's own address on its host and port: the host and port of the address it is given are the check's own.`);
+    if (elsewhere.size) report.unchecked.push(`To have a screenshot on ${[...elsewhere].join(" or ")} read, give the check the manifest's own address on its host and port: the host and port of the address it is given are the check's own.`);
   }
   return {
     manifest: found.where,

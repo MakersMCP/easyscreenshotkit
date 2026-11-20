@@ -394,8 +394,10 @@ function addressesFor(hostname) {
 // whose name could not be looked up, or on a port other than 80 and 443
 // away from the address given. reached(url, space) says the same of a
 // document the browser has reached, by where it says it reached it (see
-// INSIDE_SPACES). unresolved: why the host of the address given could not
-// be looked up, or "": a run given it opens nothing. refused: why
+// INSIDE_SPACES). lookupWhy(url): why the name of a host refuses() calls
+// one whose name could not be looked up was not, in a few words (see
+// lookupWhy()). unresolved: why the host of the address given could not be
+// looked up, or "": a run given it opens nothing. refused: why
 // MAKERSMCP_REFUSE_ADDRESSES refuses the address given, or "" likewise.
 // Throws when MAKERSMCP_REFUSE_ADDRESSES does not parse.
 async function guardFor(start) {
@@ -467,6 +469,10 @@ async function guardFor(start) {
       if (url && given(url)) return "";
       return local ? `${REACHED_INSIDE}, and not on the host and port given` : REACHED_INSIDE;
     },
+    lookupWhy(raw) {
+      const url = parse(raw);
+      return lookupWhy(url ? url.hostname : "");
+    },
     // For a request the kit makes itself, to an address refuses() took: the
     // lookup that connects it to the addresses refuses() judged, the answer
     // the name was asked for once (see addressesOf()), and not to a second
@@ -496,7 +502,8 @@ async function guardFor(start) {
 // way judged by guard first: redirects are followed by hand, 5 at most, and
 // each is judged again. Resolves to {url, status, ok, type, body}, the body
 // decompressed and cut at maxBytes; fails with refused set, the reason, for
-// an address the guard refuses.
+// an address the guard refuses, why, what the guard said of it, and at, that
+// address.
 const REDIRECTS = 5;
 
 async function getChecked(raw, { guard, headers = {}, timeoutMs = 15_000, maxBytes = Infinity } = {}) {
@@ -506,7 +513,7 @@ async function getChecked(raw, { guard, headers = {}, timeoutMs = 15_000, maxByt
     const why = await guard.refuses(url.href);
     if (why) {
       const reason = hop ? `it leads to ${url.href}, which is ${why}` : `it is ${why}`;
-      throw Object.assign(new Error(reason), { refused: reason });
+      throw Object.assign(new Error(reason), { refused: reason, why, at: url.href });
     }
     const res = await requestOf(url, { headers: { "accept-encoding": "gzip, deflate, br", ...headers }, lookup: guard.lookupFor(url.href), signal });
     const location = res.headers.location;
