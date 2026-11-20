@@ -128,20 +128,40 @@ function heldIpv4(groups) {
   return "";
 }
 
+// The IPv4 addresses a Teredo address (2001::/32) holds: its server's, the
+// 32 bits after 2001:0, and its client's, the last 32 bits with each bit
+// turned over. Either can be this machine or the host's own: a machine
+// with a Teredo client reaches such an address through them. [] for any
+// other address.
+function teredoIpv4(groups) {
+  if (groups[0] !== 0x2001 || groups[1] !== 0) return [];
+  const v4 = (hi, lo) => `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`;
+  return [v4(groups[2], groups[3]), v4(groups[6] ^ 0xffff, groups[7] ^ 0xffff)];
+}
+
+// Whether an IPv6 address is in NAT64's local use prefix, 64:ff9b:1::/48,
+// where a network puts the IPv4 address its translator reaches in a way of
+// its own choosing: in the last 32 bits, in one of the other places RFC
+// 6052 gives it, or by a table of its own.
+const localNat64 = (groups) => groups[0] === 0x64 && groups[1] === 0xff9b && groups[2] === 1;
+
 // The IPv4 address or range an IPv6 address or range holds, in one of the
-// forms heldIpv4() reads, as [address, prefix], or null: the IPv4 part is
-// the last 32 bits of the mapped, compatible, translated and NAT64 forms,
-// so a range of them at /96 or longer holds the IPv4 range of its last
-// bits, and the 32 bits after 2002 in 6to4, so a range of those at /16 or
-// longer holds the IPv4 range of its next bits, /32 from /48 on. A
-// compatible range that holds only :: and ::1, which are no IPv4 address,
-// holds none. ::ffff:185.137.215.0/120 holds 185.137.215.0/24.
+// forms heldIpv4() reads or NAT64's local use prefix, as [address,
+// prefix], or null: the IPv4 part is the last 32 bits of the mapped,
+// compatible, translated and NAT64 forms, the local use prefix's too, as
+// 64:ff9b:1::185.137.215.163 writes it, so a range of them at /96 or longer
+// holds the IPv4 range of its last bits, and the 32 bits after 2002 in
+// 6to4, so a range of those at /16 or longer holds the IPv4 range of its
+// next bits, /32 from /48 on. A shorter range holds none. A compatible
+// range that holds only :: and ::1, which are no IPv4 address, holds none.
+// ::ffff:185.137.215.0/120 holds 185.137.215.0/24, and ::ffff:0:0/96 every
+// IPv4 address, 0.0.0.0/0.
 function heldRange(groups, bits) {
   const v4 = (hi, lo) => `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`;
   const zero = (from, to) => groups.slice(from, to).every((g) => g === 0);
   if (bits >= 96) {
     const prefix = bits - 96;
-    if ((zero(0, 5) && groups[5] === 0xffff) || (zero(0, 4) && groups[4] === 0xffff && groups[5] === 0) || (groups[0] === 0x64 && groups[1] === 0xff9b && zero(2, 6))) return [v4(groups[6], groups[7]), prefix];
+    if ((zero(0, 5) && groups[5] === 0xffff) || (zero(0, 4) && groups[4] === 0xffff && groups[5] === 0) || (groups[0] === 0x64 && groups[1] === 0xff9b && zero(2, 6)) || localNat64(groups)) return [v4(groups[6], groups[7]), prefix];
     if (zero(0, 6)) {
       const low = ((groups[6] << 16) | groups[7]) >>> 0;
       const size = 2 ** (32 - prefix);
@@ -176,14 +196,21 @@ function notPublicIp(address) {
 // as 185.137.215.163,10.20.0.0/16, spaces around each allowed. A service
 // that runs the kit for others names its own public addresses there, which
 // lead back into its network. An IPv4 entry refuses that address in every
-// IPv6 form that holds it too (see heldIpv4()); an IPv6 entry refuses the
-// IPv6 addresses it covers, and one in such a form the IPv4 address or
-// range it holds as well (see heldRange()). An empty or missing value
-// refuses nothing more.
+// IPv6 form that holds it too (see heldIpv4()), and a Teredo address whose
+// server or client it is (see teredoIpv4()); and while the setting names
+// an IPv4 address or range, every address of NAT64's local use prefix is
+// refused, as one can stand for any IPv4 address (see localNat64()). It
+// opened 64:ff9b:1::7f00:1 and 2001:0:7f00:1:: with 127.0.0.1 refused. An
+// IPv6 entry refuses the IPv6 addresses it covers, and one in such a form,
+// local use prefix included, the IPv4 address or range it holds as well
+// (see heldRange()). An empty or missing value refuses nothing more.
 // A value that does not parse throws, naming the setting, so that a run
 // stops before any work: a run that went on would open what the host meant
-// to refuse. has(address): whether an address, as a URL or a lookup gives
-// it, is one of those. Read again for each run, and parsed once a value.
+// to refuse. So does an entry that holds every IPv4 address, as
+// 64:ff9b::/96 and 2002::/16 do, which would refuse them all: an entry a
+// host copies from a firewall's list of IPv6 ranges it refuses whole.
+// has(address): whether an address, as a URL or a lookup gives it, is one
+// of those. Read again for each run, and parsed once a value.
 const ENTRY = /^([0-9A-Fa-f:.]+)(?:\/(\d{1,3}))?$/;
 const settings = new Map();
 
@@ -192,7 +219,9 @@ function hostRefusals(value = process.env[REFUSE_SETTING]) {
   if (settings.has(text)) return settings.get(text);
   const v4 = new net.BlockList();
   const v6 = new net.BlockList();
+  // size: the entries; fours: those that refuse IPv4 addresses.
   let size = 0;
+  let fours = 0;
   for (const part of text.split(",")) {
     const entry = part.trim();
     if (!entry) continue;
@@ -213,13 +242,16 @@ function hostRefusals(value = process.env[REFUSE_SETTING]) {
       });
       throw new Error(`${REFUSE_SETTING} takes IP addresses and CIDR ranges, separated by commas, such as 192.0.2.7,198.51.100.0/24, and "${shown}" is neither. Correct it, or leave it empty to refuse no more addresses.`);
     }
-    (family === 4 ? v4 : v6).addSubnet(match[1], bits, family === 4 ? "ipv4" : "ipv6");
     // An entry written as an IPv6 form of an IPv4 address or range refuses
     // that IPv4 address or range too, and so each form of it, as an IPv4
     // entry does: ::ffff:185.137.215.163 named only itself, and
-    // 185.137.215.163 was opened.
+    // 185.137.215.163 was opened. One that holds every IPv4 address is not
+    // taken.
     const held = family === 6 ? heldRange(groupsOf(match[1]) || [], bits) : null;
+    if (held && held[1] === 0) throw new Error(`${REFUSE_SETTING} takes IP addresses and CIDR ranges, and "${entry}" holds every IPv4 address, each in an IPv6 form, so it would refuse them all. An IPv6 form of an IPv4 address is judged by that address: name the IPv4 addresses to refuse, or leave it empty to refuse no more addresses.`);
+    (family === 4 ? v4 : v6).addSubnet(match[1], bits, family === 4 ? "ipv4" : "ipv6");
     if (held) v4.addSubnet(held[0], held[1], "ipv4");
+    if (family === 4 || held) fours++;
     size++;
   }
   const has = (address) => {
@@ -230,8 +262,10 @@ function hostRefusals(value = process.env[REFUSE_SETTING]) {
     if (family !== 6) return false;
     if (v6.check(ip, "ipv6")) return true;
     const groups = groupsOf(ip);
-    const held = groups ? heldIpv4(groups) : "";
-    return Boolean(held) && v4.check(held, "ipv4");
+    if (!groups) return false;
+    if (fours && localNat64(groups)) return true;
+    const held = [heldIpv4(groups), ...teredoIpv4(groups)].filter(Boolean);
+    return held.some((one) => v4.check(one, "ipv4"));
   };
   const refusals = { size, has };
   settings.set(text, refusals);
