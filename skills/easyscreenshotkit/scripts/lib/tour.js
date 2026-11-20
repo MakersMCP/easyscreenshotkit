@@ -86,7 +86,7 @@ async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = 
       if (info.challenge) throw Object.assign(new Error(`${nav.url} answered with a bot check ("${info.title || "a challenge page"}") instead of its page, so no demo was recorded. Open the site in a normal browser to check it.`), { refused: "a bot check instead of the page" });
       // The site's own home page in the language asked for, when it names one.
       const alternate = alternates && alternateFor(info.alternates, lang);
-      if (alternate && pageKey(alternate.href) !== pageKey(nav.url) && siteOf(alternate.href) === siteOf(home)) {
+      if (alternate && pageKey(alternate.href) !== pageKey(nav.url) && [siteOf(home), siteOf(nav.url)].includes(siteOf(alternate.href))) {
         const barred = chrome.guard ? await chrome.guard.refuses(alternate.href) : "";
         if (barred) notes.push(alternateNote(alternate, lang, `which is ${barred}: it was not opened`));
         else {
@@ -165,7 +165,9 @@ async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = 
     kept.push({ url: got.nav.url, kind, why, title: got.info.title, slug: slugOf(named, home), textHash: got.info.textHash, keys, asked: Boolean(flags.asked), given: Boolean(flags.given) });
     log(`  ${pathOf(got.nav.url)} (${why})`);
   };
-  const check = { site: siteOf(home), homeKey, kept };
+  // The site given, and the one the home page landed on, whose links the
+  // tour takes (see rejectAtOnce() in shots.js).
+  const check = { sites: [siteOf(home), siteOf(nav.url)], homeKey, kept };
   // The page given and the ones asked for come whatever they are, unless
   // they fail to open, as a link to a file does; one the tour has already
   // is said so. A page that fails because the browser ended fails the demo.
@@ -184,7 +186,7 @@ async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = 
     }
     let got;
     try {
-      got = await probe(chrome, url, { site: check.site, homeKey: "", kept: [] }, ctx, { links: wanted > 1 });
+      got = await probe(chrome, url, { sites: check.sites, homeKey: "", kept: [] }, ctx, { links: wanted > 1 });
     } catch (err) {
       if (chrome.gone()) throw err;
       skipped.push({ url, reason: notOpened(err) });

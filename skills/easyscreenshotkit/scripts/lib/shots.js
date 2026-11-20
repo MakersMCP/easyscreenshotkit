@@ -585,11 +585,16 @@ async function evaluate(cdp, expression, fallback) {
 
 // Why a page found by easyscreenshotkit is not kept, or "". What the address
 // and the first look tell is checked at once; whether the page loaded and
-// whether it repeats a page already kept, once it has settled.
-function rejectAtOnce({ asked, nav, info }, { site, homeKey }) {
+// whether it repeats a page already kept, once it has settled. sites: the
+// tour's, the site given and the one its home page landed on, as a name in
+// another script lands on its ASCII form or an alias domain on the main
+// one; a page that lands elsewhere is one redirected to another site. With
+// the site given alone, every page the landed home page links was left out
+// as redirected to its host, though none had moved.
+function rejectAtOnce({ asked, nav, info }, { sites, homeKey }) {
   if (nav.status >= 400) return `the page answered ${nav.status}`;
   if (info.challenge) return "a bot check instead of the page";
-  if (siteOf(nav.url) !== site) return `redirected to ${new URL(nav.url).hostname}`;
+  if (!sites.includes(siteOf(nav.url))) return `redirected to ${new URL(nav.url).hostname}`;
   const landed = pageKey(nav.url);
   if (landed !== pageKey(asked)) {
     const where = new URL(nav.url);
@@ -1392,7 +1397,7 @@ async function takeShots(rawUrl, options = {}) {
       // lose it. A browser that ended or stopped answering fails the run.
       if (lang && wanted > 1 && !(spare && failure(result))) {
         const alternate = alternateFor(result.info.alternates, lang);
-        if (alternate && pageKey(alternate.href) !== pageKey(result.nav.url) && siteOf(alternate.href) === siteOf(home)) {
+        if (alternate && pageKey(alternate.href) !== pageKey(result.nav.url) && [siteOf(home), siteOf(result.nav.url)].includes(siteOf(alternate.href))) {
           const barred = chrome.guard ? await chrome.guard.refuses(alternate.href) : "";
           if (barred) notes.push(alternateNote(alternate, lang, `which is ${barred}: it was not opened`));
           else {
@@ -1516,7 +1521,9 @@ async function takeShots(rawUrl, options = {}) {
     if (!tookNamed) throw new Error(`${missed.map(({ url, reason }) => `${url} was asked for but not taken: ${reason}.`).join(" ")} No screenshots were saved.`);
 
     if (wanted > 1) {
-      const site = siteOf(home);
+      // The site given, and the one the home page landed on, whose links
+      // the tour takes (see rejectAtOnce()).
+      const sites = [siteOf(home), siteOf(kept[0].url)];
       const homeKey = pageKey(kept[0].url);
       // Then the pages found on the home page and in the sitemap.
       const index = await indexing;
@@ -1551,7 +1558,7 @@ async function takeShots(rawUrl, options = {}) {
         let got;
         const started = Date.now();
         try {
-          got = await visit(chrome, page, first, firstTheme, ctx, { check: { site, homeKey, kept } });
+          got = await visit(chrome, page, first, firstTheme, ctx, { check: { sites, homeKey, kept } });
           if (!got.rejected) took.push(Date.now() - started);
         } catch (err) {
           // A page that failed because the browser ended is no page left

@@ -4061,6 +4061,78 @@ test("of a menu's link to a page on another port and the footer's on the site's 
   }
 }));
 
+// A home page that moves on to another site, as a name in another script to
+// its ASCII form or an alias domain to the main one, makes that site the
+// tour's too: the links of the page it landed on are the pages the tour
+// takes, and none is one redirected to another site. Each was left out as
+// "redirected to" the host the home page landed on, though none had moved,
+// and the run saved the home page alone, in the screenshots and in a demo's
+// tour. A page that does move on to another site is left out so still. And
+// the home page's version in another language on that site is taken, where
+// it was passed over with no note. Here both names lead the browser and the
+// kit's own requests to one server, which tells them apart by the Host
+// header.
+test("a home page that moves on to another site makes that site the tour's, in the screenshots and a demo's tour", { skip: noBrowser || (process.platform === "win32" && "the wrapper is a shell script"), timeout: 300_000 }, () => withNames({ "alias.example": "93.184.215.14", "main.example": "93.184.215.15", "away.example": "93.184.215.16" }, async () => {
+  const html = { "Content-Type": "text/html; charset=utf-8" };
+  const pages = { "/pricing": "Pricing", "/features": "Features" };
+  const { server, origin } = await serve((req, res) => {
+    const host = String(req.headers.host || "").replace(/:\d+$/, "");
+    const path = req.url.split("?")[0];
+    if (host === "alias.example") return res.writeHead(301, { Location: `http://main.example${req.url}` }).end();
+    if (host !== "main.example") return res.writeHead(200, html).end(page("Away | Elsewhere", "<h1>Away</h1><div style=\"height:1400px\"></div>"));
+    if (path === "/") return res.writeHead(200, html).end(page("Main | Tools for teams", `<header><nav><a href="/pricing">Pricing</a> <a href="/features">Features</a> <a href="/customers">Customers</a></nav></header><h1>Main</h1><div style="height:1400px"></div>`, { head: '<link rel="alternate" hreflang="tr" href="http://main.example/tr/">' }));
+    if (path === "/tr/") return res.writeHead(200, html).end(page("Main | Ekipler için araçlar", `<header><nav><a href="/tr/fiyatlar">Fiyatlar</a></nav></header><h1>Main</h1><div style="height:1400px"></div>`, { lang: "tr" }));
+    if (path === "/tr/fiyatlar") return res.writeHead(200, html).end(page("Fiyatlar | Main", "<h1>Fiyatlar</h1><p>Main'in fiyatları.</p><div style=\"height:1400px\"></div>", { lang: "tr" }));
+    if (path === "/customers") return res.writeHead(302, { Location: "http://away.example/customers" }).end();
+    if (pages[path]) return res.writeHead(200, html).end(page(`${pages[path]} | Main`, `<h1>${pages[path]}</h1><p>The ${pages[path].toLowerCase()} page of Main, which makes tools for teams.</p><div style="height:1400px"></div>`));
+    res.writeHead(404).end("not found");
+  });
+  const port = new URL(origin).port;
+  const http = require("node:http");
+  const get = http.get;
+  // The kit's own requests for the names go to the server.
+  http.get = (url, options, done) => {
+    const where = new URL(String(url));
+    if (!/^(alias|main|away)\.example$/.test(where.hostname)) return get(url, options, done);
+    const { lookup, ...rest } = options || {};
+    return get(`http://127.0.0.1:${port}${where.pathname}${where.search}`, { ...rest, headers: { ...((rest && rest.headers) || {}), Host: where.hostname } }, done);
+  };
+  const root = tempDir();
+  const browser = path.join(root, "mapped-chrome");
+  fs.writeFileSync(browser, `#!/bin/sh\nexec ${sh(findChrome())} --host-resolver-rules="MAP alias.example 127.0.0.1:${port}, MAP main.example 127.0.0.1:${port}, MAP away.example 127.0.0.1:${port}" ${sh(publicAt(port))} "$@"\n`, { mode: 0o755 });
+  const saved = process.env.CHROME_PATH;
+  process.env.CHROME_PATH = browser;
+  const taken = ["http://main.example/", "http://main.example/features", "http://main.example/pricing"];
+  try {
+    const { manifest } = await takeShots("http://alias.example/", { dir: path.join(root, "shots"), pages: 4, sizes: "desktop", timeLimit: 180_000 });
+    assert.deepEqual(manifest.pages.map((p) => p.url).sort(), taken);
+    assert.deepEqual(manifest.skipped.map((skip) => [skip.url, skip.reason]), [["http://main.example/customers", "redirected to away.example"]]);
+    const inTurkish = await takeShots("http://alias.example/", { dir: path.join(root, "tr"), pages: 2, lang: "tr", sizes: "desktop", timeLimit: 180_000 });
+    assert.deepEqual(inTurkish.manifest.pages.map((p) => p.url), ["http://main.example/tr/", "http://main.example/tr/fiyatlar"]);
+    // The same of a demo's tour, which looks for pages while four minutes
+    // of the demo are left.
+    setTimeLimit(400_000);
+    const chrome = await launch();
+    try {
+      chrome.guard = await guardFor("http://alias.example/");
+      const tour = await pickPages(chrome, "http://alias.example/", { pages: 4 });
+      assert.deepEqual(tour.pages.map((p) => p.url).sort(), taken);
+      assert.deepEqual(tour.skipped.map((skip) => [skip.url, skip.reason]), [["http://main.example/customers", "redirected to away.example"]]);
+      const turkish = await pickPages(chrome, "http://alias.example/", { pages: 2, lang: "tr" });
+      assert.deepEqual(turkish.pages.map((p) => p.url), ["http://main.example/tr/", "http://main.example/tr/fiyatlar"]);
+    } finally {
+      await chrome.close();
+      setTimeLimit(120_000);
+    }
+  } finally {
+    http.get = get;
+    if (saved === undefined) delete process.env.CHROME_PATH;
+    else process.env.CHROME_PATH = saved;
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}));
+
 // An address written without a scheme, as localhost:3000, is read as
 // https://, and a site on this machine that serves plain http failed it in
 // the browser's words alone, net::ERR_SSL_PROTOCOL_ERROR: the run says to
