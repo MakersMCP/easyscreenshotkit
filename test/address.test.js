@@ -11,6 +11,7 @@ const http = require("node:http");
 const test = require("node:test");
 const { guardFor, getChecked, notPublicIp, unresolvedError, UNRESOLVED } = require("../skills/easyscreenshotkit/scripts/lib/address");
 const { alternateFor } = require("../skills/easyscreenshotkit/scripts/lib/pick");
+const CASES = require("./address-cases.json");
 
 const NOT_PUBLIC = "not on the public internet";
 const NOT_GIVEN = "not on the public internet, and not on the host and port given";
@@ -27,6 +28,26 @@ test("an address on this machine, a private network or a range kept aside is not
     assert.equal(notPublicIp(ip), false, ip);
   }
   assert.equal(notPublicIp("not an address"), true);
+});
+
+// The cases easybrandkit, easyscreenshotkit and launch-film judge alike
+// (address-cases.json): every IPv6 form that holds an IPv4 address by that
+// address, NAT64's well known prefix among them (publicInKitsOnly), and
+// Teredo and the other ranges kept aside as not public. 0.1.3 took Teredo's
+// 2001::/32 for public, so 2001:0:7f00:1::1, which names the Teredo server
+// 127.0.0.1, passed for a site's address. In an address, as the URL parser
+// writes them, each IP address of the table the same, but for the one with
+// a zone, which no address holds.
+test("the shared table of addresses: every IPv6 form that holds an IPv4 address is judged by it, and Teredo and the other ranges kept aside are not public", async () => {
+  const { isIP } = require("node:net");
+  const reachable = [...CASES.public, ...CASES.publicInKitsOnly];
+  for (const ip of CASES.notPublic) assert.equal(notPublicIp(ip), true, ip);
+  for (const ip of reachable) assert.equal(notPublicIp(ip), false, ip);
+  const guard = await guardFor("");
+  const url = (ip) => (ip.includes(":") ? `http://[${ip}]/` : `http://${ip}/`);
+  const ips = (list) => list.filter((ip) => isIP(ip) && !ip.includes("%"));
+  for (const ip of ips(CASES.notPublic)) assert.equal(await guard.refuses(url(ip)), NOT_PUBLIC, ip);
+  for (const ip of ips(reachable)) assert.equal(await guard.refuses(url(ip)), "", ip);
 });
 
 test("from a public address a run opens web addresses on the public internet only, and from one on this machine that host and port too", async () => {
