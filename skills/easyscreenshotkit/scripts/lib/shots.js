@@ -137,6 +137,27 @@ function parseAddress(raw) {
   return url;
 }
 
+// An address written without a scheme is read as https:// (see
+// parseAddress), and a server that answers it in plain http, as a site you
+// run on your machine often does, fails it in the browser's words alone,
+// net::ERR_SSL_PROTOCOL_ERROR, or in Node's, EPROTO, for what the kit reads
+// itself, which said nothing of giving http://. err with the address to
+// give then, when raw has no scheme and err is that failure of an address
+// on asked's host and port; else err as it is.
+function schemeHint(err, raw, asked) {
+  if (!err || !err.message || /^\s*[a-z][a-z0-9+.-]*:\/\//i.test(String(raw || ""))) return err;
+  let url;
+  try {
+    url = new URL(asked);
+  } catch {
+    return err;
+  }
+  const at = [`Could not open ${url.origin}/`, `Could not read ${url.origin}/`].some((words) => err.message.includes(words));
+  if (url.protocol !== "https:" || !at || !/net::ERR_SSL_PROTOCOL_ERROR|: EPROTO\b/.test(err.message)) return err;
+  const said = `${err.message.replace(/\.$/, "")}. An address written without a scheme is read as https://, and http://${url.host}/ is the one to give if the site has no https.`;
+  return Object.assign(new Error(said), { reason: err.reason, refused: err.refused });
+}
+
 // The address to open. A #route stays: it opens a view of a single page
 // app. Any other fragment goes, as it always did: an anchor is a place on
 // the page, and what a sign-in leaves there (#access_token=…) is not for
@@ -1624,7 +1645,7 @@ async function takeShots(rawUrl, options = {}) {
     await pool.drain();
     if (chrome) await chrome.close();
     run.abort();
-    throw run.told(why ? new Error(why) : err);
+    throw run.told(why ? new Error(why) : schemeHint(err, rawUrl, asked));
   }
   // The run has ended well: its files take the place of the earlier run's.
   run.commit(saved);
@@ -1687,4 +1708,4 @@ function leftOut(rejected, routes, links) {
   return { skipped: all.slice(0, LEFT_OUT), routesPast: all.slice(LEFT_OUT).filter((skip) => skip.reason === ROUTE_LINK).length };
 }
 
-module.exports = { takeShots, unreadNote, parseSizes, addPwaShots, normalizeUrl, fragmentNotes, prepareDir, openShots, slugOf, identity, movedOn, pagesAsked, waitForView, leftOut, siteName, readInfo, readLinks, rejectAtOnce, rejectReason, notOpened, alternateNote, barredNote, barredNotes, writeMarkdown, DEVICES, MAX_HEIGHT };
+module.exports = { takeShots, unreadNote, schemeHint, parseSizes, addPwaShots, normalizeUrl, fragmentNotes, prepareDir, openShots, slugOf, identity, movedOn, pagesAsked, waitForView, leftOut, siteName, readInfo, readLinks, rejectAtOnce, rejectReason, notOpened, alternateNote, barredNote, barredNotes, writeMarkdown, DEVICES, MAX_HEIGHT };

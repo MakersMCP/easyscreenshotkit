@@ -17,7 +17,7 @@
 const fs = require("fs");
 const path = require("path");
 const { launch, browserProblem, busy, CRASHED } = require("./chrome");
-const { normalizeUrl, fragmentNotes, siteName, unreadNote } = require("./shots");
+const { normalizeUrl, fragmentNotes, siteName, unreadNote, schemeHint } = require("./shots");
 const { homeOf, siteOf, routeOf, viewKey, viewOf, pathOf, readable, printable } = require("./pick");
 const { Recorder } = require("./record");
 const { loadSteps, toYaml, targetText, hideRefusal } = require("./steps");
@@ -87,6 +87,10 @@ stops the demo, and the browser saves nothing. A visit or a click to a page
 that moves on to a file before anything of it is drawn stops the demo too;
 one drawn before it does, as a page that thanks for a download, is shown as
 it is drawn, with a note in steps.json.
+
+An address written without a scheme, as acme.com or localhost:3000, is
+read as https://: give a site that serves plain http, as one you run on
+your machine often does, with http://, as http://localhost:3000.
 
 From the address given a demo opens web addresses on the public internet
 only, on port 80 or 443 unless they are on the scheme, host and port given
@@ -643,7 +647,7 @@ async function makeDemo(rawUrl, options = {}) {
     // A call that ran out of time as the frames were drawn is said so.
     const why = lostWhy() || (err.message === CRASHED ? TAB_CRASHED : "") || (drawing && err.timedOut ? drawnTooSlowly(err.cut) : "");
     run.abort();
-    throw run.told(why ? new Error(why) : err);
+    throw run.told(why ? new Error(why) : schemeHint(err, rawUrl || (script && script.url) || "", asked));
   }
   // The run has ended well: its files take the place of the earlier demo's,
   // and the frames go with the part folder.

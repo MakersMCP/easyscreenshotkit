@@ -146,6 +146,31 @@ test("--hide refuses a selector that opens a comment, a quote or a bracket it do
   }
 });
 
+// An address written without a scheme is read as https://, and a site on
+// this machine that serves plain http fails it in Node's words alone, as
+// the browser fails it in its own: the run says to give http:// then. An
+// address written with https:// gets no such words.
+test("--pwa-check of an address with no scheme that a plain http server answers says to give http://", async () => {
+  const http = require("node:http");
+  const server = http.createServer((req, res) => res.writeHead(200, { "Content-Type": "text/html" }).end("<h1>Dev</h1>"));
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  const run = (value) => new Promise((resolve) => {
+    const child = spawn(process.execPath, [CLI, "--pwa-check", value], { stdio: ["ignore", "pipe", "pipe"] });
+    let stderr = "";
+    child.stderr.on("data", (d) => (stderr += d));
+    child.on("close", (status) => resolve({ status, stderr }));
+  });
+  try {
+    const bare = await run(`localhost:${port}`);
+    assert.deepEqual([bare.status, bare.stderr], [1, `easyscreenshotkit: Could not read https://localhost:${port}/: EPROTO. An address written without a scheme is read as https://, and http://localhost:${port}/ is the one to give if the site has no https.\n`]);
+    const written = await run(`https://localhost:${port}`);
+    assert.deepEqual([written.status, written.stderr], [1, `easyscreenshotkit: Could not read https://localhost:${port}/: EPROTO\n`]);
+  } finally {
+    server.close();
+  }
+});
+
 test("the CLI explains itself and refuses a missing address or a bad option", () => {
   const help = spawnSync(process.execPath, [CLI, "--help"], { encoding: "utf8" });
   assert.equal(help.status, 0);

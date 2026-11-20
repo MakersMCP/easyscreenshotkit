@@ -2,7 +2,7 @@
 "use strict";
 
 const fs = require("fs");
-const { takeShots, normalizeUrl } = require("./lib/shots");
+const { takeShots, normalizeUrl, schemeHint } = require("./lib/shots");
 const { pathOf, readable, printable } = require("./lib/pick");
 const { hideRefusal } = require("./lib/steps");
 const { stopOnSignals } = require("./lib/outdir");
@@ -69,6 +69,10 @@ refused and named in the report, and the browser saves nothing; so is a
 page that sends the browser to a file before anything of it is drawn. One
 drawn before it does, as a page that thanks for a download, is taken as
 it is drawn, with a note.
+
+An address written without a scheme, as acme.com or localhost:3000, is
+read as https://: give a site that serves plain http, as one you run on
+your machine often does, with http://, as http://localhost:3000.
 
 From the address given the run opens web addresses on the public internet
 only, on port 80 or 443 unless they are on the scheme, host and port given
@@ -205,9 +209,12 @@ function manifestTarget(value) {
 // --pwa-check: a manifest file on this machine, else a web address.
 async function pwaCheck(options) {
   let report;
+  let target = null;
   try {
-    report = await checkManifest(manifestTarget(options.pwaCheck));
-  } catch (err) {
+    target = manifestTarget(options.pwaCheck);
+    report = await checkManifest(target);
+  } catch (caught) {
+    const err = target && target.url ? schemeHint(caught, options.pwaCheck, target.url) : caught;
     if (options.json) process.stdout.write(JSON.stringify({ ok: false, error: err.message }) + "\n");
     process.stderr.write(`easyscreenshotkit: ${printable(err.message)}\n`);
     process.exit(1);
