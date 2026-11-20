@@ -1342,7 +1342,10 @@ function letGo(session) {
 // its own; "" for an answer from the browser's cache, for which no request
 // went out; and null when the browser said nothing of the request at all,
 // as for a target it did not take hearAddresses() for, or nothing in
-// SPACE_MS of the answer to a request it said it sent.
+// SPACE_MS of the answer to a request it said it sent. The wait takes what
+// the run has left, a second at least, as a call to the browser does: cut
+// to what was left, a page opened as the run's time ran out was refused as
+// one the browser said nothing of, where it said so a moment later.
 const SPACE_MS = 5_000;
 
 async function spaceOf(chrome, networkId) {
@@ -1350,7 +1353,7 @@ async function spaceOf(chrome, networkId) {
   const known = heardOf(chrome, networkId);
   if (!known.spaces.length && known.sent) {
     await new Promise((resolve) => {
-      const timer = setTimeout(resolve, Math.max(1, Math.min(SPACE_MS, timeLeft())));
+      const timer = setTimeout(resolve, Math.max(1_000, Math.min(SPACE_MS, timeLeft())));
       known.waiting.push(() => {
         clearTimeout(timer);
         resolve();

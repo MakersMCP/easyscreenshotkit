@@ -488,6 +488,7 @@ test("--no-clean keeps the floating boxes; --hide hides more; --json prints the 
 // one that opens the comment makes no rule, the other is one selector
 // hiding what it names, and the other program is asked for nothing.
 test("each selector to hide is a rule of its own in the page, and one that could reach past its rule is refused before any work", { skip: noBrowser, timeout: 120_000 }, async () => {
+  setTimeLimit(180_000);
   const seen = [];
   const other = await serve((req, res) => {
     seen.push(req.url);
@@ -3291,6 +3292,7 @@ test("an address that answers with a file is refused, the report says so, and no
 // for many people, another job found it and read and drove the pages of
 // this one's browser through it.
 test("the browser opens no port: the run drives it over a pipe", { skip: noBrowser || (process.platform !== "linux" && "sockets are read from /proc"), timeout: 60_000 }, async () => {
+  setTimeLimit(180_000);
   const chrome = await launch();
   try {
     const main = { pid: chrome.pid, args: fs.readFileSync(`/proc/${chrome.pid}/cmdline`, "utf8") };
@@ -3372,6 +3374,7 @@ async function withNames(answers, body) {
 // name leads it to the site's server; the other server is another program
 // on this machine.
 test("from a public site the browser opens no address on this machine: given, after a redirect, or when a page moves on by itself", { skip: noBrowser, timeout: 120_000 }, () => withNames({ "public.example": "93.184.215.14" }, async () => {
+  setTimeLimit(180_000);
   const seen = [];
   const other = await serve((req, res) => {
     seen.push(req.url);
@@ -3422,6 +3425,7 @@ test("from a public site the browser opens no address on this machine: given, af
 // went through and were drawn into the screenshot. The frames and the window
 // are named to the tab.
 test("from a public site a frame of another site that is moved later, and a window a click opens, open no address on this machine", { skip: noBrowser, timeout: 120_000 }, () => withNames({ "public.example": "93.184.215.14", "framed.example": "93.184.215.15" }, async () => {
+  setTimeLimit(180_000);
   const seen = [];
   const other = await serve((req, res) => {
     seen.push(req.url);
@@ -3487,6 +3491,7 @@ test("from a public site a frame of another site that is moved later, and a wind
 const REACHED = "on a host the browser reached on this machine or its network";
 
 test("a host the run finds on the public internet that the browser reaches on this machine is not shown: given, after a redirect, as a frame, as a frame moved later or as a window", { skip: noBrowser, timeout: 200_000 }, () => withNames({ "rebind.example": "93.184.215.16", "framed.example": "93.184.215.15", "public.example": "93.184.215.14" }, async () => {
+  setTimeLimit(180_000);
   const seen = [];
   const other = await serve((req, res) => {
     seen.push(req.url);
@@ -3576,6 +3581,7 @@ test("a host the run finds on the public internet that the browser reaches on th
 // refused, though each is a site on the public internet, while the tab's
 // own pages and the frame's first page, which the tab hears, open.
 test("a frame of another site or a window whose answer the browser says nothing of is not loaded", { skip: noBrowser || (process.platform === "win32" && "the relay's wrapper is a shell script"), timeout: 120_000 }, () => withNames({ "framed.example": "93.184.215.15", "public.example": "93.184.215.14" }, async () => {
+  setTimeLimit(180_000);
   const seen = [];
   const framed = await serve((req, res) => {
     seen.push(req.url);
@@ -3629,14 +3635,22 @@ test("a frame of another site or a window whose answer the browser says nothing 
 // answer it is of: the answer is held until it comes, 5 s at most, and
 // judged by it then. Here a relay holds it 300 ms (see relayBrowser()):
 // the page the browser reached on this machine is refused still, and the
-// one it reached on the public internet opens.
+// one it reached on the public internet opens. The wait has a second at
+// least, as a call to the browser has, so a frame a page of a site on this
+// machine opens there as the run's time runs out is refused as one the
+// browser reached there too: cut to what the run had left, it was refused
+// as one the browser said nothing of, as this test's page was on a busy
+// machine, where it had the time an earlier test's run left. The test sets
+// a time of its own.
 test("where the browser reached an answer is waited for when the browser says it after the answer", { skip: noBrowser || (process.platform === "win32" && "the relay's wrapper is a shell script"), timeout: 120_000 }, () => withNames({ "rebind.example": "93.184.215.16", "public.example": "93.184.215.14" }, async () => {
+  setTimeLimit(180_000);
   const seen = [];
   const other = await serve((req, res) => {
     seen.push(req.url);
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Inside", "<h1>Inside</h1>"));
   });
   const published = await serve((req, res) => res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Public", "<h1>Public</h1>")));
+  const local = await serve((req, res) => res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Acme", "<h1>Acme</h1>")));
   const otherPort = new URL(other.origin).port;
   const publicPort = new URL(published.origin).port;
   const root = tempDir();
@@ -3647,20 +3661,40 @@ test("where the browser reached an answer is waited for when the browser says it
   try {
     chrome = await launch({ args: [`--host-resolver-rules=MAP rebind.example 127.0.0.1:${otherPort}, MAP public.example 127.0.0.1:${publicPort}`, publicAt(publicPort)] });
     chrome.guard = await guardFor("http://public.example/");
-    const tab = await openTab(chrome, DEVICES.desktop);
+    let tab = await openTab(chrome, DEVICES.desktop);
     try {
       await assert.rejects(navigate(tab, "http://rebind.example/"), { message: `Could not open http://rebind.example/: it is ${REACHED}.` });
       assert.equal((await navigate(tab, "http://public.example/")).status, 200);
-      assert.deepEqual(seen, ["/"]);
     } finally {
       await closeTab(chrome, tab);
     }
+    // A frame a page of a site on this machine opens once the run's time is
+    // all but over.
+    chrome.guard = await guardFor(`${local.origin}/`);
+    tab = await openTab(chrome, DEVICES.desktop);
+    try {
+      assert.equal((await navigate(tab, `${local.origin}/`)).status, 200);
+      const barred = [];
+      tab.on(BARRED, (b) => barred.push(b));
+      setTimeLimit(200);
+      await sleep(300);
+      await tab.send("Runtime.evaluate", { expression: 'document.body.append(Object.assign(document.createElement("iframe"), { src: "http://rebind.example/late" }))' });
+      const until = Date.now() + 10_000;
+      while (!barred.length && Date.now() < until) await sleep(100);
+      setTimeLimit(180_000);
+      assert.deepEqual(barred.map((b) => [b.url, b.why, b.main]), [["http://rebind.example/late", `${REACHED}, and not on the host and port given`, false]]);
+    } finally {
+      setTimeLimit(180_000);
+      await closeTab(chrome, tab);
+    }
+    assert.deepEqual(seen, ["/", "/late"]);
   } finally {
     if (chrome) await chrome.close();
     if (saved === undefined) delete process.env.CHROME_PATH;
     else process.env.CHROME_PATH = saved;
     other.server.close();
     published.server.close();
+    local.server.close();
     fs.rmSync(root, { recursive: true, force: true });
   }
 }));
@@ -3803,6 +3837,7 @@ test("a run opens no other address on this machine than the one given: not by it
 const OTHER_PORT = (n) => `on port ${n}, not 80 or 443, and not on the scheme, host and port given`;
 
 test("from a public site the browser opens no other port than 80 and 443 away from the address given: given, after a redirect, when a page moves on, as a frame or a window", { skip: noBrowser, timeout: 120_000 }, () => withNames({ "public.example": "93.184.215.14", "other.example": "93.184.215.15" }, async () => {
+  setTimeLimit(180_000);
   const seen = [];
   const other = await serve((req, res) => {
     seen.push(req.url);
@@ -3866,6 +3901,7 @@ const openssl = spawnSync("openssl", ["version"], { encoding: "utf8" });
 const noOpenssl = (openssl.error || openssl.status !== 0) && "no openssl to make the test's certificate";
 
 test("an http address given on another port is taken at https on that host and port, where the browser or the site's server sends it, and https is not taken down to http there", { skip: noBrowser || noOpenssl, timeout: 120_000 }, () => withNames({ "myapp.dev": "93.184.215.14", "public.example": "93.184.215.14" }, async () => {
+  setTimeLimit(180_000);
   const root = tempDir();
   const key = path.join(root, "key.pem");
   const cert = path.join(root, "cert.pem");
@@ -3944,6 +3980,7 @@ test("an http address given on another port is taken at https on that host and p
 // to this machine; its certificate, made here, is taken by a browser told
 // to take any.
 test("over https, a page's speculation rules take the browser to no other port of its host or of another host", { skip: noBrowser || noOpenssl, timeout: 120_000 }, () => withNames({ "public.example": "93.184.215.14", "other.example": "93.184.215.15" }, async () => {
+  setTimeLimit(180_000);
   const root = tempDir();
   const key = path.join(root, "key.pem");
   const cert = path.join(root, "cert.pem");
@@ -4299,6 +4336,7 @@ test("a run takes no --page or frame on another port than 80 and 443 away from t
 // asked in them. Here the other server sees no request and no connection,
 // and each move is refused.
 test("a page's speculation rules take the browser to no address the run does not open, and the browser connects to none before the run has judged it", { skip: noBrowser, timeout: 150_000 }, () => withNames({ "public.example": "93.184.215.14" }, async () => {
+  setTimeLimit(180_000);
   const seen = [];
   let connections = 0;
   const html = { "Content-Type": "text/html; charset=utf-8" };
