@@ -753,8 +753,8 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
       if (err.answered) refused = err.message;
       throw err;
     });
-    // It preloads nothing, as its profile asks (see above): one that says
-    // it does, or cannot say, is not used.
+    // Its own preloading is off, as its profile asks (see above): one that
+    // says it is on, or cannot say, is not used.
     preloading = await preloadingSaid(browser, left, profile);
     if (preloading) throw new Error(preloading);
     // Read now: a browser that is quitting removes the link to it before
@@ -811,9 +811,9 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
 
 // What the browser says of its preloading, asked in its first tab, the one
 // it starts with (about:blank), or in a tab of its own that is closed again
-// when it has none yet, so no page is added beside the run's own: "" when it
-// preloads nothing, as its profile asks (see start()), else why it is not
-// used, said after its name. Preload.enable has it tell the state of its
+// when it has none yet, so no page is added beside the run's own: "" when its
+// own preloading is off, as its profile asks (see start()), else why it is
+// not used, said after its name. Preload.enable has it tell the state of its
 // preloading first (Preload.preloadEnabledStateUpdated), where
 // disabledByPreference is the profile's setting as the browser holds it: a
 // Chrome policy (NetworkPredictionOptions) holds it in the profile's place,

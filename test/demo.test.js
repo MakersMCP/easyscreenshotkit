@@ -2460,14 +2460,14 @@ test("a demo opens no other port than 80 and 443 away from the address given, an
   }
 }));
 
-// The demo's browser preloads nothing: a click on a link to a page a
-// speculation rule of the site had the browser prefetch, at another port of
-// this machine, was served from that copy, the browser's interception never
-// held it, and the demo recorded that program's page as the site's. And it
-// connected to the address of a link under the pointer and of a click
+// The demo's browser has its own preloading off: a click on a link to a page
+// a speculation rule of the site had the browser prefetch, at another port
+// of this machine, was served from that copy, the browser's interception
+// never held it, and the demo recorded that program's page as the site's.
+// And it connected to the address of a link under the pointer and of a click
 // before the demo had judged it, though the page stayed where it was. Here
-// the other program sees no request and no connection, and each click
-// leaves the page where it is, with a note.
+// the other program sees no request and no connection, and each click leaves
+// the page where it is, with a note.
 test("a demo's click opens no address the run does not open that a page had the browser preload, and the browser connects to none for a link it hovers or clicks", { skip: missing, timeout: 200_000 }, async () => {
   const seen = [];
   let connections = 0;

@@ -4147,14 +4147,14 @@ test("a run takes no --page or frame on another port than 80 and 443 away from t
   }
 }));
 
-// The browser preloads nothing. With its default a page's speculation rules
-// had it prefetch or prerender an address, and the page's move there was
-// served from that copy, which the browser's interception never held: from
-// a site of this machine and from one on the public internet, the page of
-// another program of this machine was taken as the page the site moved to,
-// with no refusal. And it connected ahead to the address of a page's move,
-// a frame, a window, a click and a link under the pointer before the run
-// had judged that address: the other server saw connections with nothing
+// The browser's own preloading is off. With its default a page's speculation
+// rules had it prefetch or prerender an address, and the page's move there
+// was served from that copy, which the browser's interception never held:
+// from a site of this machine and from one on the public internet, the page
+// of another program of this machine was taken as the page the site moved
+// to, with no refusal. And it connected ahead to the address of a page's
+// move, a frame, a window, a click and a link under the pointer before the
+// run had judged that address: the other server saw connections with nothing
 // asked in them. Here the other server sees no request and no connection,
 // and each move is refused.
 test("a page's speculation rules take the browser to no address the run does not open, and the browser connects to none before the run has judged it", { skip: noBrowser, timeout: 150_000 }, () => withNames({ "public.example": "93.184.215.14" }, async () => {
