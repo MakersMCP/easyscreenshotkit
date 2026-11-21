@@ -4026,6 +4026,9 @@ test("of a menu's link to a page on another port and the footer's on the site's 
       await chrome.close();
       setTimeLimit(120_000);
     }
+    // The name was asked for once, in all: by the rule, the browser's proxy
+    // and the kit's own requests for robots.txt and the sitemap.
+    assert.equal(asked("dup.example"), 1);
   } finally {
     http.get = get;
     stand.restore();
