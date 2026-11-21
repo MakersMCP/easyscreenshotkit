@@ -17,7 +17,7 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const { spawn, spawnSync } = require("node:child_process");
 const test = require("node:test");
-const { startProxy, dialer, NO_RULE } = require("../skills/easyscreenshotkit/scripts/lib/proxy");
+const { startProxy, dialer, closing, NO_RULE } = require("../skills/easyscreenshotkit/scripts/lib/proxy");
 const { findChrome, launch, openTab, closeTab, navigate, roomIn, proxySaid, BARRED, UNREACHED } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
 const { guardFor, NOT_GIVEN, NOT_PUBLIC } = require("../skills/easyscreenshotkit/scripts/lib/address");
 const { takeShots } = require("../skills/easyscreenshotkit/scripts/lib/shots");
@@ -536,6 +536,64 @@ test("the proxy finds the status line of a site's answer where the browser finds
   } finally {
     proxy.close();
     site.close();
+  }
+});
+
+// What the reader gives for an answer that comes in `parts`: the bytes it
+// passes on, as text.
+function readInParts(parts) {
+  const reader = closing();
+  const out = [];
+  let passing = false;
+  for (const part of parts) {
+    if (passing) out.push(part);
+    else {
+      const marked = reader.read(part);
+      if (marked) {
+        passing = true;
+        out.push(marked);
+      }
+    }
+  }
+  if (!passing) out.push(reader.held());
+  return Buffer.concat(out).toString("latin1");
+}
+
+// The reader puts the two lines in after the status line of the request's
+// own answer where that line ends within the answer's first HEADERS_MAX
+// bytes, 256 KB, and passes the answer as it came where it ends past them,
+// whatever parts the answer comes in: an answer with an informational head
+// of 300 KB, one whose status line ends at the limit's last byte and one
+// whose status line ends a byte past it give the same bytes fed whole, in
+// parts of one size and in two parts split at each byte around the end of
+// the informational head, the end of the status line and the limit. Where
+// the reader went by how much of the answer had come when it looked, the one
+// with the large head got the two lines fed whole and went as it came in
+// smaller parts, so the test below, whose site sends it at once, failed now
+// and then.
+test("the proxy's reader puts the two lines in by where the status line of the request's own answer ends, whatever parts the answer comes in", () => {
+  const MAX = 256 * 1024;
+  const status = "HTTP/1.1 200 OK\r\n";
+  const final = `${status}Content-Length: 2\r\n\r\nok`;
+  const answer = (pad) => `HTTP/1.1 100 Continue\r\nX-Big: ${"a".repeat(pad)}\r\n\r\n${final}`;
+  // The bytes of answer(pad) up to the end of the status line of its answer.
+  const end = (pad) => answer(pad).length - final.length + status.length;
+  const cases = { "an informational head of 300 KB": 300_000, "a status line that ends at the limit's last byte": MAX - end(0), "a status line that ends a byte past the limit": MAX - end(0) + 1 };
+  for (const [name, pad] of Object.entries(cases)) {
+    const text = answer(pad);
+    const within = end(pad) <= MAX;
+    const expected = within ? `${text.slice(0, end(pad))}Connection: close\r\nProxy-Connection: close\r\n${text.slice(end(pad))}` : text;
+    const bytes = Buffer.from(text, "latin1");
+    const gives = (parts, how) => assert.ok(readInParts(parts) === expected, `${name}, ${how}: the reader did not give the answer ${within ? "with the two lines put in" : "as it came"}`);
+    gives([bytes], "whole");
+    for (const size of [1000, 4096, 65_536, 100_000, 131_072]) {
+      const parts = [];
+      for (let at = 0; at < bytes.length; at += size) parts.push(bytes.subarray(at, at + size));
+      gives(parts, `in parts of ${size} bytes`);
+    }
+    const splits = new Set();
+    for (const near of [end(pad) - status.length, end(pad), MAX]) for (let at = near - 16; at <= near + 16; at++) if (at > 0 && at < bytes.length) splits.add(at);
+    for (const at of splits) gives([bytes.subarray(0, at), bytes.subarray(at)], `split at ${at}`);
   }
 });
 

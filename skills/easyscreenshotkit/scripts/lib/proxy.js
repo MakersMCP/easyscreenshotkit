@@ -49,9 +49,9 @@ const STAGGER_MS = 250;
 
 // The most a request's headers may hold, as a browser takes them: Node.js's
 // own limit, 16 KB, refused a request with a site's cookies past it. The
-// most an answer may hold before the status line of the request's own
-// answer, its informational answers together, before the proxy stops
-// looking for that line (see closing()).
+// most an answer may hold up to the end of the status line of the request's
+// own answer, its informational answers before it included, for the proxy
+// to put two lines in after that line (see closing()).
 const HEADERS_MAX = 256 * 1024;
 
 // The headers that are of one connection and not passed on (RFC 9110).
@@ -213,17 +213,21 @@ function dial(list, port, dials) {
 // a line break or other bytes before HTTP, with no version, with no space
 // before its code or with no code, as the browser reads them, gets the two
 // lines too, where the browser sent its next request on such a connection.
-// An answer with no status line at its start, or one that holds more than
-// HEADERS_MAX bytes before the status line of the request's own answer,
-// goes as it came. closing() gives a reader for one answer: read(bytes) takes what
-// came next, and gives the bytes to pass on once that line is found or the
-// answer is not one to put it in, else null while more is needed; held()
-// gives what it holds, for an answer that ended before. Each byte is read
-// once: where the reading started again at the answer's first byte for
-// each part that came, and made text of all that came after each
-// informational head, a site that answered with a megabyte of "HTTP/1.1
-// 100 Continue" heads held the run's main thread two minutes, past its
-// --timeout and its signals.
+// An answer with no status line at its start, or one whose status line of
+// the request's own answer does not end within its first HEADERS_MAX bytes,
+// goes as it came, whatever parts it comes in, where that was decided by how
+// much of it had come when the reader looked: an answer whose informational
+// heads ran past HEADERS_MAX got the two lines when the part that held their
+// end held that line too, and went as it came when it did not, so the
+// suite's test of such an answer failed now and then. closing() gives a
+// reader for one answer: read(bytes) takes what came next, and gives the
+// bytes to pass on once that line is found or the answer is not one to put
+// it in, else null while more is needed; held() gives what it holds, for an
+// answer that ended before. Each byte is read once: where the reading
+// started again at the answer's first byte for each part that came, and
+// made text of all that came after each informational head, a site that
+// answered with a megabyte of "HTTP/1.1 100 Continue" heads held the run's
+// main thread two minutes, past its --timeout and its signals.
 const HTTP = Buffer.from("http");
 
 function closing() {
@@ -289,7 +293,7 @@ function closing() {
           if (byte === 10) lf = true;
           else if (byte !== 13 || held[at - 1] !== 10) lf = false;
         }
-        if (at >= size) return size > HEADERS_MAX ? done(-1) : null;
+        if (at >= size) return size >= HEADERS_MAX ? done(-1) : null;
         skipping = false;
         head = at + 1;
         status = -1;
@@ -297,16 +301,16 @@ function closing() {
       if (status < 0) {
         status = start();
         if (status === -2) return done(-1);
-        if (status === -1) return size > HEADERS_MAX ? done(-1) : null;
+        if (status === -1) return size >= HEADERS_MAX ? done(-1) : null;
         at = status;
       }
       const line = held.subarray(0, size).indexOf(10, at);
       if (line < 0) {
         at = size;
-        return size > HEADERS_MAX ? done(-1) : null;
+        return size >= HEADERS_MAX ? done(-1) : null;
       }
       const code = codeOf(status, line);
-      if (code < 100 || code > 199) return done(line);
+      if (code < 100 || code > 199) return done(line < HEADERS_MAX ? line : -1);
       skipping = true;
       lf = true;
       at = line + 1;
@@ -644,4 +648,4 @@ async function startProxy(ruleOf) {
   };
 }
 
-module.exports = { startProxy, dialer, authorityOf, authorityOfUrl, wordsFor, NO_RULE, REFUSED_HEADER, UNREACHED_HEADER };
+module.exports = { startProxy, dialer, closing, authorityOf, authorityOfUrl, wordsFor, NO_RULE, REFUSED_HEADER, UNREACHED_HEADER };
