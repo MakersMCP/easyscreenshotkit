@@ -25,6 +25,16 @@
 // servers but those the kit's process looked up itself, as its proxy does
 // for the requests it judges, the connections the stand-in devices got, and
 // the multicast groups something but the stand-ins joined on the network.
+//
+// Run as
+//
+//   unshare -rn node network.js alone <uid> <gid> <cli> <folder>
+//
+// it brings up the loopback alone, as on a machine with no network, or in a
+// container with none, and has the kit's command take a site it serves on
+// 127.0.0.1, given as http://localhost:<port>/, as the user who ran the
+// test, saving in <folder>. It prints one line of JSON: { status, said },
+// the command's exit code and the last lines it printed on stderr.
 
 const { spawn, spawnSync } = require("node:child_process");
 const dgram = require("node:dgram");
@@ -103,11 +113,12 @@ try {
 })();
 </script>`;
 
+const ip = (...args) => {
+  const done = spawnSync("ip", args, { encoding: "utf8" });
+  if (done.status !== 0) throw new Error(`ip ${args.join(" ")}: ${String(done.stderr || done.error).trim()}`);
+};
+
 async function outer(uid, gid) {
-  const ip = (...args) => {
-    const done = spawnSync("ip", args, { encoding: "utf8" });
-    if (done.status !== 0) throw new Error(`ip ${args.join(" ")}: ${String(done.stderr || done.error).trim()}`);
-  };
   ip("link", "set", "lo", "up");
   ip("link", "add", "d0", "type", "dummy");
   ip("link", "set", "d0", "up", "multicast", "on");
@@ -273,8 +284,26 @@ async function inner(url) {
   process.stdout.write(JSON.stringify({ shown, looked: [...looked] }));
 }
 
+async function alone(uid, gid, cli, folder) {
+  ip("link", "set", "lo", "up");
+  const page = http.createServer((req, res) => res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end("<!doctype html><title>Local</title><h1>Local</h1><p>A site served on this machine.</p>"));
+  await new Promise((resolve) => page.listen(0, "127.0.0.1", resolve));
+  const told = await new Promise((resolve) => {
+    const child = spawn("unshare", ["-U", `--map-user=${uid}`, `--map-group=${gid}`, process.execPath, cli, `http://localhost:${page.address().port}/`, "--pages", "1", "--sizes", "desktop", "--out", folder], { stdio: ["ignore", "ignore", "pipe"] });
+    let err = "";
+    child.stderr.on("data", (d) => (err += d));
+    const timer = setTimeout(() => child.kill("SIGKILL"), 100_000);
+    child.on("close", (code, signal) => {
+      clearTimeout(timer);
+      resolve({ status: code === null ? signal : code, said: err.trim().split("\n").slice(-3).join(" | ") });
+    });
+  });
+  page.close();
+  process.stdout.write(`${JSON.stringify(told)}\n`);
+}
+
 const [mode, ...rest] = process.argv.slice(2);
-(mode === "outer" ? outer(...rest) : inner(...rest)).catch((err) => {
+(mode === "outer" ? outer(...rest) : mode === "alone" ? alone(...rest) : inner(...rest)).catch((err) => {
   process.stdout.write(JSON.stringify({ failed: String((err && err.message) || err) }));
   process.exitCode = 1;
 });

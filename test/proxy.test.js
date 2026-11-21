@@ -887,9 +887,9 @@ function chainNaming(root, issuer) {
 // certificate names. With the browser asking the DNS and connecting for
 // itself, each but the frame reached the other program, which no rule of
 // the run saw: the frame is refused before its request too (BARRED). The
-// browser is told the other program is where the WebAuthn name leads
-// (--host-resolver-rules), as a site's DNS server can tell it; the run's
-// own lookup, which the proxy asks, finds it on this machine too.
+// run's own lookup, which the proxy asks, finds the WebAuthn name on this
+// machine, as a site's DNS server can answer it; the browser looks no name
+// up itself.
 test("every request the browser makes on its own reaches nothing but the proxy's refusal: a picture, a frame, a WebSocket, a service worker's fetch, WebAuthn's well-known file and a certificate's issuer", { skip: noBrowser, timeout: 150_000 }, () =>
   withNames({ "rp-elsewhere.example": "127.0.0.1" }, async () => {
     setTimeLimit(180_000);
@@ -910,7 +910,7 @@ navigator.credentials.get({ publicKey: { challenge: new Uint8Array(32), rpId: "r
     let chrome = null;
     let secure = null;
     try {
-      chrome = await launch({ guard: await guardFor(given), args: [`--host-resolver-rules=MAP rp-elsewhere.example ${away}`] });
+      chrome = await launch({ guard: await guardFor(given) });
       const tab = await openTab(chrome, DESKTOP);
       const barred = [];
       const unreached = [];
@@ -962,8 +962,8 @@ navigator.credentials.get({ publicKey: { challenge: new Uint8Array(32), rpId: "r
 // From a site on the public internet the same holds for another port of its
 // own host: a picture there and a frame there reach nothing but the
 // refusal, which names the port. The run's proxy takes the site's address
-// on port 80 to its server, and the browser's own lookup would lead it to
-// this machine, where the other program listens on that other port.
+// on port 80 to its server, and the other program listens on that other
+// port of this machine.
 test("from a site on the public internet, a picture and a frame on another port of its host reach nothing but the refusal", { skip: noBrowser, timeout: 60_000 }, () =>
   withNames({ "public-pic.example": "93.184.215.20" }, async () => {
     setTimeLimit(60_000);
@@ -976,7 +976,7 @@ test("from a site on the public internet, a picture and a frame on another port 
     const otherPort = `on port ${other.port}, not 80 or 443, and not on the scheme, host and port given`;
     let chrome = null;
     try {
-      chrome = await launch({ guard: await guardFor("http://public-pic.example/"), args: ["--host-resolver-rules=MAP public-pic.example 127.0.0.1"] });
+      chrome = await launch({ guard: await guardFor("http://public-pic.example/") });
       const tab = await openTab(chrome, DESKTOP);
       const barred = [];
       const unreached = [];
@@ -1124,6 +1124,39 @@ test("the browser sends nothing past its proxy on the machine's networks: no sea
   assert.deepEqual({ ssdp: seen.ssdp, mdns: seen.mdns, dns: seen.dns, connections: seen.connections, joined: seen.joined }, { ssdp: 0, mdns: [], dns: [], connections: [], joined: [] });
 });
 
+// On a machine whose one network up is its loopback, as one offline, or a
+// container with no network, a site of the machine given as the address is
+// taken: there the browser never says it is done gathering WebRTC's
+// candidates, and the start, which waited for that among its probes of the
+// proxy, stopped every run as one whose browser was too slow for them,
+// where 0.1.3 took the site. In a network namespace of the test's own with
+// its loopback alone (see network.js), the kit's own command.
+test("on a machine whose one network is its loopback, a site of the machine given as the address is taken", { skip: noBrowser || noNamespace, timeout: 150_000 }, async () => {
+  const root = tempDir();
+  try {
+    const folder = path.join(root, "shots");
+    const cli = require.resolve("../skills/easyscreenshotkit/scripts/easyscreenshotkit.js");
+    const child = spawn("unshare", ["-rn", process.execPath, path.join(__dirname, "network.js"), "alone", String(process.getuid()), String(process.getgid()), cli, folder], { stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (d) => (out += d));
+    child.stderr.on("data", (d) => (err += d));
+    const timer = setTimeout(() => child.kill("SIGKILL"), 140_000);
+    await new Promise((resolve) => child.on("close", resolve));
+    clearTimeout(timer);
+    let told = null;
+    try {
+      told = JSON.parse(out.trim().split("\n").pop());
+    } catch {
+      assert.fail(`network.js printed no result: ${(out + err).trim().slice(-600)}`);
+    }
+    assert.equal(told.status, 0, told.said || err);
+    assert.match(fs.readFileSync(path.join(folder, "SCREENSHOTS.md"), "utf8"), /Local/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // A site you run on your machine and give as the address works through the
 // proxy as before: here one started on localhost that listens on ::1 alone,
 // as one can on a machine whose only IPv6 address is its loopback's, with
@@ -1244,6 +1277,96 @@ test("a browser that sends this machine's addresses or WebRTC's UDP past the pro
       process.env.CHROME_PATH = browser;
       await assert.rejects(launch(), { message });
     }
+  } finally {
+    if (saved === undefined) delete process.env.CHROME_PATH;
+    else process.env.CHROME_PATH = saved;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A browser that runs with switches of its own after the run's, or without
+// the run's, that keep its Media Router off and its lookups to the run's
+// own, is not used: Chrome takes the last value of a switch, so a program
+// that started it with a --disable-features of its own after the run's had
+// its Media Router search the machine's networks for screens to cast to and
+// connect to those that answered, past the proxy, while it passed every
+// probe of the start's. Here the program CHROME_PATH names adds a switch or
+// takes one out; and one that relays the browser's pipe answers the
+// question of which process is the browser's with an error, or names one
+// the run did not start. On Linux, where the browser's command line is read.
+test("a browser that runs with switches of its own after the run's, or without the run's, is not used", { skip: noBrowser || (process.platform !== "linux" && "the browser's command line is read on Linux"), timeout: 150_000 }, async () => {
+  setTimeLimit(150_000);
+  const root = tempDir();
+  const saved = process.env.CHROME_PATH;
+  // The browser itself, found before CHROME_PATH names a wrapper.
+  const real = findChrome();
+  const features = (name) => `${name} runs without MediaRouter and WebRtcHideLocalIpsWithMdns in its last --disable-features, as a program that starts it with switches of its own after the run's, or without the run's, can make it, so it was not used: a page could have it search this machine's networks for screens to cast to and connect to them, past the proxy the run starts for it. Point CHROME_PATH at the browser's own program.`;
+  const rules = (name) => `${name} runs without the run's --host-resolver-rules last, as a program that starts it with switches of its own after the run's, or without the run's, can make it, so it was not used: a page could have it look a name up itself and reach an address the run does not open, past the proxy the run starts for it. Point CHROME_PATH at the browser's own program.`;
+  const cannot = (name, why) => `${name} cannot say which switches it runs with (${why}), so it was not used: with switches of its own after the run's it could reach an address the run does not open, past the proxy the run starts for it. Point CHROME_PATH at the browser's own program.`;
+  const leaving = (pattern) => `for a in "$@"; do shift; case "$a" in ${pattern}) ;; *) set -- "$@" "$a" ;; esac; done\n`;
+  // A program that relays the browser's pipe, as the browser's parent, and
+  // answers the kit's SystemInfo.getProcessInfo itself, by its mode.
+  const relay = path.join(root, "relay.js");
+  fs.writeFileSync(
+    relay,
+    `"use strict";
+const fs = require("fs");
+const { spawn } = require("child_process");
+const mode = process.argv[2];
+const child = spawn(${JSON.stringify(real)}, process.argv.slice(3), { stdio: ["ignore", "ignore", "inherit", "pipe", "pipe"] });
+const fromKit = fs.createReadStream(null, { fd: 3 });
+const toKit = fs.createWriteStream(null, { fd: 4 });
+for (const stream of [fromKit, toKit, child.stdio[3], child.stdio[4]]) stream.on("error", () => {});
+const asked = new Set();
+const split = (stream, take) => {
+  let bytes = Buffer.alloc(0);
+  stream.on("data", (chunk) => {
+    bytes = Buffer.concat([bytes, chunk]);
+    let at;
+    while ((at = bytes.indexOf(0)) >= 0) {
+      const text = bytes.subarray(0, at).toString();
+      bytes = bytes.subarray(at + 1);
+      take(text);
+    }
+  });
+};
+split(fromKit, (text) => {
+  const msg = JSON.parse(text);
+  if (msg.method === "SystemInfo.getProcessInfo" && mode === "error") return toKit.write(JSON.stringify({ id: msg.id, error: { code: -32601, message: "SystemInfo.getProcessInfo wasn't found" } }) + "\\0");
+  if (msg.method === "SystemInfo.getProcessInfo") asked.add(msg.id);
+  child.stdio[3].write(text + "\\0");
+});
+split(child.stdio[4], (text) => {
+  const msg = JSON.parse(text);
+  if (asked.has(msg.id) && msg.result) msg.result.processInfo = msg.result.processInfo.map((one) => (one.type === "browser" ? { ...one, id: 1 } : one));
+  toKit.write(JSON.stringify(msg) + "\\0");
+});
+fromKit.on("end", () => child.stdio[3].end());
+child.on("exit", (code) => process.exit(code === null ? 1 : code));
+`,
+  );
+  try {
+    for (const [name, body, message] of [
+      ["appended", `exec ${sh(real)} "$@" --disable-features=Translate\n`, features("appended")],
+      ["dashed", `exec ${sh(real)} "$@" -disable-features=Translate\n`, features("dashed")],
+      ["unfeatured", `${leaving("--disable-features=*")}exec ${sh(real)} "$@"\n`, features("unfeatured")],
+      ["resolving", `${leaving("--host-resolver-rules=*")}exec ${sh(real)} "$@"\n`, rules("resolving")],
+      ["rerouted", `exec ${sh(real)} "$@" "--host-resolver-rules=MAP * 127.0.0.1"\n`, rules("rerouted")],
+      ["unnamed", `exec ${sh(process.execPath)} ${sh(relay)} error "$@"\n`, cannot("unnamed", "SystemInfo.getProcessInfo wasn't found")],
+      ["elsewhere", `exec ${sh(process.execPath)} ${sh(relay)} other "$@"\n`, cannot("elsewhere", "its process, 1, is not one the run started")],
+    ]) {
+      const browser = path.join(root, name);
+      fs.writeFileSync(browser, `#!/bin/sh\n${body}`, { mode: 0o755 });
+      process.env.CHROME_PATH = browser;
+      await assert.rejects(launch(), { message }, name);
+    }
+    // A switch of its own before the run's is the browser's, as the run's
+    // comes last.
+    const before = path.join(root, "before");
+    fs.writeFileSync(before, `#!/bin/sh\nexec ${sh(real)} --disable-features=Translate "--host-resolver-rules=MAP * 127.0.0.1" "$@"\n`, { mode: 0o755 });
+    process.env.CHROME_PATH = before;
+    const chrome = await launch();
+    await chrome.close();
   } finally {
     if (saved === undefined) delete process.env.CHROME_PATH;
     else process.env.CHROME_PATH = saved;
@@ -1399,10 +1522,12 @@ test("the run's proxy listens on 127.0.0.1 alone, and its port takes no connecti
 test("a browser that does not finish the proxy's probes in their time is not said to send its requests past the proxy", { timeout: 30_000 }, async () => {
   const proxy = { probe: "probe.easyscreenshotkit.invalid", loopback: "http://127.0.0.1:9/x", saw: () => false };
   const tab = (answer) => ({ send: async (method) => (method === "Runtime.evaluate" ? answer() : {}) });
-  // The probes' own timer won the race.
-  assert.deepEqual(await proxySaid(tab(() => ({ result: { value: "late" } })), () => 5_000, proxy), { late: true });
+  // The probes' own timer won the race, with the time they had: here what
+  // the start had left, a second kept, cut below their 10 s.
+  assert.deepEqual(await proxySaid(tab(() => ({ result: { value: "late" } })), () => 5_000, proxy), { late: { ms: 4_000, cut: true } });
+  assert.deepEqual(await proxySaid(tab(() => ({ result: { value: "late" } })), () => 40_000, proxy), { late: { ms: 10_000, cut: false } });
   // The call itself ran out of time.
-  assert.deepEqual(await proxySaid(tab(() => Promise.reject(Object.assign(new Error("Runtime.evaluate timed out"), { timedOut: true }))), () => 5_000, proxy), { late: true });
+  assert.deepEqual(await proxySaid(tab(() => Promise.reject(Object.assign(new Error("Runtime.evaluate timed out"), { timedOut: true }))), () => 5_000, proxy), { late: { ms: 4_000, cut: true } });
   // Done, and the proxy saw none of them: the browser goes past it.
   const { why } = await proxySaid(tab(() => ({ result: { value: "done" } })), () => 5_000, proxy);
   assert.match(why, /^does not send its requests through the proxy the run starts for it/);
@@ -1412,8 +1537,10 @@ test("a browser that does not finish the proxy's probes in their time is not sai
   assert.match((await proxySaid(tab(() => ({ result: { value: "late" } })), () => 5_000, past)).why, /^sends its requests for this machine's own addresses past the proxy/);
 });
 
-// A browser too slow to finish the probes in the start's time is not used,
-// in the start's own words for a slow browser. Here the program CHROME_PATH
+// A browser too slow to finish the probes in their time is not used, in the
+// start's own words for a slow browser, with the time the probes had, 10 s:
+// the words named the start's whole wait, 45 s here, and asked for a longer
+// --timeout, which gives the probes no more. Here the program CHROME_PATH
 // names relays the browser's pipe and holds back the answer to the probes'
 // call, as a browser that does not finish them would leave it unanswered.
 test("a browser that does not finish the proxy's probes in the start's time is said to be slow", { skip: noBrowser || (process.platform === "win32" && "the relay is started by a shell script"), timeout: 90_000 }, async () => {
@@ -1461,7 +1588,7 @@ child.on("exit", (code) => process.exit(code === null ? 1 : code));
   const saved = process.env.CHROME_PATH;
   process.env.CHROME_PATH = browser;
   try {
-    await assert.rejects(launch(), { message: /^slow-chrome started but did not finish the run's checks of its proxy in \d+ s\. The machine may be too busy: try again/ });
+    await assert.rejects(launch(), { message: "slow-chrome started but did not finish the run's checks of its proxy in 10 s. The machine may be too busy: try again." });
   } finally {
     if (saved === undefined) delete process.env.CHROME_PATH;
     else process.env.CHROME_PATH = saved;

@@ -113,8 +113,10 @@ page's pictures, styles, scripts and data included, and connects to the
 address the demo's own lookup gave a host's name, asked once: on a site you
 run on your machine, what a page takes from another port of it is not
 fetched, with a note in steps.json. A user who may not connect to
-127.0.0.1, and a browser that sends its requests past the proxy, stop the
-demo before it opens the site.
+127.0.0.1, and a browser that sends its requests past the proxy as the
+demo checks it, or that on Linux runs without the demo's switches that
+keep it to the proxy or with its own after them, stop the demo before it
+opens the site.
 
 MAKERSMCP_REFUSE_ADDRESSES, a comma list of IP addresses and CIDR ranges,
 names addresses the machine refuses besides, as a service that runs the
@@ -160,7 +162,8 @@ the system cannot start stops the demo before any work, with what is wrong
 with it, and so does a browser that preloads pages though its profile asks
 it not to, as a Chrome policy can make it, or that does not use that
 profile, as a snap's or a Flatpak's can, which sees a temp folder of its
-own, or that sends its requests or WebRTC's UDP past the demo's proxy. The
+own, or that sends its requests or WebRTC's UDP past the demo's proxy, or
+on Linux runs without the demo's switches or with its own after them. The
 demo drives the browser over a pipe, so the browser opens no port; the
 demo's one port is that proxy's, on 127.0.0.1.`;
 

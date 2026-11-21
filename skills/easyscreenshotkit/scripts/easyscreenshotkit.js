@@ -94,8 +94,9 @@ pictures, styles, scripts and data included, and connects to the address
 the run's own lookup gave a host's name, asked once: on a site you run on
 your machine, what a page takes from another port of it is not fetched,
 and the page's notes say so. A user who may not connect to 127.0.0.1, and
-a browser that sends its requests past the proxy, stop the run before it
-opens the site.
+a browser that sends its requests past the proxy as the run checks it, or
+that on Linux runs without the run's switches that keep it to the proxy
+or with its own after them, stop the run before it opens the site.
 
 MAKERSMCP_REFUSE_ADDRESSES, a comma list of IP addresses and CIDR ranges,
 names addresses the machine refuses besides, as a service that runs the
@@ -149,7 +150,8 @@ start stops the run before any work, with what is wrong with it, and so
 does one that preloads pages though its profile asks it not to, as a
 Chrome policy can make it, or that does not use that profile, as a snap's
 or a Flatpak's can, which sees a temp folder of its own, or that sends its
-requests or WebRTC's UDP past the run's proxy. The run drives it over a
+requests or WebRTC's UDP past the run's proxy, or on Linux runs without
+the run's switches or with its own after them. The run drives it over a
 pipe, so the browser opens no port; the run's one port is that proxy's, on
 127.0.0.1.`;
 

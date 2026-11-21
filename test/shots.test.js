@@ -2350,7 +2350,10 @@ const take = (text) => {
     Promise.all([ask("GET http://" + host + "/ HTTP/1.1\\r\\nHost: " + host + "\\r\\n\\r\\n"), ask("CONNECT " + host + ":443 HTTP/1.1\\r\\nHost: " + host + ":443\\r\\n\\r\\n"), ask("GET " + looped + " HTTP/1.1\\r\\nHost: " + new URL(looped).host + "\\r\\n\\r\\n")]).then(() => answer({ id, result: { result: { type: "string", value: "done" } }, ...(sessionId ? { sessionId } : {}) }));
     return;
   }
-  const result = method === "Browser.getVersion" ? { product: "Stand-in/1", userAgent: "Stand-in" } : method === "Target.createTarget" ? { targetId: "t1" } : method === "Target.attachToTarget" ? { sessionId: "s1" } : {};
+  // Its own process, which the start asks for to read the switches it was
+  // started with (see switchesSaid() in chrome.js): this one, as the browser
+  // names its own.
+  const result = method === "Browser.getVersion" ? { product: "Stand-in/1", userAgent: "Stand-in" } : method === "Target.createTarget" ? { targetId: "t1" } : method === "Target.attachToTarget" ? { sessionId: "s1" } : method === "SystemInfo.getProcessInfo" ? { processInfo: [{ type: "browser", id: process.pid, cpuTime: 0 }] } : {};
   const refuses = (mode === "refuser" && method !== "Browser.getVersion") || (mode === "unsaid" && method === "Preload.enable");
   const reply = refuses ? { id, error: { code: -32000, message: "Not allowed here" } } : { id, result, ...(sessionId ? { sessionId } : {}) };
   const send = () => {
@@ -3582,9 +3585,9 @@ test("from a public site a frame of another site that is moved later, and a wind
 // connects to the address the run's lookup gave and never asks again. Here
 // rebind.example answers 93.184.215.16 first and 127.0.0.1 from then on;
 // the server standing at 93.184.215.16 is the site's, and the one the proxy
-// would reach at 127.0.0.1 on port 80 is another program of this machine,
-// where the browser's own lookup leads it too (--host-resolver-rules), as
-// such a DNS server answered the browser.
+// would reach at 127.0.0.1 on port 80 is another program of this machine.
+// The browser looks no name up itself, and one given switches of its own
+// for its lookup after the run's is not used (see proxy.test.js).
 test("a name whose DNS answer changes between two lookups is reached at its first answer alone: given, after a redirect, as a frame, a frame moved later or a window", { skip: noBrowser, timeout: 200_000 }, () => withNames({ "rebind.example": ["93.184.215.16", "127.0.0.1"], "framed.example": "93.184.215.15", "public.example": "93.184.215.14" }, async () => {
   setTimeLimit(180_000);
   const seen = [];
@@ -3611,8 +3614,7 @@ test("a name whose DNS answer changes between two lookups is reached at its firs
   });
   const port = (one) => new URL(one.origin).port;
   const stand = reachAt({ "93.184.215.16:80": `127.0.0.1:${port(site)}`, "127.0.0.1:80": `127.0.0.1:${port(inside)}`, "93.184.215.15:80": `127.0.0.1:${port(framed)}`, "93.184.215.14:80": `127.0.0.1:${port(published)}` });
-  const browserSays = `--host-resolver-rules=MAP rebind.example 127.0.0.1:${port(inside)}, MAP framed.example 127.0.0.1:${port(framed)}, MAP public.example 127.0.0.1:${port(published)}`;
-  const chrome = await launch({ guard: await guardFor("http://rebind.example/"), args: [browserSays] });
+  const chrome = await launch({ guard: await guardFor("http://rebind.example/") });
   try {
     // As the address given.
     let tab = await openTab(chrome, DEVICES.desktop);

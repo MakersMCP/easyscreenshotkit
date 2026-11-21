@@ -435,9 +435,11 @@ async function launch({ lang = "", args = [], guard = null } = {}) {
   if (tried.refused) throw new Error(`${name} cannot be told to refuse the downloads a page starts (${tried.refused}), so it was not used: a site could save files on this machine through it. Point CHROME_PATH at another browser.`);
   if (tried.preloading) throw new Error(`${name} ${tried.preloading}`);
   if (tried.unproxied) throw new Error(`${name} ${tried.unproxied}`);
-  // A browser too slow to finish the probes of its proxy in the start's
-  // time: nothing is known of it but that.
-  if (tried.late) throw new Error(`${name} started but did not finish the run's checks of its proxy in ${Math.round(wait.ms / 1000)} s. ${busy(wait.cut)}`);
+  // A browser too slow to finish the probes of its proxy in their time:
+  // nothing is known of it but that. The time named is theirs, PROBE_WAIT_MS
+  // or what the start had left, and more of --timeout helps only where the
+  // start had less and the run's time made the start's own wait shorter.
+  if (tried.late) throw new Error(`${name} started but did not finish the run's checks of its proxy in ${Math.max(1, Math.round(tried.late.ms / 1000))} s. ${busy(tried.late.cut && wait.cut)}`);
   if (tried.tooDeep) throw new Error(`${name} did not start: the temp folder's path, ${os.tmpdir()}, is too long for the socket it opens there. Point TMPDIR at a folder with a shorter path.`);
   const free = freeInTemp();
   if (free !== null && free < TEMP_NEEDED) throw new Error(`${name} did not start: the temp folder, ${os.tmpdir()}, has only ${Math.round(free / 1024)} KB free. Free some space there, or point TMPDIR at another disk.`);
@@ -548,13 +550,14 @@ function freeInTemp() {
 // downloads, whether it preloads and whether it goes through its proxy all
 // within it. proxy: the run's proxy, the browser's one way to the network
 // (see proxy.js). Returns {chrome} once it answers, else {own, tooDeep,
-// silent, refused, preloading, unproxied}: whether its profile was its temp
-// folder, whether it ended because its lock's socket did not fit in that
-// folder, whether it was still running, its pipe open, without an answer
-// when the wait ran out, the error it answered the order to refuse
+// silent, refused, preloading, unproxied, late}: whether its profile was
+// its temp folder, whether it ended because its lock's socket did not fit
+// in that folder, whether it was still running, its pipe open, without an
+// answer when the wait ran out, the error it answered the order to refuse
 // downloads with, what it said of its preloading when that is not off (see
-// preloadingSaid()), and why it does not go through its proxy (see
-// proxySaid()). A profile that cannot be made, as in a temp folder this
+// preloadingSaid()), why it does not keep to its proxy (see switchesSaid()
+// and proxySaid()), and the time its probes had when it did not finish
+// them in it. A profile that cannot be made, as in a temp folder this
 // user cannot write in, and a program the system will not start, as one
 // another process has open for writing or with no memory left to start it,
 // which Node throws where it does not say so in an error event, are said in
@@ -813,7 +816,7 @@ async function start(binary, { lang, args, own, wait = START_MS, proxy }) {
   let refused = "";
   let preloading = "";
   let unproxied = "";
-  let late = false;
+  let late = null;
   try {
     // One that answers with an error has answered all the same.
     const version = await browser.send("Browser.getVersion", {}, left(), { fixed: true }).catch((err) => {
@@ -834,9 +837,10 @@ async function start(binary, { lang, args, own, wait = START_MS, proxy }) {
     });
     // Its own preloading is off, as its profile asks (see above), and its
     // requests go through its proxy, as it was started: one that says its
-    // preloading is on, or cannot say, or that sends its requests past the
+    // preloading is on, or cannot say, that runs without the run's switches
+    // or with its own after them, or that sends its requests past the
     // proxy, is not used.
-    ({ preloading, unproxied, late } = await startChecks(browser, left, profile, proxy));
+    ({ preloading, unproxied, late } = await startChecks(browser, left, profile, proxy, child.pid));
     if (preloading || unproxied || late) throw new Error(preloading || unproxied || "late");
     // Read now: a browser that is quitting removes the link to it before
     // the folder, and a stop can land in between. In a profile that is the
@@ -895,11 +899,14 @@ async function start(binary, { lang, args, own, wait = START_MS, proxy }) {
 // starts with (about:blank), or in a tab of its own that is closed again
 // when it has none yet, so no page is added beside the run's own: {
 // preloading, unproxied, late }, the first two "" when it holds, else why
-// the browser is not used, said after its name, and late when it did not
-// finish the proxy's probes in their time (see proxySaid()). left: the time
-// the start has left; a call with no answer in it fails as start()'s others
-// do. profile: the one the run made for it; proxy: the run's proxy.
-async function startChecks(browser, left, profile, proxy) {
+// the browser is not used, said after its name, unproxied for one that runs
+// without the run's switches (see switchesSaid()) or sends its requests
+// past the proxy, and late, the time its probes had and whether it was cut,
+// when it did not finish the proxy's probes in their time (see
+// proxySaid()), else null. left: the time the start has left; a call with
+// no answer in it fails as start()'s others do. profile: the one the run
+// made for it; proxy: the run's proxy; pid: the process the run started.
+async function startChecks(browser, left, profile, proxy, pid) {
   const { targetInfos = [] } = await browser.send("Target.getTargets", {}, left(), { fixed: true });
   const first = targetInfos.find((info) => info.type === "page");
   const made = !first;
@@ -910,8 +917,9 @@ async function startChecks(browser, left, profile, proxy) {
     ({ sessionId } = await browser.send("Target.attachToTarget", { targetId, flatten: true }, left(), { fixed: true }));
     tab = browser.session(sessionId);
     const preloading = await preloadingSaid(tab, left, profile);
-    const said = preloading ? { why: "" } : await proxySaid(tab, left, proxy);
-    return { preloading, unproxied: said.why || "", late: Boolean(said.late) };
+    const switches = preloading ? "" : await switchesSaid(browser, left, pid);
+    const said = preloading || switches ? { why: switches } : await proxySaid(tab, left, proxy);
+    return { preloading, unproxied: said.why || "", late: said.late || null };
   } finally {
     // A tab made for it is gone before the run opens its own; the first tab
     // is let go of.
@@ -969,18 +977,29 @@ async function preloadingSaid(tab, left, profile) {
 // asks the DNS itself and connects where it answers, sends its requests
 // for this machine's own addresses past the proxy, or, with WebRTC's own
 // policy (WebRtcIPHandling) or without its switch, sends UDP past it, each
-// past the run's rule. { late: true } for a browser that did not finish the
-// probes in their time and sent nothing the run saw past the proxy, of
-// which nothing is known but that it was slow: judged by what the proxy had
-// seen by then, a slow browser was said to be held by a policy.
-// PROBE_WAIT_MS: how long the probes have to come, within the start's time.
+// past the run's rule. { late }, for a browser that did not finish the
+// three requests of the probes in their time and sent nothing the run saw
+// past the proxy, of which nothing is known but that it was slow: judged by
+// what the proxy had seen by then, a slow browser was said to be held by a
+// policy. late is { ms, cut }: the time the probes had, and whether what
+// the start had left made it shorter than PROBE_WAIT_MS. PROBE_WAIT_MS: how
+// long the probes have to come, within the start's time. WebRTC is asked
+// for GATHER_MS at most, and judged by the STUN packets that reached the
+// run alone: a browser started as the run starts it sends none and is done
+// gathering in a moment, one that sends them sends the first at once, and
+// on a machine whose one network up is its loopback, as one offline or a
+// container with no network, the browser never says it is done: waited
+// for, that stopped each run there as one too slow for its checks, a site
+// of the machine given as the address too.
 const PAST = "so it was not used: a page could have it reach an address the run does not open.";
 const PROBE_WAIT_MS = 10_000;
+const GATHER_MS = 1_500;
 
 async function proxySaid(tab, left, proxy) {
   const stun = dgram.createSocket("udp4");
   let packets = 0;
   let result = {};
+  let wait = 0;
   stun.on("message", () => packets++);
   stun.on("error", () => {});
   try {
@@ -988,11 +1007,12 @@ async function proxySaid(tab, left, proxy) {
       stun.once("error", reject);
       stun.bind(0, "127.0.0.1", resolve);
     });
-    const wait = Math.max(1, Math.min(PROBE_WAIT_MS, left() - 1_000));
+    wait = Math.max(1, Math.min(PROBE_WAIT_MS, left() - 1_000));
     const ask = (url) => `fetch(${JSON.stringify(url)}, { mode: "no-cors", cache: "no-store" }).then(() => 1, () => 0)`;
     // WebRTC gathers its candidates as the offer is set, and is done with
-    // them once its state says complete: a STUN request comes before that.
-    const gathered = `new Promise((done) => { try { const rtc = new RTCPeerConnection({ iceServers: [{ urls: "stun:127.0.0.1:${stun.address().port}" }] }); rtc.createDataChannel("probe"); rtc.onicegatheringstatechange = () => { if (rtc.iceGatheringState === "complete") { rtc.close(); done(1); } }; rtc.createOffer().then((offer) => rtc.setLocalDescription(offer)).catch(() => done(0)); } catch (e) { done(0); } })`;
+    // them once its state says complete, or GATHER_MS after the offer was
+    // set: a STUN request comes as it starts.
+    const gathered = `new Promise((done) => { try { const rtc = new RTCPeerConnection({ iceServers: [{ urls: "stun:127.0.0.1:${stun.address().port}" }] }); const end = () => { rtc.close(); done(1); }; rtc.createDataChannel("probe"); rtc.onicegatheringstatechange = () => { if (rtc.iceGatheringState === "complete") end(); }; rtc.createOffer().then((offer) => rtc.setLocalDescription(offer)).then(() => setTimeout(end, ${GATHER_MS}), () => done(0)); } catch (e) { done(0); } })`;
     const expression = `Promise.race([Promise.all([${ask(`http://${proxy.probe}/`)}, ${ask(`https://${proxy.probe}/`)}, ${ask(proxy.loopback)}, ${gathered}]).then(() => "done"), new Promise((done) => setTimeout(() => done("late"), ${wait}))])`;
     ({ result = {} } = await tab.send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }, wait + 1_000, { fixed: true }).catch((err) => {
       if (!err.answered && !err.timedOut) throw err;
@@ -1013,8 +1033,78 @@ async function proxySaid(tab, left, proxy) {
   if (done && (!proxy.saw("http") || !proxy.saw("connect"))) return { why: `does not send its requests through the proxy the run starts for it, as a Chrome policy (ProxySettings) or a program that starts it without the run's switches can make it, ${PAST} Lift that policy, or point CHROME_PATH at the browser's own program.` };
   if (proxy.saw("direct") || (done && !proxy.saw("loopback"))) return { why: `sends its requests for this machine's own addresses past the proxy the run starts for it, as a program that starts it without the run's switches can make it, ${PAST} Point CHROME_PATH at the browser's own program.` };
   if (packets) return { why: `sends WebRTC's UDP past the proxy the run starts for it, as a Chrome policy (WebRtcIPHandling) or a program that starts it without the run's switches can make it, ${PAST} Lift that policy, or point CHROME_PATH at the browser's own program.` };
-  if (!done) return { late: true };
+  if (!done) return { late: { ms: wait, cut: wait < PROBE_WAIT_MS } };
   return { why: "" };
+}
+
+// Whether the browser runs with the run's switches that hold it to its
+// proxy where no probe of the start's would see it go past (see start()):
+// MediaRouter and WebRtcHideLocalIpsWithMdns in its --disable-features, and
+// the run's --host-resolver-rules. Chrome takes the last value of a switch
+// it is given more than once, so a program that starts the browser with a
+// --disable-features of its own after the run's turned its Media Router
+// back on, and a page's PresentationRequest had it search every network of
+// the machine for screens to cast to and connect to each that answered,
+// past the proxy, while it passed every probe; one that left the switches
+// out did that too, and looked up itself a name a page gave WebRTC. On
+// Linux the browser's command line is read in /proc, where Chrome keeps it
+// as its words joined by spaces, a switch after a space with -- or - before
+// its name, for the process the browser says is its own
+// (SystemInfo.getProcessInfo) once that is the one the run started or one
+// under it. "" when they hold, and on other systems, where nothing is read
+// (see the README), else why the browser is not used, said after its name.
+const OWN_FEATURES = ["MediaRouter", "WebRtcHideLocalIpsWithMdns"];
+const OWN_RULES = "MAP * ^NOTFOUND, EXCLUDE 127.0.0.1";
+const UNSWITCHED = "as a program that starts it with switches of its own after the run's, or without the run's, can make it, so it was not used";
+
+async function switchesSaid(browser, left, pid) {
+  if (process.platform !== "linux") return "";
+  const cannot = (why) => `cannot say which switches it runs with (${why}), so it was not used: with switches of its own after the run's it could reach an address the run does not open, past the proxy the run starts for it. Point CHROME_PATH at the browser's own program.`;
+  let processInfo = [];
+  try {
+    ({ processInfo = [] } = await browser.send("SystemInfo.getProcessInfo", {}, left(), { fixed: true }));
+  } catch (err) {
+    if (!err.answered) throw err;
+    return cannot(err.message);
+  }
+  const own = (Array.isArray(processInfo) ? processInfo : []).find((one) => one && one.type === "browser");
+  if (!own || !Number.isInteger(own.id) || own.id < 1) return cannot("it names no process of its own");
+  if (!startedBy(own.id, pid)) return cannot(`its process, ${own.id}, is not one the run started`);
+  let line = "";
+  try {
+    line = fs.readFileSync(`/proc/${own.id}/cmdline`, "latin1").replace(/\0/g, " ");
+  } catch (err) {
+    return cannot(`its command line could not be read, ${err.code || err.message}`);
+  }
+  // Where the value of the last switch of that name starts, or -1.
+  const last = (name) => {
+    let at = -1;
+    const pattern = new RegExp(`(?:^| )--?${name}=`, "g");
+    for (let found = pattern.exec(line); found; found = pattern.exec(line)) at = found.index + found[0].length;
+    return at;
+  };
+  const features = last("disable-features");
+  const named = features < 0 ? [] : line.slice(features).split(" ")[0].split(",").map((one) => one.split("<")[0]);
+  if (!OWN_FEATURES.every((one) => named.includes(one))) return `runs without ${OWN_FEATURES.join(" and ")} in its last --disable-features, ${UNSWITCHED}: a page could have it search this machine's networks for screens to cast to and connect to them, past the proxy the run starts for it. Point CHROME_PATH at the browser's own program.`;
+  const rules = last("host-resolver-rules");
+  if (rules < 0 || !line.startsWith(OWN_RULES, rules) || ![undefined, " "].includes(line[rules + OWN_RULES.length])) return `runs without the run's --host-resolver-rules last, ${UNSWITCHED}: a page could have it look a name up itself and reach an address the run does not open, past the proxy the run starts for it. Point CHROME_PATH at the browser's own program.`;
+  return "";
+}
+
+// Whether the process pid is root, or one under it, by the parent each
+// process has in /proc.
+function startedBy(pid, root) {
+  let at = pid;
+  for (let i = 0; i < 64 && at > 1; i++) {
+    if (at === root) return true;
+    try {
+      const stat = fs.readFileSync(`/proc/${at}/stat`, "latin1");
+      at = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
+    } catch {
+      return false;
+    }
+  }
+  return false;
 }
 
 // Whether a browser that answers uses the profile the run made for it: on
