@@ -22,7 +22,7 @@ const { findChrome, launch, openTab, closeTab, navigate, roomIn, proxySaid, BARR
 const { guardFor, NOT_GIVEN, NOT_PUBLIC } = require("../skills/easyscreenshotkit/scripts/lib/address");
 const { takeShots } = require("../skills/easyscreenshotkit/scripts/lib/shots");
 const { setTimeLimit, sleep } = require("../skills/easyscreenshotkit/scripts/lib/time");
-const { serve, tempProblem, sh, reachAt } = require("./helpers");
+const { serve, tempProblem, sh, reachAt, pngOf } = require("./helpers");
 
 const noTemp = tempProblem();
 const noBrowser = (!findChrome() && "no Chrome, Chromium, Edge or Brave installed") || noTemp;
@@ -377,6 +377,44 @@ dialer.connect = (options) => {
   }
 });
 
+// A run whose page has a picture that comes after 4 MB of informational
+// heads, with --timeout 60, ends well, the picture drawn: the proxy's
+// reading of those heads took the run's main thread for hours, so the run
+// heard neither its --timeout nor a signal, and a SIGTERM was heard 66 s
+// late with 1.5 MB of them. The run is killed at 100 s.
+test("a run whose picture comes after megabytes of informational heads ends well within its --timeout", { skip: noBrowser, timeout: 150_000 }, async () => {
+  const root = tempDir();
+  const head = "HTTP/1.1 100 Continue\r\n\r\n";
+  const png = pngOf(40, 30, () => [0, 160, 0]);
+  const flood = Buffer.concat([Buffer.alloc(head.length * 168_000).fill(head), Buffer.from(`HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: ${png.length}\r\n\r\n`), png]);
+  const site = net.createServer((socket) => {
+    socket.on("error", () => {});
+    socket.once("data", (data) => {
+      const target = data.toString("latin1").split(" ")[1];
+      if (target === "/flood.png") return socket.end(flood);
+      const body = `<!doctype html><title>Acme | Tools</title><h1>Acme</h1><p>Tools for teams.</p><img src="/flood.png" onload="document.title = 'Acme | Drawn'"><div style="height:1400px"></div>`;
+      socket.end(`HTTP/1.1 ${target === "/" ? "200 OK" : "404 Not Found"}\r\nContent-Type: text/html\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
+    });
+  });
+  await new Promise((resolve) => site.listen(0, "127.0.0.1", resolve));
+  try {
+    const cli = require.resolve("../skills/easyscreenshotkit/scripts/easyscreenshotkit.js");
+    const child = spawn(process.execPath, [cli, `http://127.0.0.1:${site.address().port}/`, "--pages", "1", "--sizes", "desktop", "--timeout", "60", "--json", "--out", path.join(root, "shots")], { stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (d) => (out += d));
+    child.stderr.on("data", (d) => (err += d));
+    const killer = setTimeout(() => child.kill("SIGKILL"), 100_000);
+    const status = await new Promise((resolve) => child.on("close", (code, signal) => resolve(code === null ? signal : code)));
+    clearTimeout(killer);
+    assert.equal(status, 0, `${out}\n${err}`);
+    assert.equal(JSON.parse(out).pages[0].title, "Acme | Drawn");
+  } finally {
+    site.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // A site's answer to a plain http request reaches the browser as the site
 // sent it, with Connection: close put in after the status line of the
 // request's own answer, past an informational one before it, so the
@@ -434,6 +472,242 @@ test("the proxy passes a site's answer on as it came, telling the browser to clo
   }
 });
 
+// What the proxy sends back for one request written on a connection of its
+// own, as raw bytes, the connection closed by the proxy.
+function rawThrough(port, request) {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect(port, "127.0.0.1", () => socket.write(Buffer.from(request, "latin1")));
+    const parts = [];
+    socket.on("data", (data) => parts.push(data));
+    socket.on("error", reject);
+    socket.on("close", () => resolve(Buffer.concat(parts)));
+  });
+}
+
+// The status line of the request's own answer is found where the browser
+// finds it, and the two lines go in after it: past a line break or other
+// bytes before HTTP, with no version, with no space before its code or no
+// code at all, as Chrome reads each of those as a status of 200 and sent its
+// next request on such a connection; past informational answers, a status
+// from 100 to 199 however its code is written, an empty line ending such a
+// head with or without carriage returns; and not after a head whose code is
+// written after a tab, which the browser reads as 200 too.
+test("the proxy finds the status line of a site's answer where the browser finds it", { timeout: 30_000 }, async () => {
+  const sent = {
+    junk: "\r\nHTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok",
+    cased: "hTtP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok",
+    noversion: "HTTP 200 OK\r\nContent-Length: 2\r\n\r\nok",
+    nospace: "HTTP/1.1200 OK\r\nContent-Length: 2\r\n\r\nok",
+    nocode: "HTTP/1.1 OK\r\nContent-Length: 2\r\n\r\nok",
+    spaces: "HTTP/1.1  100  Continue\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok",
+    zeros: "HTTP/1.1 0100 Continue\n\nHTTP/1.1 200 OK\nContent-Length: 2\n\nok",
+    mixed: "HTTP/1.1 102 Processing\nX-A: 1\n\r\nHTTP/1.1 101 Switching\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok",
+    tab: "HTTP/1.1\t100 Continue\r\n\r\nok",
+    none: "SSH-2.0-OpenSSH_9.6\r\n",
+  };
+  const site = net.createServer((socket) => {
+    socket.on("error", () => {});
+    socket.once("data", (data) => socket.end(Buffer.from(sent[data.toString("latin1").split(" ")[1].slice(1)], "latin1")));
+  });
+  await new Promise((resolve) => site.listen(0, "127.0.0.1", resolve));
+  const origin = `http://127.0.0.1:${site.address().port}`;
+  const guard = await guardFor(`${origin}/`);
+  const proxy = await startProxy(() => guard);
+  const lines = (end) => `Connection: close${end}Proxy-Connection: close${end}`;
+  // Each answer with the two lines after the given part of it, or as it came.
+  const expected = {
+    junk: ["\r\nHTTP/1.1 200 OK\r\n", "\r\n"],
+    cased: ["hTtP/1.1 200 OK\r\n", "\r\n"],
+    noversion: ["HTTP 200 OK\r\n", "\r\n"],
+    nospace: ["HTTP/1.1200 OK\r\n", "\r\n"],
+    nocode: ["HTTP/1.1 OK\r\n", "\r\n"],
+    spaces: ["HTTP/1.1  100  Continue\r\n\r\nHTTP/1.1 200 OK\r\n", "\r\n"],
+    zeros: ["HTTP/1.1 0100 Continue\n\nHTTP/1.1 200 OK\n", "\n"],
+    mixed: ["HTTP/1.1 102 Processing\nX-A: 1\n\r\nHTTP/1.1 101 Switching\r\n\r\nHTTP/1.1 200 OK\r\n", "\r\n"],
+    tab: ["HTTP/1.1\t100 Continue\r\n", "\r\n"],
+    none: null,
+  };
+  try {
+    for (const [shape, answer] of Object.entries(sent)) {
+      const got = (await rawThrough(proxy.port, `GET ${origin}/${shape} HTTP/1.1\r\nHost: ${new URL(origin).host}\r\n\r\n`)).toString("latin1");
+      const at = expected[shape];
+      assert.equal(got, at ? `${at[0]}${lines(at[1])}${answer.slice(at[0].length)}` : answer, shape);
+    }
+  } finally {
+    proxy.close();
+    site.close();
+  }
+});
+
+// A site that answers with informational heads, one after another, before
+// its own answer costs the proxy next to nothing of the run's main thread,
+// and its answer reaches the browser: under HEADERS_MAX of them with the two
+// lines put in after its status line, and past it as it came, one head as
+// long as that too. Read from the
+// start of the answer again for each part that came, 256 KB of "HTTP/1.1 100
+// Continue" heads held the main thread more than two seconds and a megabyte
+// of them two minutes, in which the run heard neither its --timeout nor a
+// signal. Judged by the main thread's own CPU time, as a busy machine makes
+// the clock longer, or the process's where Node.js has no count of a thread's.
+const cpuSince = (from) => (process.threadCpuUsage ? process.threadCpuUsage(from) : process.cpuUsage(from));
+
+test("a site that answers with many informational heads before its answer costs the proxy little, and the answer goes through", { timeout: 60_000 }, async () => {
+  const head = "HTTP/1.1 100 Continue\r\n\r\n";
+  const final = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+  const sizes = { under: 10_000, over: 160_000 };
+  // One informational head of its own past HEADERS_MAX, a header of 300 KB.
+  const huge = `HTTP/1.1 100 Continue\r\nX-Big: ${"a".repeat(300_000)}\r\n\r\n${final}`;
+  const site = net.createServer((socket) => {
+    socket.on("error", () => {});
+    socket.once("data", (data) => {
+      const asked = data.toString("latin1").split(" ")[1].slice(1);
+      if (asked === "huge") return socket.end(huge);
+      socket.end(Buffer.concat([Buffer.alloc(head.length * sizes[asked]).fill(head), Buffer.from(final)]));
+    });
+  });
+  await new Promise((resolve) => site.listen(0, "127.0.0.1", resolve));
+  const origin = `http://127.0.0.1:${site.address().port}`;
+  const guard = await guardFor(`${origin}/`);
+  const proxy = await startProxy(() => guard);
+  try {
+    // 244 KB of heads: the two lines go in after the answer's status line.
+    let before = cpuSince();
+    const under = await rawThrough(proxy.port, `GET ${origin}/under HTTP/1.1\r\nHost: ${new URL(origin).host}\r\n\r\n`);
+    let spent = cpuSince(before);
+    assert.ok((spent.user + spent.system) / 1000 < 500, `the proxy took ${Math.round((spent.user + spent.system) / 1000)} ms of the main thread`);
+    assert.equal(under.length, head.length * sizes.under + final.length + 44);
+    assert.equal(under.subarray(-final.length - 44).toString("latin1"), "HTTP/1.1 200 OK\r\nConnection: close\r\nProxy-Connection: close\r\nContent-Length: 2\r\n\r\nok");
+    // 3.9 MB of them: past HEADERS_MAX, the answer goes as it came.
+    before = cpuSince();
+    const over = await rawThrough(proxy.port, `GET ${origin}/over HTTP/1.1\r\nHost: ${new URL(origin).host}\r\n\r\n`);
+    spent = cpuSince(before);
+    assert.ok((spent.user + spent.system) / 1000 < 500, `the proxy took ${Math.round((spent.user + spent.system) / 1000)} ms of the main thread`);
+    assert.equal(over.length, head.length * sizes.over + final.length);
+    assert.equal(over.subarray(-final.length).toString("latin1"), final);
+    // One head past it goes as it came too.
+    assert.equal((await rawThrough(proxy.port, `GET ${origin}/huge HTTP/1.1\r\nHost: ${new URL(origin).host}\r\n\r\n`)).toString("latin1"), huge);
+  } finally {
+    proxy.close();
+    site.close();
+  }
+});
+
+// A request reaches the site as the browser wrote it, byte for byte: a
+// header past ASCII, as a cookie a page set with document.cookie or a value
+// a fetch() gave, which went as UTF-8 with each such byte as two, so the
+// site got "JosÃ©" for a cookie of "José"; a header that holds a control
+// character or DEL, which the proxy answered 400 itself; and a body, with a
+// Content-Length, a large one, and one sent in chunks, sent in chunks again
+// with no Content-Length beside it. A header with a NUL byte, which no
+// browser sends, is refused. The path and query go as the browser wrote
+// them too, a ? with nothing after it included, which the URL parser's own
+// form of them dropped, so a page's fetch("/ask?") reached the site as /ask.
+test("the proxy passes a request on byte for byte, its headers past ASCII or with control characters and its body", { timeout: 30_000 }, async () => {
+  const heads = [];
+  const bodies = [];
+  const targets = [];
+  const site = http.createServer({ insecureHTTPParser: true }, (req, res) => {
+    const named = (name) => Buffer.from(req.rawHeaders[req.rawHeaders.findIndex((one, i) => i % 2 === 0 && one.toLowerCase() === name) + 1] || "", "latin1").toString("hex");
+    targets.push(req.url);
+    heads.push({ cookie: named("cookie"), name: named("x-name"), del: named("x-del"), c0: named("x-c0"), length: req.headers["content-length"], chunked: req.headers["transfer-encoding"] });
+    const parts = [];
+    req.on("data", (data) => parts.push(data));
+    req.on("end", () => {
+      const body = Buffer.concat(parts);
+      bodies.push({ length: body.length, sha: crypto.createHash("sha256").update(body).digest("hex").slice(0, 16) });
+      res.end("taken");
+    });
+  });
+  await new Promise((resolve) => site.listen(0, "127.0.0.1", resolve));
+  const origin = `http://127.0.0.1:${site.address().port}`;
+  const host = new URL(origin).host;
+  const guard = await guardFor(`${origin}/`);
+  const proxy = await startProxy(() => guard);
+  const hash = (text) => crypto.createHash("sha256").update(Buffer.from(text, "latin1")).digest("hex").slice(0, 16);
+  try {
+    const got = await rawThrough(proxy.port, `GET ${origin}/headers HTTP/1.1\r\nHost: ${host}\r\nCookie: n=Jos\xc3\xa9\r\nX-Name: caf\xe9\r\nX-Del: a\x7fb\r\nX-C0: a\x01b\r\n\r\n`);
+    assert.match(got.toString("latin1"), /^HTTP\/1\.1 200 OK\r\n[\s\S]*taken$/);
+    assert.deepEqual(heads.shift(), { cookie: "6e3d4a6f73c3a9", name: "636166e9", del: "617f62", c0: "610162", length: undefined, chunked: undefined });
+    assert.deepEqual(bodies.shift(), { length: 0, sha: hash("") });
+    // Each as Chrome writes it, its escapes kept as they are; a fragment,
+    // which no browser sends, is left out, and a target written as no
+    // browser writes one, with no path or with a \ in it, goes in the URL
+    // parser's form.
+    const asked = [
+      ["/ask?", "/ask?"],
+      ["/ask?#", "/ask?"],
+      ["/q?a=%27b%27&e={f}&g=^h|i&l=%zz", "/q?a=%27b%27&e={f}&g=^h|i&l=%zz"],
+      ["/p%7Bx%7D%60y%60'v", "/p%7Bx%7D%60y%60'v"],
+      ["/s%2e/t", "/s%2e/t"],
+      ["?only", "/?only"],
+      ["/a\\b", "/a/b"],
+    ];
+    for (const [target] of asked) {
+      assert.match((await rawThrough(proxy.port, `GET ${origin}${target} HTTP/1.1\r\nHost: ${host}\r\n\r\n`)).toString("latin1"), /taken$/);
+      heads.shift();
+      bodies.shift();
+    }
+    const large = "x".repeat(200_000);
+    for (const [body, framed] of [
+      ["hello world", `Content-Length: 11\r\n\r\nhello world`],
+      [large, `Content-Length: ${large.length}\r\n\r\n${large}`],
+      ["hello world", "Transfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n"],
+    ]) {
+      const answered = await rawThrough(proxy.port, `POST ${origin}/form HTTP/1.1\r\nHost: ${host}\r\n${framed}`);
+      assert.match(answered.toString("latin1"), /taken$/);
+      assert.deepEqual(bodies.shift(), { length: body.length, sha: hash(body) });
+      const { length, chunked } = heads.shift();
+      assert.deepEqual([length, chunked], framed.startsWith("Transfer-Encoding") ? [undefined, "chunked"] : [String(body.length), undefined]);
+    }
+    // Content-Length beside chunks: the body goes in chunks, and the length
+    // stays behind.
+    await rawThrough(proxy.port, `POST ${origin}/form HTTP/1.1\r\nHost: ${host}\r\nContent-Length: 99\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nok\r\n0\r\n\r\n`);
+    assert.deepEqual(bodies.shift(), { length: 2, sha: hash("ok") });
+    assert.deepEqual([heads[0].length, heads.shift().chunked], [undefined, "chunked"]);
+    const nul = await rawThrough(proxy.port, `GET ${origin}/nul HTTP/1.1\r\nHost: ${host}\r\nX-Nul: a\x00b\r\n\r\n`);
+    assert.match(nul.toString("latin1"), /^HTTP\/1\.1 400 Bad Request\r\n/);
+    assert.deepEqual([heads, bodies], [[], []]);
+    assert.deepEqual(targets, ["/headers", ...asked.map(([, reached]) => reached), "/form", "/form", "/form", "/form"]);
+  } finally {
+    proxy.close();
+    site.close();
+  }
+});
+
+// A request whose rule answers only once the proxy has closed, as a lookup
+// that comes late, dials nothing: close() ends the dials under way when it
+// is called, and one begun after it would hold the run's process alive
+// until it gave up, as a host that does not answer does. Here the lookup
+// answers 300 ms after it is asked, and the proxy closes at once.
+test("a request whose lookup answers after the proxy has closed dials nothing", { timeout: 30_000 }, async () => {
+  const dialed = [];
+  const before = dialer.connect;
+  dialer.connect = (options) => {
+    dialed.push(`${options.host}:${options.port}`);
+    return new net.Socket();
+  };
+  const late = {
+    refuses: async () => "",
+    lookupFor: () => (hostname, options, callback) => setTimeout(() => callback(null, [{ address: "93.184.215.14", family: 4 }]), 300),
+  };
+  const proxy = await startProxy(() => late);
+  try {
+    const plain = rawThrough(proxy.port, "GET http://late.example/ HTTP/1.1\r\nHost: late.example\r\n\r\n").catch((err) => err.code);
+    const tunneled = tunnel(proxy.port, "late.example:443").then(({ status, socket }) => {
+      socket.destroy();
+      return status;
+    });
+    await sleep(100);
+    proxy.close();
+    await Promise.all([plain, tunneled]);
+    await sleep(500);
+    assert.deepEqual(dialed, []);
+  } finally {
+    dialer.connect = before;
+    proxy.close();
+  }
+});
+
 // A page whose answers Node.js's parser refuses, and the browser reads, is
 // taken as the browser reads it, as 0.1.3 took each of these, and so is
 // its script that comes the same way: lines that end in a bare line feed,
@@ -446,7 +720,12 @@ test("the proxy passes a site's answer on as it came, telling the browser to clo
 // first six failed with "net::ERR_CONNECTION_FAILED" and the seventh with
 // "net::ERR_EMPTY_RESPONSE". An answer with nothing in it, and a connection
 // the site resets before it answers, are said so in the browser's own
-// words, as 0.1.3 said them.
+// words, as 0.1.3 said them. And the browser sends no further request on
+// a connection that carried a site's answer, a status line it reads where
+// a stricter reading finds none included: a line break before HTTP, no
+// version, no space before the code or no code, each with its connection
+// kept open, where the browser sent its next request on that connection.
+// Each request the proxy takes is counted by the connection it came on.
 test("a page whose answers Node.js's parser refuses is taken as the browser reads them, its script with it", { skip: noBrowser, timeout: 150_000 }, async () => {
   setTimeLimit(150_000);
   const page = (shape, script) => (script ? `document.title += " ran";` : `<!doctype html><title>${shape}</title><h1>${shape}</h1><script src="/${shape}.js"></script>`);
@@ -467,6 +746,10 @@ test("a page whose answers Node.js's parser refuses is taken as the browser read
     low: (b, t) => `HTTP/1.1 099 Low\r\nContent-Type: ${t}\r\nContent-Length: ${length(b)}\r\n\r\n${b}`,
     zero: (b, t) => `HTTP/1.1 000 Zero\r\nContent-Type: ${t}\r\nContent-Length: ${length(b)}\r\n\r\n${b}`,
     del: (b, t) => `HTTP/1.1 200 O\x7fK\r\nContent-Type: ${t}\r\nContent-Length: ${length(b)}\r\n\r\n${b}`,
+    junk: (b, t) => `\r\nHTTP/1.1 200 OK\r\nContent-Type: ${t}\r\nConnection: keep-alive\r\nContent-Length: ${length(b)}\r\n\r\n${b}`,
+    noversion: (b, t) => `HTTP 200 OK\r\nContent-Type: ${t}\r\nConnection: keep-alive\r\nContent-Length: ${length(b)}\r\n\r\n${b}`,
+    nospace: (b, t) => `HTTP/1.1200 OK\r\nContent-Type: ${t}\r\nConnection: keep-alive\r\nContent-Length: ${length(b)}\r\n\r\n${b}`,
+    nocode: (b, t) => `HTTP/1.1 OK\r\nContent-Type: ${t}\r\nConnection: keep-alive\r\nContent-Length: ${length(b)}\r\n\r\n${b}`,
     empty: () => "",
     reset: () => "",
   };
@@ -484,15 +767,30 @@ test("a page whose answers Node.js's parser refuses is taken as the browser read
       if (shape === "reset") return void socket.resetAndDestroy();
       // The connection kept open is the site's to close, a moment later.
       const answer = Buffer.from(shapes[shape](page(shape, script), script ? "text/javascript" : "text/html"), "latin1");
-      if (shape === "open") return void socket.write(answer, () => setTimeout(() => socket.destroy(), 3_000));
+      if (["open", "junk", "noversion", "nospace", "nocode"].includes(shape)) return void socket.write(answer, () => setTimeout(() => socket.destroy(), 3_000));
       socket.end(answer);
     });
   });
   await new Promise((resolve) => site.listen(0, "127.0.0.1", resolve));
   const origin = `http://127.0.0.1:${site.address().port}`;
   let chrome = null;
+  // The proxy's own server, taken as it is made, and the addresses of the
+  // requests each connection of the browser's brought it.
+  const made = http.createServer;
+  let proxyServer = null;
+  http.createServer = function (...args) {
+    const server = made.apply(this, args);
+    proxyServer = proxyServer || server;
+    return server;
+  };
+  const asked = new Map();
   try {
-    chrome = await launch({ guard: await guardFor(`${origin}/`) });
+    try {
+      chrome = await launch({ guard: await guardFor(`${origin}/`) });
+    } finally {
+      http.createServer = made;
+    }
+    proxyServer.on("request", (req) => asked.set(req.socket, [...(asked.get(req.socket) || []), req.url.replace(origin, "")]));
     const took = {};
     for (const shape of Object.keys(shapes)) {
       const tab = await openTab(chrome, DESKTOP);
@@ -513,6 +811,9 @@ test("a page whose answers Node.js's parser refuses is taken as the browser read
     const expected = Object.fromEntries(Object.keys(shapes).map((shape) => [shape, `200 ${shape} ran`]));
     Object.assign(expected, { low: "99 low ran", zero: "0 zero ran", empty: "Could not open <site>/empty: net::ERR_EMPTY_RESPONSE", reset: "Could not open <site>/reset: net::ERR_CONNECTION_RESET" });
     assert.deepEqual(took, expected);
+    // A connection the proxy answered on itself, as for the reset, can
+    // take another request.
+    assert.deepEqual([...asked.values()].filter((urls) => urls.length > 1 && !/^\/reset(\.js)?$/.test(urls[0])), []);
   } finally {
     if (chrome) await chrome.close();
     site.close();
@@ -1238,5 +1539,63 @@ test("a site given at 127.0.0.1 whose page names its files at localhost on the s
   } finally {
     if (chrome) await chrome.close();
     server.close();
+  }
+});
+
+// What a page sends a site of this machine given as the address reaches it
+// as the browser sent it: a cookie the page set to "José" and a header of
+// "café" from a fetch(), each byte past ASCII as one, where the site got
+// "JosÃ©" and a page that greets by that cookie showed it; a fetch() whose
+// header holds DEL or another control character, which the proxy answered
+// 400 itself; a fetch() of /ask?, which reached the site as /ask; and a
+// form's POST, its body whole.
+test("a page's cookie and headers past ASCII, a header with a control character and a form's POST reach the site as the browser sent them", { skip: noBrowser, timeout: 60_000 }, async () => {
+  setTimeLimit(60_000);
+  const got = {};
+  const named = (req, name) => Buffer.from(req.rawHeaders[req.rawHeaders.findIndex((one, i) => i % 2 === 0 && one.toLowerCase() === name) + 1] || "", "latin1").toString("hex");
+  const site = http.createServer({ insecureHTTPParser: true }, (req, res) => {
+    if (req.url === "/") {
+      return res.writeHead(200, html).end(`<!doctype html><title>Forms</title><h1>Forms</h1><iframe name="sink"></iframe><form method="post" action="/form" target="sink"><input name="w" value="hello world"></form><script>
+document.cookie = "n=Jos\\u00e9; path=/";
+Promise.all([
+  fetch("/echo", { headers: { "X-Name": "caf\\u00e9" } }).then((r) => r.status),
+  fetch("/del", { headers: { "X-Test": "a\\u007fb" } }).then((r) => r.status),
+  fetch("/c0", { headers: { "X-Test": "a\\u0001b" } }).then((r) => r.status),
+  fetch("/ask?").then((r) => r.status),
+]).then((codes) => { document.title = codes.join(" "); document.forms[0].submit(); }, (e) => (document.title = "failed " + e));
+</script>`);
+    }
+    if (req.url === "/echo") Object.assign(got, { cookie: named(req, "cookie"), name: named(req, "x-name") });
+    if (req.url === "/del" || req.url === "/c0") got[req.url.slice(1)] = named(req, "x-test");
+    if (req.url.startsWith("/ask")) got.ask = req.url;
+    const parts = [];
+    req.on("data", (data) => parts.push(data));
+    req.on("end", () => {
+      if (req.url === "/form") got.form = Buffer.concat(parts).toString("latin1");
+      res.writeHead(200, html).end("taken");
+    });
+  });
+  await new Promise((resolve) => site.listen(0, "127.0.0.1", resolve));
+  const given = `http://127.0.0.1:${site.address().port}/`;
+  let chrome = null;
+  try {
+    chrome = await launch({ guard: await guardFor(given) });
+    const tab = await openTab(chrome, DESKTOP);
+    try {
+      assert.equal((await navigate(tab, given)).status, 200);
+      let title = "";
+      for (let i = 0; i < 100 && !(got.form && title); i++) {
+        ({ result: { value: title } } = await tab.send("Runtime.evaluate", { expression: "document.title", returnByValue: true }));
+        if (title === "Forms") title = "";
+        if (!(got.form && title)) await sleep(100);
+      }
+      assert.equal(title, "200 200 200 200");
+    } finally {
+      await closeTab(chrome, tab);
+    }
+    assert.deepEqual(got, { cookie: "6e3d4a6f73c3a9", name: "636166e9", del: "617f62", c0: "610162", ask: "/ask?", form: "w=hello+world" });
+  } finally {
+    if (chrome) await chrome.close();
+    site.close();
   }
 });

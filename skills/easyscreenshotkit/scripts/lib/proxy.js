@@ -49,8 +49,9 @@ const STAGGER_MS = 250;
 
 // The most a request's headers may hold, as a browser takes them: Node.js's
 // own limit, 16 KB, refused a request with a site's cookies past it. The
-// most the first lines of an answer may hold before the proxy stops looking
-// for the end of its status line (see closing()).
+// most an answer may hold before the status line of the request's own
+// answer, its informational answers together, before the proxy stops
+// looking for that line (see closing()).
 const HEADERS_MAX = 256 * 1024;
 
 // The headers that are of one connection and not passed on (RFC 9110).
@@ -88,6 +89,20 @@ const wordsFor = (code) => CHROME_WORDS[code] || ["net::ERR_CONNECTION_FAILED", 
 function authorityOf(url) {
   const port = url.port || (url.protocol === "https:" || url.protocol === "wss:" ? "443" : "80");
   return `${url.hostname}:${port}`;
+}
+
+// The path and query of a plain http request as the browser wrote them,
+// after the host of its address (raw) whose URL is url: the URL parser's
+// own form of them drops a ? with nothing after it, so a page's
+// fetch("/ask?") reached the site as /ask. A fragment, which no browser
+// sends, is left out, as the URL parser leaves it out, and a target written
+// as no browser writes one, with no path or with a \ in it, goes in the URL
+// parser's form.
+function targetOf(raw, url) {
+  const rest = String(raw).slice(String(raw).indexOf("//") + 2);
+  const at = rest.search(/[/?#\\]/);
+  const tail = at < 0 ? "" : rest.slice(at).split("#")[0];
+  return tail.startsWith("/") && !tail.includes("\\") ? tail : `${url.pathname}${url.search}`;
 }
 
 // The authority of an address as the browser asks for it, or "".
@@ -183,35 +198,121 @@ function dial(list, port, dials) {
 // Transfer-Encoding, a header folded onto a second line, a control
 // character in a value, a space before a header's colon or in its name and
 // a chunk's size followed by a space, so such a page failed where 0.1.3
-// took it, and a status under 100 crashed the run. Only Connection: close
-// is put in, after the status line of the answer the request gets, past any
-// informational answer (1xx) before it, so the browser opens a new
-// connection for its next request: a site that kept its connection open
-// past the answer could have had the browser read what it sent later as the
-// answer to another request of the browser's, for another site. closing()
-// resolves the bytes of an answer so far to { bytes, done }: done once that
-// line is in, or once the answer is not one to put it in (no status line
-// at its start, or one HEADERS_MAX long and still not ended); null while
-// more is needed.
-function closing(bytes) {
+// took it, and a status under 100 crashed the run. Two lines are put in,
+// Connection: close and Proxy-Connection: close, after the status line of
+// the answer the request gets, past the informational answers (1xx) before
+// it, so the browser does not send another request on that connection; one
+// it sends there all the same is ended (see CARRIED), and the browser sends
+// it again on a new one. The heads are read as the browser reads them
+// (Chrome's HttpUtil and HttpResponseHeaders): a head's status line starts
+// with HTTP, in any case, at one of its first five bytes, and ends at its
+// first line feed; its code is the digits after the spaces that follow its
+// first space, and with no space or no digits there it is 200; one from 100
+// to 199 is informational, and its head ends where a line feed follows a
+// line feed, a carriage return between them or not. So a status line with
+// a line break or other bytes before HTTP, with no version, with no space
+// before its code or with no code, as the browser reads them, gets the two
+// lines too, where the browser sent its next request on such a connection.
+// An answer with no status line at its start, or one that holds more than
+// HEADERS_MAX bytes before the status line of the request's own answer,
+// goes as it came. closing() gives a reader for one answer: read(bytes) takes what
+// came next, and gives the bytes to pass on once that line is found or the
+// answer is not one to put it in, else null while more is needed; held()
+// gives what it holds, for an answer that ended before. Each byte is read
+// once: where the reading started again at the answer's first byte for
+// each part that came, and made text of all that came after each
+// informational head, a site that answered with a megabyte of "HTTP/1.1
+// 100 Continue" heads held the run's main thread two minutes, past its
+// --timeout and its signals.
+const HTTP = Buffer.from("http");
+
+function closing() {
+  let held = Buffer.allocUnsafe(16 * 1024);
+  let size = 0;
+  // Where the head being read starts, where its status line starts (-1 until
+  // it is found), and how far it has been read.
+  let head = 0;
+  let status = -1;
   let at = 0;
-  for (;;) {
-    const line = bytes.indexOf(10, at);
-    if (line < 0) return bytes.length - at > HEADERS_MAX ? { bytes, done: true } : null;
-    const status = /^HTTP\/\d+(\.\d+)?[ \t]+(\d{3})/i.exec(bytes.subarray(at, line).toString("latin1"));
-    if (!status) return { bytes, done: true };
-    if (status[2].startsWith("1") && status[2] !== "101") {
-      // An informational answer, a head of its own and no body: the one
-      // that follows its empty line is the request's. The search starts at
-      // the status line's own line end, for a head with no header.
-      const empty = /\r?\n\r?\n/.exec(bytes.subarray(line - 1).toString("latin1"));
-      if (!empty) return bytes.length - at > HEADERS_MAX ? { bytes, done: true } : null;
-      at = line - 1 + empty.index + empty[0].length;
-      continue;
+  // In an informational head, read to its end: whether the last byte read
+  // was a line feed, or a carriage return right after one.
+  let skipping = false;
+  let lf = false;
+  const keep = (data) => {
+    if (size + data.length > held.length) {
+      const bigger = Buffer.allocUnsafe(Math.max(held.length * 2, size + data.length));
+      held.copy(bigger, 0, 0, size);
+      held = bigger;
     }
-    const end = bytes[line - 1] === 13 ? "\r\n" : "\n";
-    return { bytes: Buffer.concat([bytes.subarray(0, line + 1), Buffer.from(`Connection: close${end}Proxy-Connection: close${end}`), bytes.subarray(line + 1)]), done: true };
-  }
+    data.copy(held, size);
+    size += data.length;
+  };
+  // The bytes to pass on, with the two lines put in after the line feed at
+  // `after`, or as they came for -1.
+  const done = (after) => {
+    const bytes = held.subarray(0, size);
+    if (after < 0) return bytes;
+    const end = held[after - 1] === 13 ? "\r\n" : "\n";
+    return Buffer.concat([bytes.subarray(0, after + 1), Buffer.from(`Connection: close${end}Proxy-Connection: close${end}`), bytes.subarray(after + 1)]);
+  };
+  // Where HTTP starts in the head at `head`: an offset, -1 while more bytes
+  // could still show it, or -2 when it is not there.
+  const start = () => {
+    for (let i = 0; i <= 4 && head + i + 4 <= size; i++) {
+      let same = true;
+      for (let j = 0; j < 4 && same; j++) same = (held[head + i + j] | 0x20) === HTTP[j];
+      if (same) return head + i;
+    }
+    return size - head >= 8 ? -2 : -1;
+  };
+  // The code of the status line from `from` to its line feed at `to`, read
+  // to its first carriage return as the browser reads it.
+  const codeOf = (from, to) => {
+    let end = from;
+    while (end < to && held[end] !== 13) end++;
+    let p = from;
+    while (p < end && held[p] !== 32) p++;
+    if (p === end) return 200;
+    while (p < end && held[p] === 32) p++;
+    const digits = p;
+    while (p < end && held[p] >= 48 && held[p] <= 57) p++;
+    if (p === digits) return 200;
+    return p - digits > 9 ? Infinity : Number(held.toString("latin1", digits, p));
+  };
+  const read = (data) => {
+    keep(data);
+    for (;;) {
+      if (skipping) {
+        for (; at < size; at++) {
+          const byte = held[at];
+          if (byte === 10 && lf) break;
+          if (byte === 10) lf = true;
+          else if (byte !== 13 || held[at - 1] !== 10) lf = false;
+        }
+        if (at >= size) return size > HEADERS_MAX ? done(-1) : null;
+        skipping = false;
+        head = at + 1;
+        status = -1;
+      }
+      if (status < 0) {
+        status = start();
+        if (status === -2) return done(-1);
+        if (status === -1) return size > HEADERS_MAX ? done(-1) : null;
+        at = status;
+      }
+      const line = held.subarray(0, size).indexOf(10, at);
+      if (line < 0) {
+        at = size;
+        return size > HEADERS_MAX ? done(-1) : null;
+      }
+      const code = codeOf(status, line);
+      if (code < 100 || code > 199) return done(line);
+      skipping = true;
+      lf = true;
+      at = line + 1;
+    }
+  };
+  return { read, held: () => held.subarray(0, size) };
 }
 
 // Starts the proxy. ruleOf(): the run's rule at the moment a request comes
@@ -286,7 +387,13 @@ async function startProxy(ruleOf) {
     }
   };
 
-  const server = http.createServer({ requestTimeout: 0, maxHeaderSize: HEADERS_MAX }, (req, res) => {
+  // The browser's requests are read as leniently as a site's server reads
+  // them (insecureHTTPParser): Node.js's own strict reading answered 400 to
+  // a request whose header holds a control character or DEL, which a page's
+  // fetch() may send and the site got from 0.1.3's browser. A header that
+  // holds a NUL byte, which no browser sends and the lenient reading takes,
+  // is refused (see below).
+  const server = http.createServer({ requestTimeout: 0, maxHeaderSize: HEADERS_MAX, insecureHTTPParser: true }, (req, res) => {
     // A request on a connection that carried a site's answer, which the
     // browser was told to close (see closing()): it is ended, and the
     // browser sends the request again on a new connection.
@@ -317,6 +424,10 @@ async function startProxy(ruleOf) {
       req.resume();
       return answer(403, {}, "easyscreenshotkit's proxy takes plain http requests and CONNECT tunnels only.\n");
     }
+    if (req.rawHeaders.some((part) => part.includes("\0"))) {
+      req.resume();
+      return answer(400, {}, "easyscreenshotkit's proxy takes no header with a NUL byte in it.\n");
+    }
     if (url.hostname === probe || (url.hostname === "127.0.0.1" && url.port === String(server.address().port) && url.pathname === looped)) {
       seen.add(url.hostname === probe ? "http" : "loopback");
       req.resume();
@@ -345,21 +456,25 @@ async function startProxy(ruleOf) {
         reached(authority, "http");
         const client = req.socket;
         if (res.destroyed || client.destroyed || closed) return void socket.destroy();
-        // The request goes on as the browser wrote it, with the headers that
-        // are of the browser's connection to the proxy left out, the host
-        // its address names, and Connection: close, so the site's
-        // connection carries it alone. A body the browser sent in chunks is
-        // sent in chunks again.
+        // The request goes on as the browser wrote it, byte for byte, its
+        // path and query too (see targetOf()), with the headers that are of
+        // the browser's connection to the proxy left out, the host its
+        // address names, and Connection: close, so the site's connection
+        // carries it alone. Node.js hands each header over as a string of
+        // one character to a byte (latin1), which goes out so again: written
+        // as UTF-8, every byte past ASCII went as two, so a cookie a page set
+        // to "José" reached the site as "JosÃ©". A body the browser sent in
+        // chunks is sent in chunks again, with no Content-Length beside it.
         const named = new Set(String(req.headers.connection || "").toLowerCase().split(",").map((one) => one.trim()).filter(Boolean));
-        const lines = [`${req.method} ${url.pathname}${url.search} HTTP/1.1`];
+        const chunked = /(^|,)\s*chunked\s*$/i.test(String(req.headers["transfer-encoding"] || ""));
+        const lines = [`${req.method} ${targetOf(req.url, url)} HTTP/1.1`];
         for (let i = 0; i < req.rawHeaders.length; i += 2) {
           const name = req.rawHeaders[i].toLowerCase();
-          if (HOP.has(name) || named.has(name) || name === "host") continue;
+          if (HOP.has(name) || named.has(name) || name === "host" || (chunked && name === "content-length")) continue;
           lines.push(`${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}`);
         }
-        const chunked = /(^|,)\s*chunked\s*$/i.test(String(req.headers["transfer-encoding"] || ""));
         lines.push(`Host: ${url.host}`, ...(chunked ? ["Transfer-Encoding: chunked"] : []), "Connection: close");
-        socket.write(`${lines.join("\r\n")}\r\n\r\n`);
+        socket.write(Buffer.from(`${lines.join("\r\n")}\r\n\r\n`, "latin1"));
         req.on("data", (data) => {
           if (!socket.write(chunked ? Buffer.concat([Buffer.from(`${data.length.toString(16)}\r\n`), data, Buffer.from("\r\n")]) : data)) {
             req.pause();
@@ -374,7 +489,7 @@ async function startProxy(ruleOf) {
         // itself. A connection that fails before the site has sent anything
         // is answered as lost, in the words the browser gives one it makes
         // itself.
-        let head = Buffer.alloc(0);
+        const reader = closing();
         let passing = false;
         const pass = (bytes) => {
           passing = true;
@@ -386,12 +501,11 @@ async function startProxy(ruleOf) {
         };
         socket.on("data", (data) => {
           if (passing) return pass(data);
-          head = Buffer.concat([head, data]);
-          const marked = closing(head);
-          if (marked) pass(marked.bytes);
+          const marked = reader.read(data);
+          if (marked) pass(marked);
         });
         socket.on("end", () => {
-          if (!passing) pass(head);
+          if (!passing) pass(reader.held());
           client.end();
         });
         socket.on("error", (err) => {
