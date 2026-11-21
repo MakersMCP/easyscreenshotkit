@@ -2076,6 +2076,48 @@ test("a document the proxy refuses past the browser's guard is not shown, and it
   }
 });
 
+// A page that moves on once it has loaded to an address the browser could
+// not open shows the browser's own error page, which is no page of the
+// site: it is not taken. It was saved as the site's screenshot, its title
+// the host's name and its heading "This site can't be reached", with exit
+// 0. Here a page moves on as it has loaded, to a host that refuses and to
+// one that answers nothing, whose connections fail in 3 s.
+test("a page that moves on to an address the browser cannot open is not taken as the browser's error page", { skip: noBrowser, timeout: 240_000 }, () =>
+  withNames({ "moves.acme.example": "93.184.215.14", "dead.acme.example": "93.184.215.15", "hole.acme.example": "93.184.215.16" }, async () => {
+    const closed = await serve((req, res) => res.end("gone"));
+    const closedPort = Number(new URL(closed.origin).port);
+    await new Promise((resolve) => closed.server.close(resolve));
+    const { server, origin } = await serve((req, res) => {
+      const to = { "/moves-dead": "http://dead.acme.example/landing", "/moves-hole": "http://hole.acme.example/landing" }[req.url];
+      if (req.url === "/") return res.writeHead(200, html).end('<!doctype html><title>Acme | Tools</title><h1>Acme</h1><p>Tools for teams.</p><div style="height:1400px"></div>');
+      if (!to) return res.writeHead(404).end();
+      res.writeHead(200, html).end(`<!doctype html><title>Acme | Moving</title><h1>Moving</h1><p>This page moves on.</p><div style="height:1400px"></div><script>addEventListener("load", () => setTimeout(() => (location.href = ${JSON.stringify(to)}), 300));</script>`);
+    });
+    const stand = reachAt({ "93.184.215.14": `127.0.0.1:${new URL(origin).port}`, "93.184.215.15": `127.0.0.1:${closedPort}` });
+    const reached = dialer.connect;
+    dialer.connect = (options) => {
+      if (options.host !== "93.184.215.16") return reached(options);
+      const socket = new net.Socket();
+      setTimeout(() => socket.destroy(Object.assign(new Error("connect ETIMEDOUT"), { code: "ETIMEDOUT" })), 3_000);
+      return socket;
+    };
+    const root = tempDir();
+    try {
+      await assert.rejects(takeShots("http://moves.acme.example/moves-dead", { dir: path.join(root, "dead"), pages: 1, sizes: "desktop", timeLimit: 90_000 }), {
+        message: "Could not open http://moves.acme.example/moves-dead: it moved on to http://dead.acme.example/landing once it had loaded, and the browser could not open that (net::ERR_CONNECTION_REFUSED).",
+      });
+      const { manifest } = await takeShots("http://moves.acme.example/", { dir: path.join(root, "hole"), pages: 1, extra: ["/moves-hole"], sizes: "desktop", timeLimit: 120_000 });
+      assert.deepEqual(manifest.pages.map((page) => page.title), ["Acme | Tools"]);
+      assert.ok(manifest.notes.some((note) => /^http:\/\/moves\.acme\.example\/moves-hole was asked for but not taken: could not be opened: it moved on to http:\/\/hole\.acme\.example\/landing once it had loaded, and the browser could not open that \(net::ERR_(CONNECTION_)?TIMED_OUT\)\.$/.test(note)), JSON.stringify(manifest.notes));
+      assert.deepEqual(fs.readdirSync(path.join(root, "hole")).filter((name) => name.endsWith(".png")).sort(), ["01-home-desktop.png", "sheet.png"]);
+    } finally {
+      dialer.connect = reached;
+      stand.restore();
+      server.close();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }));
+
 // What the proxy did not pass on is told by its own records, never by an
 // answer a page can read: a plain http site whose page fetch()ed its own
 // address while its connection could not be made, or was reset, read the

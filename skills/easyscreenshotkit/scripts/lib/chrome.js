@@ -1945,7 +1945,7 @@ async function navigate(cdp, url) {
       const why = direct ? refusedThere : `it leads to ${withoutFragment(asking)}, which is ${refusedThere}`;
       throw Object.assign(new Error(`Could not open ${url}: ${direct ? `it is ${why}` : why}.`), { refused: why });
     }
-    const failed = tunnel && cdp.proxy.unreached.get(tunnel) ? wordsFor(cdp.proxy.unreached.get(tunnel))[0] : errorText;
+    const failed = failedWords(cdp, asking, errorText);
     // reason: the browser's own words, for a page left out over it.
     if (failed) throw Object.assign(new Error(`Could not open ${url}: ${failed}`), { reason: failed });
     // The wait is cleared once the page has loaded: left running, it kept
@@ -1970,6 +1970,16 @@ async function navigate(cdp, url) {
     .send("Runtime.evaluate", { expression: "(performance.getEntriesByType('navigation')[0] || {}).responseStatus || 0", returnByValue: true }, 5_000)
     .catch(() => ({ result: {} }));
   return { url: finalUrl, status: Number(result && result.value) || 0 };
+}
+
+// The browser's words for a document of a tab at url that it could not
+// open, errorText, or "" for none: through the run's proxy it hears of an
+// https address it could not connect to only that its tunnel failed, and
+// the proxy's records give those it gives a connection it makes itself.
+function failedWords(cdp, url, errorText) {
+  const tunnel = errorText === "net::ERR_TUNNEL_CONNECTION_FAILED" && cdp.proxy ? authorityOfUrl(url) : "";
+  const code = tunnel ? cdp.proxy.unreached.get(tunnel) : "";
+  return code ? wordsFor(code)[0] : errorText;
 }
 
 function protocolOf(url) {
@@ -2078,4 +2088,4 @@ function removeProfiles(browsers) {
   }
 }
 
-module.exports = { findChrome, browserProblem, onPath, launch, startWait, openTab, closeTab, sendInput, guardBrowser, navigate, drawnSoFar, currentUrl, killBrowsers, removeProfiles, removeStrayLocks, removeFetchFolders, fetchFolders, roomIn, lockFolderOf, userAgentFor, proxySaid, busy, CRASHED, BARRED, UNREACHED, NOT_A_PAGE };
+module.exports = { findChrome, browserProblem, onPath, launch, startWait, openTab, closeTab, sendInput, guardBrowser, navigate, failedWords, drawnSoFar, currentUrl, killBrowsers, removeProfiles, removeStrayLocks, removeFetchFolders, fetchFolders, roomIn, lockFolderOf, userAgentFor, proxySaid, busy, CRASHED, BARRED, UNREACHED, NOT_A_PAGE };

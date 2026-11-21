@@ -22,7 +22,7 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
-const { launch, browserProblem, openTab, closeTab, navigate, currentUrl, CRASHED, BARRED, UNREACHED } = require("./chrome");
+const { launch, browserProblem, openTab, closeTab, navigate, currentUrl, failedWords, CRASHED, BARRED, UNREACHED } = require("./chrome");
 const { AROUND, metrics, scrollTo, walk, showsContent, waitForContent, settle, watchRequests, networkQuiet, waitForDrawn, showsLoadingSign, looksEmpty, waitForFonts, clearHover, resetPictureWait, capture, captureScreen, capturePage } = require("./page");
 const { clean } = require("./clean");
 const { homeOf, pageKey, routeOf, viewKey, pathOf, pageUrl, anchorOf, siteOf, fold, wordsOf, kindOf, rankLinks, routeLinks, visitOrder, readSiteIndex, indexNotes, localeOf, alternateFor, oneLine, ROUTE_LINK } = require("./pick");
@@ -777,6 +777,11 @@ function waitNotes(result) {
 // page that moves on again is followed MOVES times; after that it is taken
 // as it stands, as one that reloads itself every few seconds is, its address
 // and its words read again as it is taken.
+//
+// A page that moves on to an address the browser could not open shows the
+// browser's own error page, as "This site can't be reached": that is no
+// page of the site, and the page is not taken (see failedMove()). It was
+// saved as the site's screenshot, and named as a page that had moved on.
 const MOVES = 2;
 
 async function visit(chrome, page, group, theme, ctx, { check = null, links = false, routes = false } = {}) {
@@ -812,11 +817,35 @@ async function visit(chrome, page, group, theme, ctx, { check = null, links = fa
     let current = "";
     let doc = "";
     const urls = new Map();
+    // Of a document that is the browser's error page, the address it could
+    // not open, by its loader; and the browser's words for each address of
+    // the main frame's documents that failed, but for one it gave up on as
+    // it showed its error page (canceled, net::ERR_ABORTED).
+    const unreachable = new Map();
+    const failures = new Map();
     tab.on("Page.frameNavigated", ({ frame }) => {
       if (!frame || frame.parentId || !frame.loaderId) return;
       current = frame.loaderId;
       urls.set(current, `${frame.url}${frame.urlFragment || ""}`);
+      if (frame.unreachableUrl) unreachable.set(current, frame.unreachableUrl);
     });
+    const documents = new Map();
+    tab.on("Network.requestWillBeSent", (p) => {
+      if (p.type === "Document" && p.frameId === tab.targetId && p.request) documents.set(p.requestId, p.request.url);
+    });
+    tab.on("Network.loadingFailed", (p) => {
+      if (documents.has(p.requestId) && p.errorText && !p.canceled) failures.set(documents.get(p.requestId), p.errorText);
+    });
+    // The error for a page whose document is now the browser's error page,
+    // or null: it is left out, or stops the run, as one that could not be
+    // opened.
+    const failedMove = () => {
+      const to = unreachable.get(current);
+      if (!to) return null;
+      const words = failedWords(tab, to, failures.get(to) || "");
+      const why = `it moved on to ${to} once it had loaded, and the browser could not open that${words ? ` (${words})` : ""}`;
+      return Object.assign(new Error(`Could not open ${page.url}: ${why}.`), { reason: why });
+    };
     tab.on("Page.loadEventFired", () => (doc = doc || current));
     let nav = await navigate(tab, page.url);
     doc = doc || current;
@@ -828,7 +857,9 @@ async function visit(chrome, page, group, theme, ctx, { check = null, links = fa
       const got = await takeOpen(tab, nav, page, group, theme, ctx, { check, links, routes, moved });
       if (got !== MOVED) {
         // The last round takes the page as it stands: one that moved on
-        // meanwhile is named as it is now.
+        // meanwhile is named as it is now, and one that moved on to the
+        // browser's error page is not taken.
+        if (last && current !== taken && failedMove()) throw failedMove();
         if (last && current !== taken && got.shots) {
           got.nav.url = await currentUrl(tab, got.nav.url);
           const now = await readInfo(tab);
@@ -845,6 +876,7 @@ async function visit(chrome, page, group, theme, ctx, { check = null, links = fa
       resetPictureWait(tab);
       doc = current;
       nav = await movedTo(tab, nav.url);
+      if (failedMove()) throw failedMove();
     }
   } finally {
     await closeTab(chrome, tab);
