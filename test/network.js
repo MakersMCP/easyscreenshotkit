@@ -364,6 +364,158 @@ async function silent(uid, gid, cli, folder, names) {
   process.stdout.write(`${JSON.stringify(told)}\n`);
 }
 
+// The machine of own(): its global IPv6 address on a network of its own,
+// /64, and a public IPv4 address, as a server can hold one; and the site,
+// in a network namespace of its own, at a public IPv6 address.
+const MACHINE6 = "2a02:1205:5000::1";
+const MACHINE4 = "81.2.69.160";
+const SITE6 = "2606:2800:220:1::99";
+
+// Run in a network namespace of its own (see own()): the site. It waits
+// for the link own() moves into its namespace, takes SITE6 there, and
+// serves on port 80 a home page that names the address each connection
+// came from, as a site reads it off the run's own connection: a frame, a
+// picture and a fetch() there, and a frame at MACHINE4, which it is given;
+// a page it links; and a robots.txt whose sitemap is there too. It prints
+// "ready" once it serves.
+async function site6(machine4) {
+  for (let i = 0; i < 200 && spawnSync("ip", ["link", "show", "v1"]).status !== 0; i++) await new Promise((resolve) => setTimeout(resolve, 50));
+  ip("link", "set", "lo", "up");
+  ip("link", "set", "v1", "up");
+  ip("-6", "addr", "add", `${SITE6}/128`, "dev", "v1", "nodad");
+  ip("-6", "route", "add", "default", "dev", "v1");
+  const server = http.createServer((req, res) => {
+    const from = String(req.socket.remoteAddress || "");
+    const at = from.includes(":") ? `[${from}]` : from;
+    if (req.url === "/robots.txt") return res.writeHead(200, { "Content-Type": "text/plain" }).end(`User-agent: *\nAllow: /\nSitemap: http://${at}/sitemap.xml\n`);
+    if (req.url === "/about") return res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end('<!doctype html><title>Acme | About</title><h1>About Acme</h1><p>Who makes the tools, and how.</p><p><a href="/">Home</a></p><div style="height:1400px"></div>');
+    if (req.url !== "/") return res.writeHead(404).end();
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(`<!doctype html><title>Acme</title><h1>Acme</h1><p>Tools for teams.</p><p><a href="/about">About</a></p><iframe src="http://${at}/frame6" width="300" height="100"></iframe><iframe src="http://${machine4}/frame4" width="300" height="100"></iframe><img src="http://${at}/pic.png"><script>fetch("http://${at}/api", { mode: "no-cors" }).catch(() => {});</script>`);
+  });
+  await new Promise((resolve) => server.listen(80, "::", resolve));
+  process.stdout.write("ready\n");
+}
+
+// Run as
+//
+//   unshare -rn node network.js own <uid> <gid> <cli> <folder>
+//
+// it stands in for a machine whose own addresses are on the public
+// internet by their range: MACHINE6 on a network of its own, as a machine
+// on an IPv6 network holds one of its own, and MACHINE4. A veth link joins
+// it to the site's network namespace (see site6()), and a service of the
+// machine's own listens on port 80 of all its addresses, noting each
+// request. The kit's command takes the site, http://[SITE6]/, as the user
+// who ran the test, with --json, saving in <folder>. It prints one line of
+// JSON: { status, said, manifest, seen }, the exit code, the last lines on
+// stderr, the manifest it printed, and the requests the machine's service
+// got.
+async function own(uid, gid, cli, folder) {
+  ip("link", "set", "lo", "up");
+  ip("link", "add", "v0", "type", "veth", "peer", "name", "v1");
+  const site = spawn("unshare", ["-n", process.execPath, __filename, "site6", MACHINE4], { stdio: ["ignore", "pipe", "inherit"] });
+  let printed = "";
+  site.stdout.on("data", (d) => (printed += d));
+  const seen = [];
+  const service = http.createServer((req, res) => {
+    seen.push(`${req.socket.remoteAddress} ${req.method} ${req.headers.host} ${req.url}`);
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end('<!doctype html><body style="background:red"><h1>THIS MACHINE\'S OWN SERVICE</h1>');
+  });
+  try {
+    // The site's namespace is made once its node has started.
+    await new Promise((resolve, reject) => {
+      site.once("error", reject);
+      site.once("spawn", resolve);
+    });
+    for (let i = 0; i < 200 && spawnSync("ip", ["link", "show", "v1"]).status === 0; i++) {
+      if (spawnSync("ip", ["link", "set", "v1", "netns", String(site.pid)]).status === 0) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    ip("link", "set", "v0", "up");
+    ip("-6", "addr", "add", `${MACHINE6}/64`, "dev", "v0", "nodad");
+    ip("addr", "add", `${MACHINE4}/24`, "dev", "v0");
+    ip("-6", "route", "add", `${SITE6}/128`, "dev", "v0");
+    await new Promise((resolve) => service.listen(80, "::", resolve));
+    for (let i = 0; i < 200 && !printed.includes("ready"); i++) await new Promise((resolve) => setTimeout(resolve, 50));
+    if (!printed.includes("ready")) throw new Error("the site did not start");
+    const told = await new Promise((resolve) => {
+      const args = ["-U", `--map-user=${uid}`, `--map-group=${gid}`, process.execPath, cli, `http://[${SITE6}]/`, "--pages", "2", "--sizes", "desktop", "--json", "--out", folder];
+      const child = spawn("unshare", args, { stdio: ["ignore", "pipe", "pipe"] });
+      let out = "";
+      let err = "";
+      child.stdout.on("data", (d) => (out += d));
+      child.stderr.on("data", (d) => (err += d));
+      const timer = setTimeout(() => child.kill("SIGKILL"), 120_000);
+      child.on("close", (code, signal) => {
+        clearTimeout(timer);
+        let manifest = null;
+        try {
+          manifest = JSON.parse(out);
+        } catch {
+          manifest = null;
+        }
+        resolve({ status: code === null ? signal : code, said: err.trim().split("\n").slice(-3).join(" | "), manifest });
+      });
+    });
+    // A moment for what is still on its way.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    process.stdout.write(`${JSON.stringify({ ...told, seen })}\n`);
+  } finally {
+    service.close();
+    site.kill("SIGKILL");
+  }
+}
+
+// Run as
+//
+//   unshare -rmn sh -c '... mount --bind <hosts> /etc/hosts && exec node
+//     network.js upgraded <uid> <gid> <cli> <folder>'
+//
+// with a hosts file that holds intranet.acme.com at 10.1.2.3, it stands in
+// for a machine on a network of its own whose own address is on the public
+// internet, 81.2.69.160, as a server's can be, with a site of the network's
+// at 10.1.2.3 that serves on port 80 and nothing on 443, and a site of the
+// machine's own there too. The kit's command takes each by http, at
+// http://intranet.acme.com/ and at http://81.2.69.160/, as the user who ran
+// the test, with --json, saving in <folder>. The browser tries both over
+// https on 443 first by itself. It prints one line of JSON: { runs }, for
+// each { url, status, said, titles }, the exit code, the last lines on
+// stderr and the titles of the pages it took.
+async function upgraded(uid, gid, cli, folder) {
+  ip("link", "set", "lo", "up");
+  ip("link", "add", "d0", "type", "dummy");
+  ip("link", "set", "d0", "up");
+  ip("addr", "add", "10.1.2.3/32", "dev", "d0");
+  ip("addr", "add", "81.2.69.160/32", "dev", "d0");
+  const page = http.createServer((req, res) => res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(`<!doctype html><title>Site at ${req.socket.localAddress}</title><h1>The team's site</h1><p>Served on port 80 alone.</p><div style="height:1400px"></div>`));
+  await new Promise((resolve) => page.listen(80, "0.0.0.0", resolve));
+  const runs = [];
+  for (const [n, url] of ["http://intranet.acme.com/", "http://81.2.69.160/"].entries()) {
+    runs.push(
+      await new Promise((resolve) => {
+        const child = spawn("unshare", ["-U", `--map-user=${uid}`, `--map-group=${gid}`, process.execPath, cli, url, "--pages", "1", "--sizes", "desktop", "--json", "--out", `${folder}-${n}`], { stdio: ["ignore", "pipe", "pipe"] });
+        let out = "";
+        let err = "";
+        child.stdout.on("data", (d) => (out += d));
+        child.stderr.on("data", (d) => (err += d));
+        const timer = setTimeout(() => child.kill("SIGKILL"), 100_000);
+        child.on("close", (code, signal) => {
+          clearTimeout(timer);
+          let manifest = null;
+          try {
+            manifest = JSON.parse(out);
+          } catch {
+            manifest = null;
+          }
+          resolve({ url, status: code === null ? signal : code, said: err.trim().split("\n").slice(-3).join(" | "), titles: manifest && manifest.pages ? manifest.pages.map((one) => one.title) : [] });
+        });
+      }),
+    );
+  }
+  page.close();
+  process.stdout.write(`${JSON.stringify({ runs })}\n`);
+}
+
 // As the preload of the kit's command (see silent()): the kit's proxy
 // reaches 93.184.216.34 on port 80 at DIAL_TO, the page's own server.
 if (require.main !== module && process.env.DIAL_TO) {
@@ -374,7 +526,8 @@ if (require.main !== module && process.env.DIAL_TO) {
 }
 
 const [mode, ...rest] = process.argv.slice(2);
-if (require.main === module) (mode === "outer" ? outer(...rest) : mode === "alone" ? alone(...rest) : mode === "silent" ? silent(...rest) : inner(...rest)).catch((err) => {
+const modes = { outer, alone, silent, own, site6, upgraded };
+if (require.main === module) (modes[mode] || inner)(...rest).catch((err) => {
   process.stdout.write(JSON.stringify({ failed: String((err && err.message) || err) }));
   process.exitCode = 1;
 });

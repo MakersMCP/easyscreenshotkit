@@ -1215,6 +1215,57 @@ test("on a machine whose one network is its loopback, a site of the machine give
   }
 });
 
+// This machine's own addresses are not opened away from the address given,
+// a public one included: a machine on an IPv6 network holds a global address
+// of its own, and a server can hold a public IPv4 address, each on the
+// public internet by its range, and a site that read the address off the
+// run's own connection had the browser load a frame, a picture and a
+// fetch() from a service of the machine that listens on all its addresses,
+// and the kit read the sitemap its robots.txt named there, with no word. In
+// network namespaces of the test's own joined by a veth link (see
+// network.js), the kit's own command.
+const noVeth = (() => {
+  if (noNamespace) return noNamespace;
+  const probe = spawnSync("unshare", ["-rn", "sh", "-c", `ip link add v0 type veth peer name v1 && unshare -n true && unshare -U --map-user=${process.getuid()} --map-group=${process.getgid()} true`], { encoding: "utf8" });
+  if (probe.error || probe.status !== 0) return `no veth link between network namespaces of the test's own here (unshare -rn with ip and unshare -n: ${String(probe.stderr || probe.error || probe.status).trim().slice(0, 200)})`;
+  return false;
+})();
+
+test("an address of this machine's own, a public one too, is not opened from a site that reads it off the run's connection", { skip: noBrowser || noVeth, timeout: 200_000 }, async () => {
+  const root = tempDir();
+  try {
+    const folder = path.join(root, "shots");
+    const cli = require.resolve("../skills/easyscreenshotkit/scripts/easyscreenshotkit.js");
+    const child = spawn("unshare", ["-rn", process.execPath, path.join(__dirname, "network.js"), "own", String(process.getuid()), String(process.getgid()), cli, folder], { stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (d) => (out += d));
+    child.stderr.on("data", (d) => (err += d));
+    const timer = setTimeout(() => child.kill("SIGKILL"), 190_000);
+    await new Promise((resolve) => child.on("close", resolve));
+    clearTimeout(timer);
+    let told = null;
+    try {
+      told = JSON.parse(out.trim().split("\n").pop());
+    } catch {
+      assert.fail(`network.js printed no result: ${(out + err).trim().slice(-600)}`);
+    }
+    assert.equal(told.status, 0, told.said || told.failed || err);
+    // Nothing reached the machine's own service.
+    assert.deepEqual(told.seen, []);
+    const [home] = told.manifest.pages;
+    // In whichever order the browser named them.
+    assert.deepEqual([...home.notes].sort(), [
+      "a frame of it tried to open http://81.2.69.160/frame4, which is at 81.2.69.160, an address of this machine: it was not opened",
+      "a frame of it tried to open http://[2a02:1205:5000::1]/frame6, which is at 2a02:1205:5000::1, an address of this machine: it was not opened",
+      "it asked for http://[2a02:1205:5000::1], which is at 2a02:1205:5000::1, an address of this machine: nothing was sent there",
+    ]);
+    assert.ok(told.manifest.notes.includes("The sitemap http://[2a02:1205:5000::1]/sitemap.xml, which robots.txt names, was not read: it is at 2a02:1205:5000::1, an address of this machine."), JSON.stringify(told.manifest.notes));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // Names whose DNS gives no answer do not hold up the lookup of another name
 // a page asks for, and the run's process ends once it has saved: with the
 // 4 threads Node starts with, the system's lookup tried two names at once,
@@ -1301,6 +1352,48 @@ test("once a run has saved, a name still waiting for its lookup is not asked, an
     }
     assert.equal(told.status, 0, told.said || err);
     assert.ok(told.after < 13_000, `the run's process lived ${told.after} ms after it printed its manifest`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A site given by http on port 80 at a name of the user's network, or at an
+// address of this machine's own on the public internet, is taken: the
+// browser tries such a host over https on 443 first by itself, and the run
+// opens that too, where it refused it as another program of the host, so a
+// run given http://intranet.acme.com/ failed with "it leads to
+// https://intranet.acme.com/, which is not on the public internet, and not
+// on the host and port given". In namespaces of the test's own (see
+// network.js).
+test("a site given by http on port 80 at a name of the user's network or an address of this machine is taken, as the browser tries https first", { skip: noBrowser || noMountNamespace, timeout: 240_000 }, async () => {
+  const root = tempDir();
+  try {
+    const hosts = path.join(root, "hosts");
+    fs.writeFileSync(hosts, "127.0.0.1 localhost\n::1 localhost\n10.1.2.3 intranet.acme.com\n");
+    const cli = require.resolve("../skills/easyscreenshotkit/scripts/easyscreenshotkit.js");
+    const script = 'ip link set lo up && mount --bind "$1" /etc/hosts && exec "$2" "$3" upgraded "$4" "$5" "$6" "$7"';
+    const child = spawn("unshare", ["-rmn", "sh", "-c", script, "sh", hosts, process.execPath, path.join(__dirname, "network.js"), String(process.getuid()), String(process.getgid()), cli, path.join(root, "shots")], { stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (d) => (out += d));
+    child.stderr.on("data", (d) => (err += d));
+    const timer = setTimeout(() => child.kill("SIGKILL"), 230_000);
+    await new Promise((resolve) => child.on("close", resolve));
+    clearTimeout(timer);
+    let told = null;
+    try {
+      told = JSON.parse(out.trim().split("\n").pop());
+    } catch {
+      assert.fail(`network.js printed no result: ${(out + err).trim().slice(-600)}`);
+    }
+    assert.deepEqual(
+      told.runs.map(({ url, status, titles }) => ({ url, status, titles })),
+      [
+        { url: "http://intranet.acme.com/", status: 0, titles: ["Site at 10.1.2.3"] },
+        { url: "http://81.2.69.160/", status: 0, titles: ["Site at 81.2.69.160"] },
+      ],
+      JSON.stringify(told.runs.map((run) => run.said)),
+    );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

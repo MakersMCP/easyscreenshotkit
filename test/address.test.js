@@ -90,6 +90,90 @@ test("the shared table of addresses: every IPv6 form that holds an IPv4 address 
   for (const ip of ips(reachable)) assert.equal(await guard.refuses(url(ip)), "", ip);
 });
 
+// This machine's own addresses, as its network interfaces hold them, and
+// the IPv6 network of each, are not opened away from the address given,
+// though their ranges are public: a machine on an IPv6 network holds a
+// global address of its own, and a server can hold a public IPv4 address,
+// and a site that read one off the run's connection had the browser load a
+// service of this machine there. The rest of a public IPv4 range on an
+// interface is other people's servers. The interfaces are read at each
+// judgement, as their addresses change while a run goes; and an address of
+// this machine given is the user's own choice, as localhost is.
+test("an address this machine's network interfaces hold, a public one included, and the IPv6 network of one are not opened away from the address given", async () => {
+  const os = require("node:os");
+  const saved = os.networkInterfaces;
+  const loopback = { lo: [{ address: "127.0.0.1", netmask: "255.0.0.0", family: "IPv4", internal: true, cidr: "127.0.0.1/8" }, { address: "::1", netmask: "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", family: "IPv6", internal: true, cidr: "::1/128", scopeid: 0 }] };
+  const server = {
+    ...loopback,
+    eth0: [
+      { address: "81.2.69.160", netmask: "255.255.255.0", family: "IPv4", internal: false, cidr: "81.2.69.160/24" },
+      { address: "2a02:1205:5000::1", netmask: "ffff:ffff:ffff:ffff::", family: "IPv6", internal: false, cidr: "2a02:1205:5000::1/64", scopeid: 0 },
+      { address: "2a02:1205:5000:0:5c1b:2e:9a4f:11d0", netmask: "ffff:ffff:ffff:ffff::", family: "IPv6", internal: false, cidr: "2a02:1205:5000:0:5c1b:2e:9a4f:11d0/64", scopeid: 0 },
+    ],
+  };
+  let interfaces = server;
+  os.networkInterfaces = () => interfaces;
+  try {
+    await withNames({ "own-machine.example": "81.2.69.160", "own-machine6.example": "2a02:1205:5000::1", "own-lan6.example": ["93.184.215.14", "2a02:1205:5000::77"], "own-site.example": "93.184.215.14" }, async () => {
+      const guard = await guardFor("https://own-site.example/");
+      assert.equal(guard.local, false);
+      for (const [url, why] of [
+        ["http://81.2.69.160/", "at 81.2.69.160, an address of this machine"],
+        ["http://[2a02:1205:5000::1]/frame", "at 2a02:1205:5000::1, an address of this machine"],
+        ["http://[2a02:1205:5000:0:5c1b:2e:9a4f:11d0]/", "at 2a02:1205:5000:0:5c1b:2e:9a4f:11d0, an address of this machine"],
+        ["http://[::ffff:81.2.69.160]/", "at ::ffff:5102:45a0, an address of this machine"],
+        ["http://[64:ff9b::81.2.69.160]/", "at 64:ff9b::5102:45a0, an address of this machine"],
+        ["http://1359103392/", "at 81.2.69.160, an address of this machine"],
+        ["http://[2a02:1205:5000::77]/api", "at 2a02:1205:5000::77, on a network of this machine"],
+        ["http://own-machine.example/sitemap.xml", "at 81.2.69.160, an address of this machine"],
+        ["http://own-machine6.example/", "at 2a02:1205:5000::1, an address of this machine"],
+        ["http://own-lan6.example/", "at 2a02:1205:5000::77, on a network of this machine"],
+        // Other people's servers in the public IPv4 range of the interface,
+        // and another IPv6 network.
+        ["http://81.2.69.161/", ""],
+        ["http://[2a02:1205:5001::1]/", ""],
+        ["https://own-site.example/pricing", ""],
+      ]) {
+        assert.equal(await guard.refuses(url), why, url);
+      }
+      // A connection of the kit's or the proxy's to a name that answers with
+      // one is refused before it is made.
+      const answer = await new Promise((resolve) => guard.lookupFor("http://own-machine.example/")("own-machine.example", { all: true }, (err, list) => resolve(err || list)));
+      assert.deepEqual({ code: answer.code, refused: answer.refused }, { code: "ENOTPUBLIC", refused: "it is at 81.2.69.160, an address of this machine" });
+      // Read at each judgement: an address the machine no longer holds is
+      // any other.
+      interfaces = loopback;
+      assert.equal(await guard.refuses("http://81.2.69.160/"), "");
+      assert.equal(await guard.refuses("http://[2a02:1205:5000::77]/"), "");
+      interfaces = server;
+      // Given as the address, it is the user's own choice, as localhost is:
+      // that host and port are opened, and no other address of the machine;
+      // given by http on port 80, its https on 443 too, where the browser
+      // tries it first.
+      const given = await guardFor("http://81.2.69.160:8080/");
+      assert.equal(given.local, true);
+      assert.equal(await given.refuses("http://81.2.69.160:8080/app.js"), "");
+      assert.equal(await given.refuses("http://[2a02:1205:5000::1]/"), "at 2a02:1205:5000::1, an address of this machine, and not on the host and port given");
+      assert.equal(await given.refuses("https://81.2.69.160/"), "at 81.2.69.160, an address of this machine, and not on the host and port given");
+      const web = await guardFor("http://own-machine.example/");
+      assert.equal(await web.refuses("https://own-machine.example/"), "");
+      assert.equal(await web.refuses("https://81.2.69.160/"), "at 81.2.69.160, an address of this machine, and not on the host and port given");
+      assert.equal(await (await guardFor("http://81.2.69.160/")).refuses("https://81.2.69.160/"), "");
+      // A run that could not reach it adds no word about a proxy setting.
+      const proxySaved = process.env.HTTPS_PROXY;
+      process.env.HTTPS_PROXY = "http://127.0.0.1:9";
+      try {
+        assert.equal(throughNoProxy("Could not open http://81.2.69.160:8080/: net::ERR_CONNECTION_REFUSED"), "Could not open http://81.2.69.160:8080/: net::ERR_CONNECTION_REFUSED");
+      } finally {
+        if (proxySaved === undefined) delete process.env.HTTPS_PROXY;
+        else process.env.HTTPS_PROXY = proxySaved;
+      }
+    });
+  } finally {
+    os.networkInterfaces = saved;
+  }
+});
+
 test("from a public address a run opens web addresses on the public internet only, and from one on this machine that host and port too", async () => {
   const lookup = dns.lookup;
   // Names as a DNS server of the site's own would answer them.
@@ -259,6 +343,15 @@ test("away from the address given a run opens port 80 and 443 only, and the sche
     const fromLocalWeb = await guardFor("http://localhost/");
     assert.equal(await fromLocalWeb.refuses("https://localhost:80/"), "");
     assert.equal(await fromLocalWeb.refuses("https://localhost/"), NOT_GIVEN);
+    // From http on port 80 of a name that leads to the user's network, https
+    // on 443 of it too, where the browser goes itself (HTTPS-Upgrades); not
+    // for localhost or an address not on the public internet, which it does
+    // not try so.
+    const fromNetworkWeb = await guardFor("http://inside.example/");
+    assert.equal(await fromNetworkWeb.refuses("https://inside.example/login"), "");
+    assert.equal(await fromNetworkWeb.refuses("https://inside.example:8443/"), NOT_GIVEN);
+    assert.equal(await (await guardFor("http://10.0.0.7/")).refuses("https://10.0.0.7/"), NOT_GIVEN);
+    assert.equal(await (await guardFor("http://inside.example:8080/")).refuses("https://inside.example/"), NOT_GIVEN);
     // No address given, as for a manifest read from a file: the web ports
     // only, said without an address given.
     const none = await guardFor("");

@@ -535,7 +535,7 @@ async function checkManifest(target, { guard: given = null } = {}) {
       if (!shot.unread || !/^https?:\/\//i.test(shot.src)) continue;
       try {
         const url = new URL(shot.src);
-        if (shot.unread === `it is ${NOT_PUBLIC}` || (url.port && shot.unread === `it is ${otherPort(url.port, false)}`)) elsewhere.add(url.origin);
+        if (shot.unread === `it is ${NOT_PUBLIC}` || /^it is at \S+, (?:an address|on a network) of this machine$/.test(shot.unread) || (url.port && shot.unread === `it is ${otherPort(url.port, false)}`)) elsewhere.add(url.origin);
       } catch {
         // No address to name.
       }

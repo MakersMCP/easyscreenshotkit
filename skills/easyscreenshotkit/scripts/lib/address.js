@@ -6,16 +6,22 @@
 // below), and what it finds from there
 // (a page of the tour, a step's visit, a redirect, a move of a page or of a
 // frame in it, a window a page opens, a sitemap, a manifest and its
-// screenshots) only while that is a web address on the public internet, on
-// port 80 or 443 or on the scheme, host and port of the address given. So
-// no page, link, redirect, step or manifest of a site can send the browser
-// or the kit to this machine, its network or another address that is not on
-// the public internet, as the run looks a name up (the browser's own lookup
-// is below), nor to another program of a host on the public internet, to
-// find what answers there and save it in a screenshot, a demo or a report.
-// A run given such an address itself, as a developer gives the
-// address of a site on their own machine, opens that host and port and no
-// other address of the kind.
+// screenshots) only while that is a web address on the public internet that
+// is not this machine's own, on port 80 or 443 or on the scheme, host and
+// port of the address given. So no page, link, redirect, step or manifest
+// of a site can send the browser or the kit to an address that is not on
+// the public internet, to an address this machine's network interfaces
+// hold or the IPv6 network of one (see ownIp()), as the run looks a name up
+// (the browser's own lookup is below), nor to another program of a host on
+// the public internet, to find what answers there and save it in a
+// screenshot, a demo or a report. An address that leads into this machine
+// or its network from outside, as the public IPv4 address of a router that
+// turns a connection to it back inside, is no address of this machine's
+// interfaces, and the run cannot tell it from any other on the public
+// internet: MAKERSMCP_REFUSE_ADDRESSES (below) is for those. A run given
+// such an address itself, as a developer gives the address of a site on
+// their own machine, opens that host and port and no other address of the
+// kind.
 //
 // The host that runs the kit can refuse more addresses with
 // MAKERSMCP_REFUSE_ADDRESSES, a comma list of IP addresses and CIDR ranges,
@@ -45,6 +51,7 @@
 
 const dns = require("dns");
 const net = require("net");
+const os = require("os");
 const http = require("http");
 const https = require("https");
 const zlib = require("zlib");
@@ -195,6 +202,59 @@ function notPublicIp(address) {
   if (held) return blocked4.check(held, "ipv4");
   return blocked6.check(ip, "ipv6");
 }
+
+// Whether an IP address is this machine's own: "machine" for one of the
+// addresses its network interfaces hold, "network" for one of the IPv6
+// network of such an address, the prefix its interface gives it, /48 or
+// longer, else "". A machine on an IPv6 network holds global addresses of
+// its own (SLAAC), temporary ones among them that come and go, and a server
+// can hold a public IPv4 address on an interface: such an address is on the
+// public internet by its range, so a site that read it off the run's own
+// connection had the browser load a frame, a picture or a fetch() from a
+// service of this machine that listens on all its addresses, and the kit
+// read the sitemap robots.txt named there, with no word. A global IPv6
+// network is the user's own, whose router and other machines answer there;
+// the rest of a public IPv4 range on an interface is other people's
+// servers, so in IPv4 the address alone. An IPv6 form of an IPv4 address of
+// the machine's is judged by that address (see heldIpv4()). The interfaces
+// are read at each judgement, as their addresses change while a run goes.
+function ownIp(address) {
+  const ip = bareIp(address);
+  const family = net.isIP(ip);
+  if (!family) return "";
+  const groups = family === 6 ? groupsOf(ip) : null;
+  if (family === 6 && !groups) return "";
+  const held = groups ? heldIpv4(groups) : ip;
+  let interfaces = {};
+  try {
+    interfaces = os.networkInterfaces();
+  } catch {
+    // None to read.
+  }
+  const mine = new net.BlockList();
+  const networks = new net.BlockList();
+  let some = false;
+  for (const list of Object.values(interfaces)) {
+    for (const one of list || []) {
+      const at = bareIp(one && one.address);
+      const kind = net.isIP(at);
+      if (!kind) continue;
+      some = true;
+      mine.addAddress(at, kind === 4 ? "ipv4" : "ipv6");
+      const bits = Number(String(one.cidr || "").split("/")[1]);
+      if (kind === 6 && bits >= 48 && bits < 128) networks.addSubnet(at, bits, "ipv6");
+    }
+  }
+  if (!some) return "";
+  if (held) return mine.check(held, "ipv4") ? "machine" : "";
+  if (mine.check(ip, "ipv6")) return "machine";
+  return networks.check(ip, "ipv6") ? "network" : "";
+}
+
+// Whether the run takes an IP address for one it does not open away from
+// the address given: one not on the public internet, or this machine's own
+// (see ownIp()).
+const insideIp = (address) => notPublicIp(address) || Boolean(ownIp(address));
 
 // The addresses the host that runs the kit refuses besides those, from
 // MAKERSMCP_REFUSE_ADDRESSES: a comma list of IP addresses and CIDR ranges,
@@ -388,18 +448,19 @@ function stopLookups() {
 }
 
 // Where a host, as a URL gives it, stands: "inside" when it is not on the
-// public internet (an address of that kind, a name for this machine, or a
-// name one of whose addresses is), "unknown" for a name that could not be
-// looked up here, "" for one on the public internet. A failed lookup is
-// kept as unknown for the run, never as public.
+// public internet or is this machine's own (an address of that kind, a
+// name for this machine, or a name one of whose addresses is), "unknown"
+// for a name that could not be looked up here, "" for one on the public
+// internet. A failed lookup is kept as unknown for the run, never as
+// public.
 async function standing(hostname) {
   const host = lookupKey(hostname);
   if (!host) return "inside";
-  if (net.isIP(host)) return notPublicIp(host) ? "inside" : "";
+  if (net.isIP(host)) return insideIp(host) ? "inside" : "";
   if (localName(host)) return "inside";
   const { list } = await addressesOf(host);
   if (!list || !list.length) return "unknown";
-  return list.some((answer) => notPublicIp(answer.address)) ? "inside" : "";
+  return list.some((answer) => insideIp(answer.address)) ? "inside" : "";
 }
 
 async function hostNotPublic(hostname) {
@@ -426,15 +487,21 @@ function inFakeRange(address) {
   return Boolean(held) && FAKE_IP.check(held, "ipv4");
 }
 
-// Why a host refuses() or a lookup finds not on the public internet is
-// refused, as said after "it is": for a name whose first such answer in
-// `list` is in fake-ip's range, that address and the range; else not on the
-// public internet, and with the address given on this machine or its
-// network (local), not on the host and port given either.
+// Why a host refuses() or a lookup finds not on the public internet, or
+// this machine's own, is refused, as said after "it is": for an address of
+// this machine's, or a name whose first such answer in `list` is one, that
+// address and that it is this machine's (see ownIp()); for a name whose
+// first such answer is in fake-ip's range, that address and the range;
+// else not on the public internet; and with the address given on this
+// machine or its network (local), not on the host and port given either.
 function insideWhy(hostname, list, local) {
   const host = lookupKey(hostname);
-  const hit = net.isIP(bareIp(host)) || localName(host) ? null : (list || []).find((answer) => notPublicIp(answer.address));
-  if (hit && inFakeRange(hit.address)) return `at ${bareIp(hit.address)}, in the range a proxy in fake-ip mode gives every name, 198.18.0.0/15, which is not on the public internet${local ? ", and not on the host and port given" : ""}`;
+  const literal = net.isIP(bareIp(host)) ? [{ address: bareIp(host) }] : null;
+  const hit = localName(host) ? null : (literal || list || []).find((answer) => insideIp(answer.address));
+  const tail = local ? ", and not on the host and port given" : "";
+  const own = hit && !notPublicIp(hit.address) ? ownIp(hit.address) : "";
+  if (own) return `at ${bareIp(hit.address)}, ${own === "network" ? "on a network of this machine" : "an address of this machine"}${tail}`;
+  if (hit && !literal && inFakeRange(hit.address)) return `at ${bareIp(hit.address)}, in the range a proxy in fake-ip mode gives every name, 198.18.0.0/15, which is not on the public internet${tail}`;
   return local ? NOT_GIVEN : NOT_PUBLIC;
 }
 
@@ -501,7 +568,17 @@ async function guardFor(start) {
   // name does (HSTS), and a server can redirect there on its own port, so
   // http://myapp.dev:8080/ stopped the run on the address the browser
   // itself opened for it. A move from https down to http on that port is
-  // not the address given.
+  // not the address given. From an http address given on port 80, https on
+  // port 443 of that host is the address given too, unless the host is a
+  // name for this machine or an address not on the public internet: the
+  // browser goes there itself from a plain http address on port 80, for a
+  // host that asks for https, and for a name under a public suffix or an
+  // address on the public internet, which it tries over https first
+  // (HTTPS-Upgrades). A site given by http at a name of the user's network
+  // that leads to one of its addresses, as intranet.acme.com, failed as the
+  // browser tried it there, and so would one given at an address of this
+  // machine's own on the public internet, as a server holds, which the run
+  // takes for this machine (see ownIp()).
   // On the port given, this machine's own names (localhost, a name under
   // it, 127.0.0.1 and ::1) are the host given when it is one of them, where
   // they reach an address of it, which is all they reach (see lookupFor()):
@@ -518,8 +595,11 @@ async function guardFor(start) {
     return both.length ? both : null;
   };
   const sameHost = (url) => hostOf(url) === hostOf(from) || Boolean(shared(url));
-  const given = (url) => local && sameHost(url) && portOf(url) === portOf(from);
-  const own = (url) => web && sameHost(url) && portOf(url) === portOf(from) && (url.protocol === from.protocol || (from.protocol === "http:" && url.protocol === "https:"));
+  const tried = web && from.protocol === "http:" && portOf(from) === "80" && !localName(lookupKey(from.hostname)) && !(net.isIP(bareIp(lookupKey(from.hostname))) && notPublicIp(lookupKey(from.hostname)));
+  const upgraded = (url) => tried && url.protocol === "https:" && portOf(url) === "443";
+  const samePort = (url) => portOf(url) === portOf(from) || upgraded(url);
+  const given = (url) => local && sameHost(url) && samePort(url);
+  const own = (url) => web && sameHost(url) && samePort(url) && (url.protocol === from.protocol || (from.protocol === "http:" && url.protocol === "https:"));
   const parse = (raw) => {
     try {
       return new URL(String(raw));
@@ -593,7 +673,7 @@ async function guardFor(start) {
           if (error) return callback(error);
           const hit = list.find((answer) => refusals.has(answer.address));
           if (hit) return refuse(refusedHere(hit.address));
-          if (!inside && list.some((answer) => notPublicIp(answer.address))) return refuse(insideWhy(hostname, list, local));
+          if (!inside && list.some((answer) => insideIp(answer.address))) return refuse(insideWhy(hostname, list, local));
           const family = options && options.family;
           const fit = list.filter((answer) => (!family || answer.family === family) && (!only || only.includes(bareIp(answer.address))));
           if (!fit.length) return callback(Object.assign(new Error(`${hostname} has no address`), { code: "ENOTFOUND", hostname }));
@@ -709,9 +789,9 @@ function throughNoProxy(message) {
   } catch {
     return message;
   }
-  if (localName(host) || (net.isIP(bareIp(host)) && notPublicIp(host))) return message;
+  if (localName(host) || (net.isIP(bareIp(host)) && insideIp(host))) return message;
   const text = String(message).trim();
   return `${text}${/[.!?]$/.test(text) ? "" : "."} easyscreenshotkit does not use the proxy ${name} names: its browser and its own requests connect to each site themselves, so on a network that reaches the web only through that proxy, it reaches no site.`;
 }
 
-module.exports = { guardFor, getChecked, hostOf, notPublicIp, hostNotPublic, hostRefusals, refusalsProblem, unresolvedError, refusedError, otherPort, refusedHere, stopLookups, throughNoProxy, NOT_WEB, NOT_PUBLIC, NOT_GIVEN, UNRESOLVED, REFUSE_SETTING };
+module.exports = { guardFor, getChecked, hostOf, notPublicIp, ownIp, hostNotPublic, hostRefusals, refusalsProblem, unresolvedError, refusedError, otherPort, refusedHere, stopLookups, throughNoProxy, NOT_WEB, NOT_PUBLIC, NOT_GIVEN, UNRESOLVED, REFUSE_SETTING };
