@@ -78,6 +78,11 @@ function askProxy(port, target, { headers = {} } = {}) {
   });
 }
 
+// A request to the proxy that gets no answer, as the proxy closes its
+// connection for one it does not pass on: the system's code for that, or
+// the status of an answer that came.
+const unanswered = (port, target) => askProxy(port, target).then((res) => `answered ${res.status}`, (err) => err.code);
+
 // A tunnel asked of the proxy, as CONNECT host:port: the status line it
 // answered with, and the socket, open when the tunnel was made.
 function tunnel(port, authority) {
@@ -103,7 +108,7 @@ function tunnel(port, authority) {
 // and port written otherwise than CONNECT writes them. The site gets the
 // request as the browser wrote it, with the headers of the browser's
 // connection to the proxy left out and the host its address names.
-test("the proxy passes on what the run's rule opens and answers the rest with a 403 and a record", async () => {
+test("the proxy passes on what the run's rule opens, and the rest gets no answer or a 403 and a record", async () => {
   const asked = [];
   const site = await serve((req, res) => {
     asked.push({ url: req.url, host: req.headers.host, kept: req.headers["x-kept"], hop: req.headers["proxy-connection"], named: req.headers["x-named"] });
@@ -117,15 +122,11 @@ test("the proxy passes on what the run's rule opens and answers the rest with a 
     const passed = await askProxy(proxy.port, `${site.origin}/x?y=1`, { headers: { "Proxy-Connection": "keep-alive", Connection: "x-named", "X-Named": "1", "X-Kept": "1", Host: "elsewhere.example" } });
     assert.deepEqual([passed.status, passed.body, passed.headers["x-from"]], [200, "site /x?y=1", "site"]);
     assert.deepEqual(asked, [{ url: "/x?y=1", host: new URL(site.origin).host, kept: "1", hop: undefined, named: undefined }]);
-    // Another port of this machine, as a plain request and as a tunnel.
+    // Another port of this machine, as a plain request, which gets no answer
+    // a page could read, and as a tunnel.
     const away = `127.0.0.1:${other.port}`;
-    const refused = await askProxy(proxy.port, `http://${away}/`);
-    assert.equal(refused.status, 403);
-    const listed = (headers) => Object.entries(headers).map(([name, value]) => ({ name, value }));
-    assert.deepEqual(proxy.answeredBy(listed(refused.headers)), { why: NOT_GIVEN });
-    // A site's own header of that name is no refusal of the proxy's.
-    assert.equal(proxy.answeredBy([{ name: "X-Easyscreenshotkit-Refused", value: encodeURIComponent(NOT_GIVEN) }]), null);
-    assert.equal(proxy.answeredBy(listed(passed.headers)), null);
+    assert.equal(await unanswered(proxy.port, `http://${away}/`), "ECONNRESET");
+    assert.equal(proxy.refusalOf(`http://${away}/x`), NOT_GIVEN);
     // Headers past Node.js's own 16 KB, as a site's cookies and a long
     // policy can be, both ways, to a server that takes them.
     const roomy = http.createServer({ maxHeaderSize: 64 * 1024 }, (req, res) => res.writeHead(String(req.headers.cookie || "").length > 20_000 ? 200 : 400, { "X-Long": "y".repeat(20_000) }).end("big"));
@@ -179,9 +180,9 @@ test("the proxy passes on what the run's rule opens and answers the rest with a 
 
 // The proxy's own probe, a name no lookup answers, which it answers itself
 // (see proxySaid() in chrome.js); one with no rule refuses every address;
-// and an address it cannot connect to is answered 502 and kept with the
-// system's code, so the browser's words for it are the ones it gives a
-// connection it makes itself.
+// and a plain http address it cannot connect to gets no answer and is kept
+// with the system's code, so the browser's words for it are the ones it
+// gives a connection it makes itself.
 test("the proxy answers its probe itself, refuses all with no rule, and keeps why it could not connect", async () => {
   const site = await serve((req, res) => res.end("site"));
   const closed = await serve((req, res) => res.end("gone"));
@@ -203,12 +204,10 @@ test("the proxy answers its probe itself, refuses all with no rule, and keeps wh
     const straight = await new Promise((resolve) => http.get(proxy.loopback, (res) => res.resume().on("end", () => resolve(res.statusCode))));
     assert.deepEqual([straight, proxy.saw("direct")], [204, true]);
     assert.deepEqual([...proxy.refused], []);
-    const down = await askProxy(proxy.port, `${closedOrigin}/`);
-    assert.equal(down.status, 502);
-    assert.deepEqual(proxy.answeredBy(Object.entries(down.headers).map(([name, value]) => ({ name, value }))), { code: "ECONNREFUSED" });
+    assert.equal(await unanswered(proxy.port, `${closedOrigin}/`), "ECONNRESET");
     assert.equal(proxy.unreached.get(new URL(closedOrigin).host), "ECONNREFUSED");
     assert.equal((await tunnel(proxy.port, new URL(closedOrigin).host)).status, "HTTP/1.1 502 Bad Gateway");
-    assert.equal((await askProxy(none.port, `${site.origin}/`)).status, 403);
+    assert.equal(await unanswered(none.port, `${site.origin}/`), "ECONNRESET");
     assert.equal(none.refused.get(new URL(site.origin).host), NO_RULE);
     assert.equal(await proxy.reachable(), "");
   } finally {
@@ -233,7 +232,7 @@ test("the proxy keeps the last outcome for each host and port, by the way it was
   const proxy = await startProxy(() => rule);
   try {
     const at = new URL(other.origin).host;
-    assert.equal((await askProxy(proxy.port, `${other.origin}/`)).status, 403);
+    assert.equal(await unanswered(proxy.port, `${other.origin}/`), "ECONNRESET");
     assert.equal(proxy.refused.get(at), NOT_GIVEN);
     assert.equal(proxy.refusalOf(`${other.origin}/x`), NOT_GIVEN);
     rule = await guardFor(`${other.origin}/`);
@@ -247,7 +246,7 @@ test("the proxy keeps the last outcome for each host and port, by the way it was
     const { status, socket } = await tunnel(proxy.port, `localhost:${port}`);
     socket.destroy();
     assert.equal(status, "HTTP/1.1 200 Connection Established");
-    assert.equal((await askProxy(proxy.port, `http://localhost:${port}/`)).status, 403);
+    assert.equal(await unanswered(proxy.port, `http://localhost:${port}/`), "ECONNRESET");
     assert.equal(proxy.refusalOf(`http://localhost:${port}/x`), `on port ${port}, not 80 or 443, and not on the scheme, host and port given`);
     assert.equal(proxy.refusalOf(`https://localhost:${port}/y`), "");
     assert.equal(proxy.refusalOf(`wss://localhost:${port}/z`), "");
@@ -897,10 +896,10 @@ test("the proxy looks each name up once and connects only to the address it judg
       const { status, socket } = await tunnel(proxy.port, "proxy-site.example:443");
       socket.destroy();
       assert.equal(status, "HTTP/1.1 200 Connection Established");
-      assert.equal((await askProxy(proxy.port, "http://proxy-refused.example/")).status, 403);
+      assert.equal(await unanswered(proxy.port, "http://proxy-refused.example/"), "ECONNRESET");
       assert.equal((await tunnel(proxy.port, "proxy-inside.example:443")).status, "HTTP/1.1 403 Forbidden");
       // Another port of the site's own host on the public internet.
-      assert.equal((await askProxy(proxy.port, "http://proxy-site.example:8080/")).status, 403);
+      assert.equal(await unanswered(proxy.port, "http://proxy-site.example:8080/"), "ECONNRESET");
       assert.equal((await tunnel(proxy.port, "proxy-site.example:8443")).status, "HTTP/1.1 403 Forbidden");
       assert.deepEqual([...proxy.refused], [
         ["proxy-refused.example:80", "at 93.184.215.99, an address MAKERSMCP_REFUSE_ADDRESSES refuses"],
@@ -1870,6 +1869,77 @@ test("a document the proxy refuses past the browser's guard is not shown, and it
   } finally {
     if (chrome) await chrome.close();
     server.close();
+  }
+});
+
+// What the proxy did not pass on is told by its own records, never by an
+// answer a page can read: a plain http site whose page fetch()ed its own
+// address while its connection could not be made, or was reset, read the
+// proxy's answer, headers and all, and the mark in them that told the run
+// the proxy wrote it, and then sent that mark with its own answers, so a
+// page of its own was left out as refused, in the site's own words, as at
+// an address MAKERSMCP_REFUSE_ADDRESSES refuses that nobody asked for. Now
+// the page reads no answer there at all, and a site's answer with such a
+// header is the site's.
+test("a site cannot learn what marks the proxy's own answers and send it with its own", { skip: noBrowser, timeout: 150_000 }, async () => {
+  const learned = [];
+  let told = null;
+  const heard = new Promise((resolve) => (told = resolve));
+  // The next connection the proxy makes to the site cannot be made, as when
+  // the site has stopped listening a moment.
+  let armed = false;
+  const before = dialer.connect;
+  dialer.connect = (options) => {
+    if (!armed) return before(options);
+    armed = false;
+    const socket = new net.Socket();
+    process.nextTick(() => socket.destroy(Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" })));
+    return socket;
+  };
+  const forged = encodeURIComponent("at 10.9.8.7, an address MAKERSMCP_REFUSE_ADDRESSES refuses (forged by the site)");
+  const { server, origin } = await serve(async (req, res) => {
+    if (req.url === "/gone") return void req.socket.resetAndDestroy();
+    if (req.url === "/arm") {
+      armed = true;
+      return res.writeHead(204).end();
+    }
+    if (req.url.startsWith("/learn?")) {
+      learned.push(...JSON.parse(decodeURIComponent(req.url.slice("/learn?".length))));
+      told();
+      return res.writeHead(204).end();
+    }
+    if (req.url === "/pricing") {
+      // Asked once the home page has read what it could.
+      await Promise.race([heard, sleep(10_000)]);
+      const marks = learned.flatMap((one) => [...one.matchAll(/x-easyscreenshotkit-[a-z]+=(\S+) /g)].map((m) => m[1]));
+      return res.writeHead(200, { ...html, "x-easyscreenshotkit-refused": `${marks[0] || "nothing"} ${forged}`, "x-easyscreenshotkit-unreached": `${marks[0] || "nothing"} ECONNREFUSED` }).end('<!doctype html><title>Acme | Pricing</title><h1>Pricing</h1><p>Plans for teams of every size.</p><p><a href="/">Home</a></p><div style="height:1400px"></div>');
+    }
+    if (req.url !== "/") return res.writeHead(404).end();
+    res.writeHead(200, html).end(`<!doctype html><title>Acme | Tools</title><h1>Acme</h1><p>Tools for teams.</p><p><a href="/pricing">Pricing</a></p><div style="height:1400px"></div>
+<script>
+const read = (path) => fetch(path).then((r) => [...r.headers].map(([k, v]) => k + "=" + v + " ").join("&"), (e) => "failed: " + e.message);
+addEventListener("load", () => setTimeout(async () => {
+  const reset = await read("/gone");
+  await fetch("/arm");
+  const down = await read("/down");
+  fetch("/learn?" + encodeURIComponent(JSON.stringify([reset, down])));
+}, 300));
+</script>`);
+  });
+  const root = tempDir();
+  try {
+    const { manifest } = await takeShots(`${origin}/`, { dir: path.join(root, "shots"), pages: 2, sizes: "desktop", timeLimit: 120_000 });
+    // The page read no answer of the proxy's at all, for a connection reset
+    // or one that could not be made.
+    assert.equal(learned.length, 2, JSON.stringify(learned));
+    for (const one of learned) assert.match(one, /^failed: /);
+    assert.deepEqual(manifest.pages.map((page) => new URL(page.url).pathname), ["/", "/pricing"]);
+    assert.deepEqual(manifest.skipped, []);
+    assert.doesNotMatch(JSON.stringify(manifest), /forged by the site/);
+  } finally {
+    dialer.connect = before;
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });
 

@@ -1443,11 +1443,11 @@ const UNREACHED = "easyscreenshotkit.requestRefused";
 // each by the same rule and connects only to an address the run's own
 // lookup gave.
 // The answer to each such request is held a moment too, before the browser
-// reads it. One the proxy gave for itself, as it refused the address or
-// could not connect to it, is failed: a refusal is told to the tab as a
-// document refused, and a connection that could not be made in the words
-// the browser gives one, as net::ERR_CONNECTION_REFUSED, where the proxy's
-// own answer would have been read as the page's. And one that redirects to
+// reads it. One that failed as the proxy did not pass it on, as it refused
+// the address or could not connect to it, is told by the proxy's records:
+// a refusal to the tab as a document refused, and a plain http connection
+// that could not be made in the words the browser gives one, as
+// net::ERR_CONNECTION_REFUSED. And one that redirects to
 // an address of another kind, as a 302 to mailto:, is not followed, on any
 // system, and the tab is told of it as of a move there, one the browser was
 // not asked to open (no asked, see openTab()). Followed, it had the browser
@@ -1507,16 +1507,26 @@ function guardBrowser(chrome, timeoutMs) {
       const url = String((p.request && p.request.url) || "");
       const owner = owners.get(p.frameId);
       if (p.responseStatusCode !== undefined || p.responseErrorReason !== undefined) {
-        // What the proxy answered for itself, for an address it refused or
-        // could not connect to, as its own headers say (see answeredBy() in
-        // proxy.js), which a site cannot write for it.
-        const own = chrome.proxy && p.responseStatusCode !== undefined && !(owner && owner.own) ? chrome.proxy.answeredBy(p.responseHeaders) : null;
-        if (own && own.why) {
-          const known = owners.get(p.frameId) || owner;
-          if (known && known.tab) known.tab.emit(BARRED, { url, why: own.why, main: p.frameId === known.tab.targetId, window: Boolean(known.window) });
-          return void browser.send("Fetch.failRequest", { requestId: p.requestId, errorReason: "Aborted" }, 10_000, QUICK).catch(() => {});
+        // A document that failed as the run's proxy closed its connection
+        // with no answer, or its tunnel: the proxy's own records say why
+        // (see refusalOf() and unreached in proxy.js). A refusal is told to
+        // the tab as a document refused; a plain http one the proxy could
+        // not connect to fails in the words the browser gives a connection
+        // it makes itself, where the browser said only that the answer was
+        // empty. Nothing the site sent is read for it: an answer of the
+        // proxy's own that a page could read, and a mark in it, was one a
+        // site could copy into its own answers.
+        if (p.responseErrorReason !== undefined && chrome.proxy && !(owner && owner.own)) {
+          const why = chrome.proxy.refusalOf(url);
+          if (why) {
+            const known = owners.get(p.frameId) || owner;
+            if (known && known.tab) known.tab.emit(BARRED, { url, why, main: p.frameId === known.tab.targetId, window: Boolean(known.window) });
+            return void browser.send("Fetch.failRequest", { requestId: p.requestId, errorReason: "Aborted" }, 10_000, QUICK).catch(() => {});
+          }
+          const code = /^http:/i.test(url) ? chrome.proxy.unreached.get(authorityOfUrl(url)) : "";
+          if (code) return void browser.send("Fetch.failRequest", { requestId: p.requestId, errorReason: wordsFor(code)[1] }, 10_000, QUICK).catch(() => {});
+          return go();
         }
-        if (own && own.code) return void browser.send("Fetch.failRequest", { requestId: p.requestId, errorReason: wordsFor(own.code)[1] }, 10_000, QUICK).catch(() => {});
         const to = redirectOf(p);
         if (!to || !outside(to) || (owner && owner.own)) return go();
         if (owner && owner.tab) owner.tab.emit(BARRED, { url: to, why: NOT_WEB, main: p.frameId === owner.tab.targetId, window: Boolean(owner.window), stays: true });
@@ -1545,20 +1555,17 @@ function guardBrowser(chrome, timeoutMs) {
 
 // Tells a tab of what the proxy did not pass on of its page's requests and
 // those of the frames in its process (UNREACHED), as the browser says each
-// got the proxy's own refusal (see answeredBy() in proxy.js), or that it
 // failed, in whatever words, where the proxy refused its host and port the
 // way the browser asks for it (see refusalOf() in proxy.js): a tunnel, for
-// https, and a request the browser does not hand the page the proxy's
-// answer to, as a module script, a picture or a script with crossorigin, a
-// fetch() or an XMLHttpRequest of another origin, which fail in the
-// browser's words for an answer that does not let that origin read it
-// (net::ERR_FAILED). A WebSocket is told so once it has closed with no
-// answer to its handshake. Those went without a note, so a site on the
-// machine whose app is a module script on another port was said to show a
-// loading screen and no more. A frame of another site runs in a process of
-// its own, whose requests this session does not hear: the proxy holds them
-// all the same, with no note. A document is left to guardBrowser(), which
-// tells it as refused.
+// https, wss and ws, and a plain http request, whose connection the proxy
+// closes with no answer. A picture, a module script, a fetch() or an
+// XMLHttpRequest, a script with crossorigin and a WebSocket alike, which
+// once went without a note, so a site on the machine whose app is a module
+// script on another port was said to show a loading screen and no more. A
+// WebSocket is told so once it has closed with no answer to its handshake.
+// A frame of another site runs in a process of its own, whose requests
+// this session does not hear: the proxy holds them all the same, with no
+// note. A document is left to guardBrowser(), which tells it as refused.
 function watchProxy(chrome, cdp) {
   const asked = new Map();
   const told = new Set();
@@ -1581,11 +1588,6 @@ function watchProxy(chrome, cdp) {
     }
     cdp.emit(UNREACHED, { url: shown, why });
   };
-  cdp.on("Network.responseReceived", ({ requestId, response = {} }) => {
-    const headers = Object.entries(response.headers || {}).map(([name, value]) => ({ name, value }));
-    const own = chrome.proxy ? chrome.proxy.answeredBy(headers) : null;
-    settle(requestId, own && own.why);
-  });
   const failed = ({ requestId }) => settle(requestId, chrome.proxy ? chrome.proxy.refusalOf(asked.get(requestId) || "") : "");
   cdp.on("Network.loadingFailed", failed);
   cdp.on("Network.loadingFinished", ({ requestId }) => asked.delete(requestId));

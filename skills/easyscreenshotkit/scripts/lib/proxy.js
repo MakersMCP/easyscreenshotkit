@@ -10,7 +10,16 @@
 // address is opened only when the rule opens it, the host is looked up once,
 // by the run's own lookup, and the connection goes to an address that lookup
 // gave and the rule judged, never to a second answer of the DNS. Anything
-// else is answered 403 and recorded, with the address and the reason.
+// else is not passed on, and recorded with the address and the reason: a
+// tunnel is answered 403, and a plain http request, or one whose site could
+// not be reached, gets no answer at all, its connection closed, as the
+// browser's own connection to a site that is down fails. What the proxy did
+// not pass on is told by those records (see refusalOf() and unreached),
+// never by what it sends: an answer of its own to a plain http request is
+// one a page can read, headers and all, so a mark in it that told the run
+// the proxy wrote it, a secret one included, was a mark a site could learn
+// and then send with its own answers, which the run then took for the
+// proxy's refusal, in the site's own words.
 //
 // The rules the browser is held to over the DevTools protocol judge the
 // documents it loads before their requests go (see guardBrowser()), which
@@ -57,14 +66,6 @@ const HEADERS_MAX = 256 * 1024;
 // The headers that are of one connection and not passed on (RFC 9110).
 const HOP = new Set(["connection", "proxy-connection", "keep-alive", "proxy-authorization", "proxy-authenticate", "te", "trailer", "transfer-encoding", "upgrade"]);
 
-// The headers that tell what the proxy answered for itself: a refusal, with
-// the reason as it is said after "it is", and a connection that could not
-// be made, or was lost before an answer came, with the system's code. Each
-// value starts with the proxy's secret, a word of its own made as it starts
-// (see answeredBy()), so a site that sends such a header itself is not
-// taken for the proxy.
-const REFUSED_HEADER = "x-easyscreenshotkit-refused";
-const UNREACHED_HEADER = "x-easyscreenshotkit-unreached";
 
 // Marks a connection of the browser's that carried a site's answer, which
 // the browser was told to close (see closing()).
@@ -322,22 +323,20 @@ function closing() {
 // Starts the proxy. ruleOf(): the run's rule at the moment a request comes
 // (see guardFor()), or null for a browser that opens no address of the web.
 // Resolves to { port, refused, unreached, probe, saw(kind), refusalOf(),
-// answeredBy(), reachable(), close() }: refused, by host and port, why the
-// proxy refused one the last time it was asked for, as said after "it is",
-// and refusalOf(url) the same for the way the browser asks for url;
-// unreached, by host and port, the code of the last connection to it that
-// could not be made; a host and port the proxy connects to is taken out of
-// both, as a run can give its browser another rule (see launch() in
-// chrome.js). probe: a host no lookup answers, and loopback, an address of
-// this machine, the proxy's own with a path of its own, which the proxy
-// answers itself, with saw(kind) saying whether a plain http request
-// ("http") and a tunnel ("connect") for the host came, and for loopback a
-// request sent through the proxy ("loopback") or one sent past it, straight
-// to its port ("direct") (see proxySaid() in chrome.js).
-// answeredBy(headers): for the headers of an answer, { why } for a refusal
-// of the proxy's own, { code } for a connection it could not make, or null.
-// reachable(): resolves to "" once a connection of this process to the
-// proxy is taken, else to the system's code for why not.
+// reachable(), close() }: refused, by host and port, why the proxy refused
+// one the last time it was asked for, as said after "it is", and
+// refusalOf(url) the same for the way the browser asks for url; unreached,
+// by host and port, the code of the last connection to it that could not
+// be made, or that was lost before the site answered; a host and port the
+// proxy connects to is taken out of both, as a run can give its browser
+// another rule (see launch() in chrome.js). probe: a host no lookup
+// answers, and loopback, an address of this machine, the proxy's own with
+// a path of its own, which the proxy answers itself, with saw(kind) saying
+// whether a plain http request ("http") and a tunnel ("connect") for the
+// host came, and for loopback a request sent through the proxy ("loopback")
+// or one sent past it, straight to its port ("direct") (see proxySaid() in
+// chrome.js). reachable(): resolves to "" once a connection of this process
+// to the proxy is taken, else to the system's code for why not.
 async function startProxy(ruleOf) {
   const refused = new Map();
   const unreached = new Map();
@@ -348,7 +347,6 @@ async function startProxy(ruleOf) {
   const seen = new Set();
   const probe = `${crypto.randomBytes(12).toString("hex")}.easyscreenshotkit.invalid`;
   const looped = `/${crypto.randomBytes(12).toString("hex")}`;
-  const secret = crypto.randomBytes(12).toString("hex");
   const sockets = new Set();
   // The connections under way (see dial()), and whether the proxy has
   // closed, after which it dials nothing more.
@@ -407,7 +405,7 @@ async function startProxy(ruleOf) {
     if (req.url === looped) {
       seen.add("direct");
       req.resume();
-      res.writeHead(204, { "access-control-allow-origin": "*" });
+      res.writeHead(204, { "access-control-allow-origin": "*", connection: "close" });
       return res.end();
     }
     let url = null;
@@ -416,11 +414,22 @@ async function startProxy(ruleOf) {
     } catch {
       url = null;
     }
-    // An answer of the proxy's own, unless the browser has gone meanwhile.
+    // An answer of the proxy's own, unless the browser has gone meanwhile,
+    // after which the browser sends no other request on that connection.
     const answer = (status, headers, text) => {
       if (res.destroyed || res.headersSent) return;
-      res.writeHead(status, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store", ...headers });
+      res.writeHead(status, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store", connection: "close", ...headers });
       res.end(text);
+    };
+    // No answer at all, for a request the proxy does not pass on: the
+    // browser's request fails as one to a site that closed its connection,
+    // and the proxy's records say why (see refusalOf() and unreached). A
+    // connection of the browser's to the proxy carries one request (see
+    // answer() and closing()), so the browser sends none of them again on
+    // another.
+    const drop = () => {
+      req.resume();
+      req.socket.destroy();
     };
     // A request with its address written whole, over http: the browser asks
     // so for an http address and a tunnel for anything else.
@@ -442,8 +451,7 @@ async function startProxy(ruleOf) {
       async ({ why, list, error }) => {
         if (why) {
           refuse(authority, why, "http");
-          req.resume();
-          return answer(403, { [REFUSED_HEADER]: `${secret} ${encodeURIComponent(why)}` }, `easyscreenshotkit did not reach ${authority}: it is ${why}.\n`);
+          return drop();
         }
         let socket;
         try {
@@ -452,10 +460,8 @@ async function startProxy(ruleOf) {
           socket = keep(await dial(list, url.port || "80", dials));
         } catch (err) {
           if (closed) return void res.destroy();
-          const code = (err && err.code) || "ECONNREFUSED";
-          unreach(authority, code, "http");
-          req.resume();
-          return answer(502, { [UNREACHED_HEADER]: `${secret} ${code}` }, `easyscreenshotkit could not connect to ${authority} (${code}).\n`);
+          unreach(authority, (err && err.code) || "ECONNREFUSED", "http");
+          return drop();
         }
         reached(authority, "http");
         const client = req.socket;
@@ -491,8 +497,8 @@ async function startProxy(ruleOf) {
         // an answer that says nothing of its length, or the end of one that
         // never came, which the browser names as it names one it gets
         // itself. A connection that fails before the site has sent anything
-        // is answered as lost, in the words the browser gives one it makes
-        // itself.
+        // is kept as one that could not be made, with the system's code,
+        // and the browser's is closed with no answer (see drop()).
         const reader = closing();
         let passing = false;
         const pass = (bytes) => {
@@ -513,12 +519,12 @@ async function startProxy(ruleOf) {
           client.end();
         });
         socket.on("error", (err) => {
-          if (passing) return void client.destroy();
-          answer(502, { [UNREACHED_HEADER]: `${secret} ${(err && err.code) || "ECONNRESET"}` }, `easyscreenshotkit lost the connection to ${authority}.\n`);
+          if (!passing) unreach(authority, (err && err.code) || "ECONNRESET", "http");
+          client.destroy();
         });
         client.on("close", () => socket.destroy());
       },
-      () => answer(502, {}, "easyscreenshotkit's proxy failed.\n"),
+      () => drop(),
     );
   });
   // A tunnel, to a host and port written as CONNECT asks for them.
@@ -604,18 +610,6 @@ async function startProxy(ruleOf) {
       const at = authorityOfUrl(url);
       return (at && refusals.get(`${/^http:/i.test(String(url)) ? "http" : "tunnel"} ${at}`)) || "";
     },
-    answeredBy(headers = []) {
-      const named = (name) => (headers.find((header) => String(header.name).toLowerCase() === name) || {}).value || "";
-      const [refusal, failure] = [named(REFUSED_HEADER), named(UNREACHED_HEADER)].map((value) => (String(value).startsWith(`${secret} `) ? String(value).slice(secret.length + 1) : ""));
-      if (refusal) {
-        try {
-          return { why: decodeURIComponent(refusal) };
-        } catch {
-          return { why: NOT_WEB };
-        }
-      }
-      return failure ? { code: failure } : null;
-    },
     reachable() {
       return new Promise((resolve) => {
         const socket = dialer.connect({ host: "127.0.0.1", port });
@@ -648,4 +642,4 @@ async function startProxy(ruleOf) {
   };
 }
 
-module.exports = { startProxy, dialer, closing, authorityOf, authorityOfUrl, wordsFor, NO_RULE, REFUSED_HEADER, UNREACHED_HEADER };
+module.exports = { startProxy, dialer, closing, authorityOf, authorityOfUrl, wordsFor, NO_RULE };
