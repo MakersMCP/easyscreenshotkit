@@ -1157,6 +1157,97 @@ test("on a machine whose one network is its loopback, a site of the machine give
   }
 });
 
+// Names whose DNS gives no answer do not hold up the lookup of another name
+// a page asks for, and the run's process ends once it has saved: with the
+// 4 threads Node starts with, the system's lookup tried two names at once,
+// each for as long as the system waits, so a picture on a name the system
+// answers at once, asked after six such names, waited behind them past its
+// own 10 s and was refused as on a host whose name could not be looked up,
+// where 0.1.3's browser drew it, and the process lived on until the system
+// had tried every name. In namespaces of the test's own (see network.js):
+// a network of its loopback alone, a DNS server there that answers no
+// question, with glibc waiting 10 s for one, and a hosts file that holds
+// the picture's name. The kit's own command.
+const noMountNamespace = (() => {
+  if (process.platform !== "linux") return "network and mount namespaces are Linux's";
+  const probe = spawnSync("unshare", ["-rmn", "sh", "-c", `ip link set lo up && mount --bind "$0" "$0" && unshare -U --map-user=${process.getuid()} --map-group=${process.getgid()} true`, __filename], { encoding: "utf8" });
+  if (probe.error || probe.status !== 0) return `no network and mount namespace of the test's own here (unshare -rmn with ip and mount --bind, and unshare -U --map-user: ${String(probe.stderr || probe.error || probe.status).trim().slice(0, 200)})`;
+  return false;
+})();
+
+test("names whose DNS gives no answer do not hold up a picture on another name, and the run's process ends once it has saved", { skip: noBrowser || noMountNamespace, timeout: 150_000 }, async () => {
+  const root = tempDir();
+  try {
+    const resolv = path.join(root, "resolv.conf");
+    const hosts = path.join(root, "hosts");
+    fs.writeFileSync(resolv, "nameserver 127.0.0.1\noptions timeout:10 attempts:1\n");
+    fs.writeFileSync(hosts, "127.0.0.1 localhost\n::1 localhost\n93.184.216.34 cdn.good.example\n");
+    const cli = require.resolve("../skills/easyscreenshotkit/scripts/easyscreenshotkit.js");
+    const script = 'ip link set lo up && mount --bind "$1" /etc/resolv.conf && mount --bind "$2" /etc/hosts && exec "$3" "$4" silent "$5" "$6" "$7" "$8" 6';
+    const child = spawn("unshare", ["-rmn", "sh", "-c", script, "sh", resolv, hosts, process.execPath, path.join(__dirname, "network.js"), String(process.getuid()), String(process.getgid()), cli, path.join(root, "shots")], { stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (d) => (out += d));
+    child.stderr.on("data", (d) => (err += d));
+    const timer = setTimeout(() => child.kill("SIGKILL"), 140_000);
+    await new Promise((resolve) => child.on("close", resolve));
+    clearTimeout(timer);
+    let told = null;
+    try {
+      told = JSON.parse(out.trim().split("\n").pop());
+    } catch {
+      assert.fail(`network.js printed no result: ${(out + err).trim().slice(-600)}`);
+    }
+    assert.equal(told.status, 0, told.said || err);
+    const [page] = told.manifest.pages;
+    assert.equal(page.title, "Acme | Loaded", JSON.stringify(page.notes));
+    assert.deepEqual(page.notes.filter((note) => /nothing was sent there/.test(note) && !/^it asked for (http:\/\/dead[1-6]\.example, which is on a host whose name could not be looked up|3 more addresses the run does not open): nothing was sent there$/.test(note)), []);
+    // The system gives up on each of the six names 10 s after it asked, all
+    // six at once, so the process ends within 10 s of the save, as a run can
+    // save while their pictures still load; it lived on until the system had
+    // asked each name in turn, two at a time.
+    assert.ok(told.after < 10_000, `the run's process lived ${told.after} ms after it printed its manifest`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// Once a run has saved, a name still waiting for its lookup is not asked,
+// and the run's process ends once the system has given up on the 16 it was
+// trying, 10 s at most here: a page that fetch()es from 40 names whose DNS
+// gives no answer as it has loaded has more names waiting than are tried
+// as it is taken, and asked in turn, 16 at a time, each round 10 s, they
+// held the process that much longer past its end. In the same namespaces.
+test("once a run has saved, a name still waiting for its lookup is not asked, and the run's process ends", { skip: noBrowser || noMountNamespace, timeout: 150_000 }, async () => {
+  const root = tempDir();
+  try {
+    const resolv = path.join(root, "resolv.conf");
+    const hosts = path.join(root, "hosts");
+    fs.writeFileSync(resolv, "nameserver 127.0.0.1\noptions timeout:10 attempts:1\n");
+    fs.writeFileSync(hosts, "127.0.0.1 localhost\n::1 localhost\n93.184.216.34 cdn.good.example\n");
+    const cli = require.resolve("../skills/easyscreenshotkit/scripts/easyscreenshotkit.js");
+    const script = 'ip link set lo up && mount --bind "$1" /etc/resolv.conf && mount --bind "$2" /etc/hosts && exec "$3" "$4" silent "$5" "$6" "$7" "$8" burst';
+    const child = spawn("unshare", ["-rmn", "sh", "-c", script, "sh", resolv, hosts, process.execPath, path.join(__dirname, "network.js"), String(process.getuid()), String(process.getgid()), cli, path.join(root, "shots")], { stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (d) => (out += d));
+    child.stderr.on("data", (d) => (err += d));
+    const timer = setTimeout(() => child.kill("SIGKILL"), 140_000);
+    await new Promise((resolve) => child.on("close", resolve));
+    clearTimeout(timer);
+    let told = null;
+    try {
+      told = JSON.parse(out.trim().split("\n").pop());
+    } catch {
+      assert.fail(`network.js printed no result: ${(out + err).trim().slice(-600)}`);
+    }
+    assert.equal(told.status, 0, told.said || err);
+    assert.ok(told.after < 13_000, `the run's process lived ${told.after} ms after it printed its manifest`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // A site you run on your machine and give as the address works through the
 // proxy as before: here one started on localhost that listens on ::1 alone,
 // as one can on a machine whose only IPv6 address is its loopback's, with

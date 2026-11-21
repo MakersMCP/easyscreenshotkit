@@ -1,13 +1,22 @@
 #!/usr/bin/env node
 "use strict";
 
+// The run looks names up with the system's lookup, on libuv's threads, at
+// most half of them at once (see lib/address.js addressesOf()), and its
+// proxy looks up the name of every request the browser makes: a name whose
+// DNS gives no answer holds a thread for as long as the system waits, 10 s
+// with glibc's own settings, and the 4 threads Node starts with looked up
+// two names at once. 32 threads look up 16. Set before any of them starts;
+// a number the caller set is kept.
+if (!process.env.UV_THREADPOOL_SIZE) process.env.UV_THREADPOOL_SIZE = "32";
+
 const fs = require("fs");
 const { takeShots, normalizeUrl, schemeHint } = require("./lib/shots");
 const { pathOf, readable, printable } = require("./lib/pick");
 const { hideRefusal } = require("./lib/steps");
 const { stopOnSignals } = require("./lib/outdir");
 const { checkManifest, describeCheck } = require("./lib/pwa");
-const { refusalsProblem } = require("./lib/address");
+const { refusalsProblem, stopLookups, throughNoProxy } = require("./lib/address");
 const version = require("./lib/version");
 
 const USAGE = `Usage: easyscreenshotkit <url> [options]
@@ -228,8 +237,9 @@ async function pwaCheck(options) {
     report = await checkManifest(target);
   } catch (caught) {
     const err = target && target.url ? schemeHint(caught, options.pwaCheck, target.url) : caught;
-    if (options.json) process.stdout.write(JSON.stringify({ ok: false, error: err.message }) + "\n");
-    process.stderr.write(`easyscreenshotkit: ${printable(err.message)}\n`);
+    const message = throughNoProxy(err.message);
+    if (options.json) process.stdout.write(JSON.stringify({ ok: false, error: message }) + "\n");
+    process.stderr.write(`easyscreenshotkit: ${printable(message)}\n`);
     process.exit(1);
   }
   process.stdout.write(options.json ? JSON.stringify(report, null, 2) + "\n" : printable(describeCheck(report)) + "\n");
@@ -319,10 +329,13 @@ async function main() {
       timeLimit: options.timeout * 1000,
       log: options.json ? () => {} : (line) => process.stderr.write(`${printable(line)}\n`),
     });
+    // The run is over: a name still waiting for its lookup is not asked.
+    stopLookups();
     process.stdout.write(options.json ? JSON.stringify(result.manifest, null, 2) + "\n" : printable(summary(result)) + "\n");
   } catch (err) {
-    if (options.json) process.stdout.write(JSON.stringify({ ok: false, error: err.message }) + "\n");
-    process.stderr.write(`easyscreenshotkit: ${printable(err.message)}\n`);
+    const message = throughNoProxy(err.message);
+    if (options.json) process.stdout.write(JSON.stringify({ ok: false, error: message }) + "\n");
+    process.stderr.write(`easyscreenshotkit: ${printable(message)}\n`);
     process.exit(1);
   }
 }

@@ -324,22 +324,67 @@ function machineAddresses(host) {
 const lookupKey = (hostname) => String(hostname || "").replace(/^\[|\]$/g, "").replace(/\.+$/, "");
 
 // What a host name resolves to here: {list} of {address, family}, or
-// {error}. Each name is asked once in a run, for 10 s at most.
+// {error}. Each name is asked once in a run, for LOOKUP_MS at most from when
+// its lookup starts. The system's lookup (dns.lookup) runs on libuv's
+// threads, at most half of them at once, UV_THREADPOOL_SIZE, 4 unless it is
+// set, and the run's proxy looks up the name of every request the browser
+// makes: a name whose DNS gives no answer holds a thread for as long as the
+// system waits, 10 s with glibc's own settings, so with the 4 threads Node
+// starts with, two such names on a page held every name asked after them
+// past its 10 s, counted from when it was asked, and the requests for those
+// were refused as names that could not be looked up, where 0.1.3's browser
+// looked them up itself, side by side. So the run asks no more names at
+// once than libuv looks up (atOnce()), and each waits its turn before its
+// time starts; the command sets UV_THREADPOOL_SIZE to 32, 16 names at once
+// (see easyscreenshotkit.js). A name's lookup that has run out of time
+// keeps its turn until the system has given up on it, as its thread is
+// busy till then. stopLookups(): the run is over, so a name still waiting
+// for its turn is not asked, and fails as a name that gave no answer: the
+// run's process ended only once the system had been asked each of them,
+// in turn, and had given up on them.
 const LOOKUP_MS = 10_000;
 const answers = new Map();
+const waiting = [];
+let looking = 0;
+let stopped = false;
+const atOnce = () => Math.max(1, Math.floor((Math.min(1024, Math.max(1, Number(process.env.UV_THREADPOOL_SIZE) || 4)) + 1) / 2));
+const noAnswer = (host) => ({ error: Object.assign(new Error(`${host} gave no answer in ${LOOKUP_MS / 1000} s`), { code: "ETIMEOUT", hostname: host }) });
+
+function nextLookups() {
+  while (!stopped && waiting.length && looking < atOnce()) {
+    const { host, resolve } = waiting.shift();
+    looking++;
+    let over = false;
+    const timer = setTimeout(() => {
+      over = true;
+      resolve(noAnswer(host));
+    }, LOOKUP_MS);
+    dns.lookup(host, { all: true, verbatim: true }, (error, list) => {
+      looking--;
+      clearTimeout(timer);
+      if (!over) resolve(error ? { error } : { list });
+      nextLookups();
+    });
+  }
+}
 
 function addressesOf(host) {
   if (!answers.has(host)) {
-    const asked = new Promise((resolve) => {
-      const timer = setTimeout(() => resolve({ error: Object.assign(new Error(`${host} gave no answer in ${LOOKUP_MS / 1000} s`), { code: "ETIMEOUT", hostname: host }) }), LOOKUP_MS);
-      dns.lookup(host, { all: true, verbatim: true }, (error, list) => {
-        clearTimeout(timer);
-        resolve(error ? { error } : { list });
-      });
-    });
-    answers.set(host, asked);
+    answers.set(
+      host,
+      new Promise((resolve) => {
+        if (stopped) return resolve(noAnswer(host));
+        waiting.push({ host, resolve });
+        nextLookups();
+      }),
+    );
   }
   return answers.get(host);
+}
+
+function stopLookups() {
+  stopped = true;
+  for (const { host, resolve } of waiting.splice(0)) resolve(noAnswer(host));
 }
 
 // Where a host, as a URL gives it, stands: "inside" when it is not on the
@@ -634,4 +679,39 @@ function refusedError(url, guard) {
   return new Error(`Could not open ${url}: it is ${guard.refused}.`);
 }
 
-module.exports = { guardFor, getChecked, hostOf, notPublicIp, hostNotPublic, hostRefusals, refusalsProblem, unresolvedError, refusedError, otherPort, refusedHere, NOT_WEB, NOT_PUBLIC, NOT_GIVEN, UNRESOLVED, REFUSE_SETTING };
+// The settings that name a proxy for programs to reach the web through, as
+// a network that reaches the web only through one gives them, which the
+// kit does not use: its browser goes through the run's own proxy, which
+// connects to each site itself, as the kit's own requests do (see proxy.js
+// and requestOf()).
+const PROXY_SETTINGS = ["https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY"];
+
+// What the address given did when such a network makes it fail: no name is
+// found, no connection is made, or no answer comes, in the browser's words
+// or in those of a file the kit reads itself (see pwa.js reasonOf()).
+const UNREACHED_GIVEN = /^Could not (?:open|read) (\S+): (?:net::ERR_(?:NAME_NOT_RESOLVED|NAME_RESOLUTION_FAILED|CONNECTION_[A-Z_]+|ADDRESS_UNREACHABLE|INTERNET_DISCONNECTED|TIMED_OUT|EMPTY_RESPONSE|TUNNEL_CONNECTION_FAILED)\b|it is on a host whose name could not be looked up|no answer in \d+ s|\S+ was not found|E(?:CONNREFUSED|TIMEDOUT|HOSTUNREACH|NETUNREACH|CONNRESET|AI_AGAIN)\b)/;
+
+// A run's last words for an address given that it could not reach, with
+// the word, when one of those settings is set, that the kit does not use
+// the proxy it names; the setting's value is not said, as it can hold a
+// password. An address of this machine or of a private network by its
+// form, as a server under development that is not running, gets no such
+// word. On a server or a CI runner that reaches the web only through such
+// a proxy, 0.1.3's browser went through it; without this word a run there
+// gave only the browser's words for a connection that failed.
+function throughNoProxy(message) {
+  const name = PROXY_SETTINGS.find((one) => process.env[one]);
+  const found = name ? UNREACHED_GIVEN.exec(String(message)) : null;
+  if (!found) return message;
+  let host = "";
+  try {
+    host = lookupKey(new URL(found[1]).hostname);
+  } catch {
+    return message;
+  }
+  if (localName(host) || (net.isIP(bareIp(host)) && notPublicIp(host))) return message;
+  const text = String(message).trim();
+  return `${text}${/[.!?]$/.test(text) ? "" : "."} easyscreenshotkit does not use the proxy ${name} names: its browser and its own requests connect to each site themselves, so on a network that reaches the web only through that proxy, it reaches no site.`;
+}
+
+module.exports = { guardFor, getChecked, hostOf, notPublicIp, hostNotPublic, hostRefusals, refusalsProblem, unresolvedError, refusedError, otherPort, refusedHere, stopLookups, throughNoProxy, NOT_WEB, NOT_PUBLIC, NOT_GIVEN, UNRESOLVED, REFUSE_SETTING };

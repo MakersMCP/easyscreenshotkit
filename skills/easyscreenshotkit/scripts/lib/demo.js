@@ -27,7 +27,7 @@ const { cameraAt } = require("./motion");
 const { ffmpegReady, pickEncoder, startVideo, makeGif } = require("./ffmpeg");
 const { tagPng, pngSize, pngFileIsWhole } = require("./png");
 const { setTimeLimit, timeLeft } = require("./time");
-const { guardFor, hostRefusals, refusalsProblem, unresolvedError, refusedError } = require("./address");
+const { guardFor, hostRefusals, refusalsProblem, unresolvedError, refusedError, stopLookups, throughNoProxy } = require("./address");
 const { begin, checkDir, stopOnSignals } = require("./outdir");
 const programs = require("./programs");
 const version = require("./version");
@@ -734,10 +734,13 @@ async function main(argv) {
       timeLimit: options.timeout * 1000,
       log: options.json ? () => {} : (line) => process.stderr.write(`${printable(line)}\n`),
     });
+    // The demo is over: a name still waiting for its lookup is not asked.
+    stopLookups();
     process.stdout.write(options.json ? JSON.stringify(result.manifest, null, 2) + "\n" : printable(summary(result)) + "\n");
   } catch (err) {
-    if (options.json) process.stdout.write(JSON.stringify({ ok: false, error: err.message }) + "\n");
-    process.stderr.write(`easyscreenshotkit demo: ${printable(err.message)}\n`);
+    const message = throughNoProxy(err.message);
+    if (options.json) process.stdout.write(JSON.stringify({ ok: false, error: message }) + "\n");
+    process.stderr.write(`easyscreenshotkit demo: ${printable(message)}\n`);
     process.exit(1);
   }
 }

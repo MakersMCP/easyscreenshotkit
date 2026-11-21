@@ -8,12 +8,13 @@
 // host. No browser here.
 
 const assert = require("node:assert/strict");
+const { spawnSync } = require("node:child_process");
 const dns = require("node:dns");
 const http = require("node:http");
 const https = require("node:https");
 const { EventEmitter } = require("node:events");
 const test = require("node:test");
-const { guardFor, getChecked, notPublicIp, hostRefusals, refusalsProblem, unresolvedError, refusedError, UNRESOLVED } = require("../skills/easyscreenshotkit/scripts/lib/address");
+const { guardFor, getChecked, notPublicIp, hostRefusals, refusalsProblem, unresolvedError, refusedError, throughNoProxy, UNRESOLVED } = require("../skills/easyscreenshotkit/scripts/lib/address");
 const { alternateFor } = require("../skills/easyscreenshotkit/scripts/lib/pick");
 const CASES = require("./address-cases.json");
 
@@ -861,4 +862,93 @@ test("a page's version in another language is taken only at a web address", () =
   assert.equal(alternateFor(alternates, "tr"), null);
   assert.equal(alternateFor(alternates, "de"), null);
   assert.deepEqual(alternateFor([...alternates, { lang: "tr", href: "https://acme.com/tr/" }], "tr"), { lang: "tr", href: "https://acme.com/tr/" });
+});
+
+// A name waits its turn for the system's lookup, which runs on libuv's
+// threads, at most half of them at once, and its 10 s are counted from when
+// its own lookup starts: two names whose DNS gives no answer for 12 s held
+// both turns of Node's 4 threads, and a name asked beside them, which the
+// system answers at once, ran out of its 10 s while it waited, and was
+// refused for the run as one that could not be looked up. Once the run is
+// over, a name still waiting for its turn is not asked at all, and fails at
+// once: the run's process lived on until the system had been asked each of
+// them, in turn, and had given up on them. In a process of its own, with
+// UV_THREADPOOL_SIZE at 4, as Node starts, and the system's lookup stood in
+// for, slow for the names that start with slow.
+test("a name waits its turn for a lookup, its time counted from when its lookup starts, and none still waiting is asked once the run is over", { timeout: 60_000 }, () => {
+  const script = `
+const dns = require("dns");
+const asked = [];
+dns.lookup = (host, options, callback) => {
+  asked.push(host);
+  setTimeout(() => callback(null, [{ address: "93.184.215.14", family: 4 }]), host.startsWith("slow") ? 12_000 : 0);
+};
+const { guardFor, stopLookups } = require(${JSON.stringify(require.resolve("../skills/easyscreenshotkit/scripts/lib/address"))});
+(async () => {
+  const guard = await guardFor("");
+  const said = await Promise.all(["slow1.example", "slow2.example", "fast.example"].map((host) => guard.refuses("http://" + host + "/")));
+  const waits = ["slow3.example", "slow4.example", "after1.example", "after2.example"].map((host) => guard.refuses("http://" + host + "/"));
+  await new Promise((done) => setTimeout(done, 200));
+  const before = asked.slice();
+  stopLookups();
+  const started = Date.now();
+  const after = await Promise.all(waits.slice(2));
+  process.stdout.write(JSON.stringify({ said, after, ms: Date.now() - started, before, asked }));
+  process.exit(0);
+})();
+`;
+  const run = spawnSync(process.execPath, ["-e", script], { encoding: "utf8", timeout: 50_000, env: { ...process.env, UV_THREADPOOL_SIZE: "4" } });
+  assert.equal(run.status, 0, run.stderr);
+  const { said, after, ms, before, asked } = JSON.parse(run.stdout);
+  assert.deepEqual(said, [UNRESOLVED, UNRESOLVED, ""]);
+  assert.deepEqual(after, [UNRESOLVED, UNRESOLVED]);
+  assert.ok(ms < 1_000, `the names still waiting took ${ms} ms`);
+  assert.deepEqual(before, ["slow1.example", "slow2.example", "fast.example", "slow3.example", "slow4.example"]);
+  assert.deepEqual(asked, before);
+});
+
+// On a machine that reaches the web only through a proxy that a setting
+// names, as a server or a CI runner can, the kit's browser and its own
+// requests connect to each site themselves and reach none: a run that
+// cannot reach the address given says so then, naming the setting and not
+// its value, which can hold a password, where it gave only the browser's
+// words for a connection that failed. An address of this machine or of a
+// private network by its form, as a server under development that is not
+// running, gets no such word, and nor does another address than the one
+// given, as the manifest a page links.
+test("a run that cannot reach the address given says that the kit does not use the proxy a setting names", () => {
+  const names = ["https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY"];
+  const saved = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  const word = (name) => ` easyscreenshotkit does not use the proxy ${name} names: its browser and its own requests connect to each site themselves, so on a network that reaches the web only through that proxy, it reaches no site.`;
+  const failed = [
+    "Could not open https://acme.com/: net::ERR_CONNECTION_TIMED_OUT",
+    "Could not open https://acme.com/: net::ERR_TUNNEL_CONNECTION_FAILED",
+    "Could not open https://acme.com/pricing: it is on a host whose name could not be looked up (the name servers did not answer).",
+    "Could not open https://acme.com/: no answer in 60 s. The site may be down or slow, or the machine too busy: try again.",
+    "Could not read https://acme.com/manifest.json: ECONNREFUSED",
+    "Could not read https://acme.com/: acme.com was not found",
+  ];
+  const kept = [
+    "Could not open http://127.0.0.1:3000/: net::ERR_CONNECTION_REFUSED",
+    "Could not open http://localhost:3000/: net::ERR_CONNECTION_REFUSED",
+    "Could not open http://192.168.1.20/: net::ERR_ADDRESS_UNREACHABLE",
+    "Could not read https://acme.com/manifest.json, the manifest https://acme.com/ links: ECONNREFUSED",
+    "Could not open https://acme.com/: net::ERR_CERT_AUTHORITY_INVALID",
+    "Could not open https://acme.com/: it is at 185.137.215.163, an address MAKERSMCP_REFUSE_ADDRESSES refuses.",
+  ];
+  try {
+    for (const name of names) delete process.env[name];
+    for (const message of [...failed, ...kept]) assert.equal(throughNoProxy(message), message, message);
+    process.env.HTTPS_PROXY = "http://user:secret@proxy.example:3128";
+    for (const message of failed) assert.equal(throughNoProxy(message), `${message}${/[.]$/.test(message) ? "" : "."}${word("HTTPS_PROXY")}`, message);
+    for (const message of kept) assert.equal(throughNoProxy(message), message, message);
+    delete process.env.HTTPS_PROXY;
+    process.env.all_proxy = "socks5://127.0.0.1:1080";
+    assert.equal(throughNoProxy(failed[0]), `${failed[0]}.${word("all_proxy")}`);
+  } finally {
+    for (const name of names) {
+      if (saved[name] === undefined) delete process.env[name];
+      else process.env[name] = saved[name];
+    }
+  }
 });

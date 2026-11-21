@@ -73,6 +73,36 @@ test("a run looks at its folder before the browser, and at the browser before th
   }
 });
 
+// A run that cannot reach the address given, with a setting that names a
+// proxy for programs to reach the web through, says that the kit does not
+// use that proxy, in each command, and names the setting, not its value:
+// here an address on a host that cannot be looked up, which stops a run
+// before the browser starts, and the stand-in browser is never started.
+test("a run that cannot reach the address given with a proxy setting set says the kit does not use it, in each command", { skip: process.platform === "win32" && "the stand-ins are shell scripts", timeout: 60_000 }, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-proxied-"));
+  const { CHROME_PATH, FFMPEG_PATH, MAKERSMCP_REFUSE_ADDRESSES, https_proxy, HTTPS_PROXY, http_proxy, HTTP_PROXY, all_proxy, ALL_PROXY, ...base } = process.env;
+  try {
+    const ffmpeg = path.join(root, "ffmpeg");
+    fs.writeFileSync(ffmpeg, "#!/bin/sh\ncase \"$*\" in *-version*) echo 'ffmpeg version 4.4.2-stand-in';; *) printf '%s\\n' ' V....D libx264  libx264 H.264';; esac\n", { mode: 0o755 });
+    const chrome = path.join(root, "chrome");
+    fs.writeFileSync(chrome, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    const site = "https://nowhere.invalid/";
+    const word = " easyscreenshotkit does not use the proxy HTTPS_PROXY names: its browser and its own requests connect to each site themselves, so on a network that reaches the web only through that proxy, it reaches no site.";
+    for (const [name, args] of [["easyscreenshotkit", [site, "--out", path.join(root, "shots")]], ["easyscreenshotkit demo", ["demo", site, "--out", path.join(root, "demo")]], ["easyscreenshotkit", ["--pwa-check", site]]]) {
+      const run = (more) => spawnSync(process.execPath, [CLI, ...args], { env: { ...base, CHROME_PATH: chrome, FFMPEG_PATH: ffmpeg, ...more }, encoding: "utf8", timeout: 30_000 });
+      const proxied = run({ HTTPS_PROXY: "http://user:secret@proxy.example:3128" });
+      assert.equal(proxied.status, 1, args.join(" "));
+      assert.match(proxied.stderr, new RegExp(`^${name}: Could not (open|read) https://nowhere\\.invalid/: it is on a host whose name could not be looked up[^\\n]*\\.${word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\n$`), args.join(" "));
+      assert.doesNotMatch(proxied.stderr, /secret/);
+      const plain = run({});
+      assert.equal(plain.status, 1, args.join(" "));
+      assert.doesNotMatch(plain.stderr, /does not use the proxy/, args.join(" "));
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // MAKERSMCP_REFUSE_ADDRESSES, the addresses the host that runs the kit
 // refuses besides: a value that does not parse stops every command before
 // any work, with exit code 2 as an argument the kit refuses and words that

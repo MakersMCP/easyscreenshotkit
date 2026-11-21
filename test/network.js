@@ -35,6 +35,28 @@
 // 127.0.0.1, given as http://localhost:<port>/, as the user who ran the
 // test, saving in <folder>. It prints one line of JSON: { status, said },
 // the command's exit code and the last lines it printed on stderr.
+//
+// Run as
+//
+//   unshare -rmn sh -c '... mount --bind <resolv.conf> /etc/resolv.conf
+//     && mount --bind <hosts> /etc/hosts && exec node network.js silent
+//     <uid> <gid> <cli> <folder> <names>'
+//
+// with a resolv.conf that names 127.0.0.1 and a hosts file that holds
+// cdn.good.example at 93.184.216.34, it stands a DNS server on 127.0.0.1
+// that takes every question and answers none, as for names whose servers
+// are gone, and serves a page that asks for a picture on each of <names>
+// such names and, half a second later, for one on cdn.good.example, which
+// the kit's proxy is told to reach at the page's own server (DIAL_TO, read
+// by the preload this file is with --require); with <names> "burst", a
+// page that fetch()es from 40 other such names over https as it has
+// loaded: the browser asks the proxy for a tunnel to each, 32 at once at
+// most, where it sends a page's pictures a few at a time, and plain http
+// requests through a proxy 6 at a time. The kit's command takes it
+// as the user who ran the test, with --json, saving in <folder>. It prints
+// one line of JSON: { status, said, manifest, after }, the exit code, the
+// last lines on stderr, the manifest it printed and how long its process
+// lived after it printed it, in ms.
 
 const { spawn, spawnSync } = require("node:child_process");
 const dgram = require("node:dgram");
@@ -302,8 +324,57 @@ async function alone(uid, gid, cli, folder) {
   process.stdout.write(`${JSON.stringify(told)}\n`);
 }
 
+async function silent(uid, gid, cli, folder, names) {
+  ip("link", "set", "lo", "up");
+  const dns = dgram.createSocket("udp4");
+  dns.on("message", () => {});
+  await new Promise((resolve) => dns.bind(53, "127.0.0.1", resolve));
+  const dead = names === "burst" ? [] : Array.from({ length: Number(names) }, (_, i) => `http://dead${i + 1}.example/x.png`);
+  const burst = names === "burst" ? '<script>addEventListener("load", () => { for (let n = 1; n <= 40; n++) fetch("https://dead-b" + n + ".example/x", { mode: "no-cors" }).catch(() => {}); });</script>' : "";
+  const page = http.createServer((req, res) => {
+    if (req.url === "/logo.svg") return res.writeHead(200, { "Content-Type": "image/svg+xml" }).end('<svg xmlns="http://www.w3.org/2000/svg" width="40" height="30"><rect width="40" height="30" fill="rgb(0,160,0)"/></svg>');
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(`<!doctype html><title>Acme | Tools</title><h1>Acme</h1><p>Tools for teams.</p>${dead.map((src) => `<img src="${src}">`).join("")}<script>setTimeout(() => { const img = new Image(); img.onload = () => (document.title = "Acme | Loaded"); img.src = "http://cdn.good.example/logo.svg"; document.body.append(img); }, 500);</script>${burst}<div style="height:1400px"></div>`);
+  });
+  await new Promise((resolve) => page.listen(0, "127.0.0.1", resolve));
+  const told = await new Promise((resolve) => {
+    const args = ["-U", `--map-user=${uid}`, `--map-group=${gid}`, process.execPath, "--require", __filename, cli, `http://127.0.0.1:${page.address().port}/`, "--pages", "1", "--sizes", "desktop", "--json", "--out", folder];
+    const child = spawn("unshare", args, { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, DIAL_TO: `127.0.0.1:${page.address().port}` } });
+    let out = "";
+    let err = "";
+    let printed = 0;
+    child.stdout.on("data", (d) => {
+      out += d;
+      printed = Date.now();
+    });
+    child.stderr.on("data", (d) => (err += d));
+    const timer = setTimeout(() => child.kill("SIGKILL"), 100_000);
+    child.on("close", (code, signal) => {
+      clearTimeout(timer);
+      let manifest = null;
+      try {
+        manifest = JSON.parse(out);
+      } catch {
+        manifest = null;
+      }
+      resolve({ status: code === null ? signal : code, said: err.trim().split("\n").slice(-3).join(" | "), manifest, after: printed ? Date.now() - printed : -1 });
+    });
+  });
+  page.close();
+  dns.close();
+  process.stdout.write(`${JSON.stringify(told)}\n`);
+}
+
+// As the preload of the kit's command (see silent()): the kit's proxy
+// reaches 93.184.216.34 on port 80 at DIAL_TO, the page's own server.
+if (require.main !== module && process.env.DIAL_TO) {
+  const { dialer } = require("../skills/easyscreenshotkit/scripts/lib/proxy");
+  const connect = dialer.connect;
+  const [host, port] = process.env.DIAL_TO.split(":");
+  dialer.connect = (options) => (options.host === "93.184.216.34" && Number(options.port) === 80 ? connect({ ...options, host, port: Number(port), family: 4 }) : connect(options));
+}
+
 const [mode, ...rest] = process.argv.slice(2);
-(mode === "outer" ? outer(...rest) : mode === "alone" ? alone(...rest) : inner(...rest)).catch((err) => {
+if (require.main === module) (mode === "outer" ? outer(...rest) : mode === "alone" ? alone(...rest) : mode === "silent" ? silent(...rest) : inner(...rest)).catch((err) => {
   process.stdout.write(JSON.stringify({ failed: String((err && err.message) || err) }));
   process.exitCode = 1;
 });
