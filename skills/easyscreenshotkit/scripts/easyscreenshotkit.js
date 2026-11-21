@@ -85,23 +85,25 @@ report names it with the reason, and neither is a frame or a window a page
 opens there, nor one on another port of a host on the public internet, nor a
 host whose name does not resolve here or gives no answer in 10 s; an address
 given on such a host stops the run. A page that moves on to one before it
-has loaded is refused as a redirect there is. A host name is judged as the
-run looks it up, and the browser looks it up again: a page, a frame or a
-window it reaches on this machine or its network by then is not shown,
-though its request has gone there. --pwa and --pwa-check read a
+has loaded is refused as a redirect there is. --pwa and --pwa-check read a
 manifest and its screenshots by the same rule, and from a manifest file no
-screenshot at such an address or on another port than 80 and 443. The rule
-is for the pages the run opens and the files it reads itself: a page's own
-pictures, styles, scripts and the data it fetches are left to the browser's
-own rules, and on a site you run on your machine they can come from other
-ports of it.
+screenshot at such an address or on another port than 80 and 443. The
+browser reaches the network only through a proxy the run starts for it on
+127.0.0.1, which holds every request it makes to the same rule, a page's
+pictures, styles, scripts and data included, and connects to the address
+the run's own lookup gave a host's name, asked once: on a site you run on
+your machine, what a page takes from another port of it is not fetched,
+and the page's notes say so. A user who may not connect to 127.0.0.1, and
+a browser that sends its requests past the proxy, stop the run before it
+opens the site.
 
 MAKERSMCP_REFUSE_ADDRESSES, a comma list of IP addresses and CIDR ranges,
 names addresses the machine refuses besides, as a service that runs the
-kit for others names its own: no page is opened and no file read at one as
-the run looks a name up, the address given included, which then stops the
-run. Empty or unset, it refuses nothing more; a value that does not parse
-stops every command before any work, with exit code 2.
+kit for others names its own: no page is opened, no file read and no
+request of the browser's sent at one as the run looks a name up, the
+address given included, which then stops the run. Empty or unset, it
+refuses nothing more; a value that does not parse stops every command
+before any work, with exit code 2.
 
 An address of another kind that a page goes to, such as mailto:, is no
 page to open, and its notes say so: on Linux the browser hands it to no
@@ -146,8 +148,10 @@ to pick the browser, as a path or a name on PATH; one the system cannot
 start stops the run before any work, with what is wrong with it, and so
 does one that preloads pages though its profile asks it not to, as a
 Chrome policy can make it, or that does not use that profile, as a snap's
-or a Flatpak's can, which sees a temp folder of its own. The run drives it
-over a pipe, so it opens no port.`;
+or a Flatpak's can, which sees a temp folder of its own, or that sends its
+requests or WebRTC's UDP past the run's proxy. The run drives it over a
+pipe, so the browser opens no port; the run's one port is that proxy's, on
+127.0.0.1.`;
 
 function parse(argv) {
   const options = { pages: 5, extra: [], hide: [], sizes: "desktop,mobile,full", theme: "light", lang: "", reducedMotion: false, clean: true, pwa: false, pwaCheck: "", json: false, timeout: 300 };

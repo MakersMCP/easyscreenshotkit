@@ -23,7 +23,7 @@ const { pngText } = require("../skills/easyscreenshotkit/scripts/lib/png");
 const { clean } = require("../skills/easyscreenshotkit/scripts/lib/clean");
 const { hideProblem } = require("../skills/easyscreenshotkit/scripts/lib/steps");
 const programs = require("../skills/easyscreenshotkit/scripts/lib/programs");
-const { readPng, pngOf, serve, near, descendants, relayBrowser, runUntilOver, tempProblem, sh, publicAt } = require("./helpers");
+const { readPng, pngOf, serve, near, descendants, relayBrowser, runUntilOver, tempProblem, sh, reachAt } = require("./helpers");
 const { noBus, privateBus, fakePortal } = require("./bus");
 
 const CLI = path.resolve(__dirname, "../skills/easyscreenshotkit/scripts/easyscreenshotkit.js");
@@ -1487,7 +1487,7 @@ test("opening another #route of the page already open does not wait for a load t
   const { server, origin } = await appFixture({ delay: 100 });
   // Enough time left for the 20 s a load is waited for.
   setTimeLimit(120_000);
-  const chrome = await launch();
+  const chrome = await launch({ guard: await guardFor(`${origin}/`) });
   try {
     const tab = await openTab(chrome, DEVICES.desktop);
     await navigate(tab, `${origin}/app/#/today`);
@@ -1505,7 +1505,7 @@ test("opening another #route of the page already open does not wait for a load t
 test("a demo's link to a #route is to that view, and its link to a page goes before a link to a view of it", { skip: noBrowser, timeout: 60_000 }, async () => {
   const { server, origin } = await appFixture({ delay: 100 });
   setTimeLimit(120_000);
-  const chrome = await launch();
+  const chrome = await launch({ guard: await guardFor(`${origin}/`) });
   try {
     const tab = await openTab(chrome, DEVICES.desktop);
     await navigate(tab, `${origin}/app/#/today`);
@@ -2304,6 +2304,9 @@ function standIns(root) {
 const fs = require("fs"), path = require("path"), { spawnSync } = require("child_process");
 const [mode, ...args] = process.argv.slice(2);
 const profile = args.find((arg) => arg.startsWith("--user-data-dir=")).slice("--user-data-dir=".length);
+// The run's proxy, which a browser sends its requests through as it is
+// started; one in mode unproxied sends them past it.
+const proxy = (args.find((arg) => arg.startsWith("--proxy-server=")) || "").slice("--proxy-server=".length);
 const env = Object.fromEntries(["DISPLAY", "WAYLAND_DISPLAY", "WAYLAND_SOCKET", "DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR", "PATH"].map((name) => [name, process.env[name] ?? null]));
 const client = path.join(${JSON.stringify(root)}, "wayland-client.py");
 const wayland = fs.existsSync(client) ? String(spawnSync("python3", ["-I", client], { encoding: "utf8", timeout: 10000 }).stdout).trim() : null;
@@ -2326,6 +2329,22 @@ const take = (text) => {
   if (mode === "hushed" && method === "Target.createTarget" && params.newWindow) {
     hushed = true;
     return answer({ id, result: { targetId: "t1" } });
+  }
+  // The start's probes of the proxy (see proxySaid() in chrome.js): a plain
+  // request and a tunnel for the name it asks for, and a request for the
+  // address of this machine it asks for, each sent to the proxy.
+  if (method === "Runtime.evaluate" && proxy && mode !== "unproxied" && /easyscreenshotkit\\.invalid/.test(params.expression || "")) {
+    const host = /https?:\\/\\/([^/"]+)\\//.exec(params.expression)[1];
+    const port = Number(new URL(proxy).port);
+    const ask = (line) => new Promise((done) => {
+      const socket = require("net").connect(port, "127.0.0.1", () => socket.write(line));
+      socket.on("data", () => socket.destroy());
+      socket.on("error", done);
+      socket.on("close", done);
+    });
+    const looped = /http:\\/\\/127\\.0\\.0\\.1:\\d+\\/[0-9a-f]+/.exec(params.expression)[0];
+    Promise.all([ask("GET http://" + host + "/ HTTP/1.1\\r\\nHost: " + host + "\\r\\n\\r\\n"), ask("CONNECT " + host + ":443 HTTP/1.1\\r\\nHost: " + host + ":443\\r\\n\\r\\n"), ask("GET " + looped + " HTTP/1.1\\r\\nHost: " + new URL(looped).host + "\\r\\n\\r\\n")]).then(() => answer({ id, result: { result: { type: "object" } }, ...(sessionId ? { sessionId } : {}) }));
+    return;
   }
   const result = method === "Browser.getVersion" ? { product: "Stand-in/1", userAgent: "Stand-in" } : method === "Target.createTarget" ? { targetId: "t1" } : method === "Target.attachToTarget" ? { sessionId: "s1" } : {};
   const refuses = (mode === "refuser" && method !== "Browser.getVersion") || (mode === "unsaid" && method === "Preload.enable");
@@ -2419,6 +2438,30 @@ test("the browser is started with HTTPS-First's own turn-on left off", { skip: (
     chrome = await launch();
     const { args } = JSON.parse(fs.readFileSync(path.join(root, "plain.json"), "utf8"));
     assert.deepEqual(args.filter((arg) => arg.startsWith("--disable-features=")), ["--disable-features=HttpsFirstBalancedModeAutoEnable"]);
+  } finally {
+    if (chrome) await chrome.close();
+    endStandIns(root, ["plain"]);
+    if (saved === undefined) delete process.env.CHROME_PATH;
+    else process.env.CHROME_PATH = saved;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// Every request of the browser goes through the run's proxy on 127.0.0.1,
+// those for this machine's own addresses too, and WebRTC sends no UDP past
+// it (see start() in chrome.js; proxy.test.js holds what each keeps out).
+// --force-webrtc-ip-handling-policy did not hold WebRTC in Chrome 155 or
+// 157: a page's STUN requests reached a server on 127.0.0.1.
+test("the browser is started with the run's proxy, this machine's own addresses sent through it too, and WebRTC held to it", { skip: (process.platform === "win32" && "the stand-in browser is a shell script") || noTemp, timeout: 60_000 }, async () => {
+  const root = tempDir();
+  const saved = process.env.CHROME_PATH;
+  process.env.CHROME_PATH = standIns(root)("plain");
+  let chrome = null;
+  try {
+    setTimeLimit(60_000);
+    chrome = await launch();
+    const { args } = JSON.parse(fs.readFileSync(path.join(root, "plain.json"), "utf8"));
+    assert.deepEqual(args.filter((arg) => /^--(proxy-|webrtc-|force-webrtc-)/.test(arg)), [`--proxy-server=http://127.0.0.1:${chrome.proxy.port}`, "--proxy-bypass-list=<-loopback>", "--webrtc-ip-handling-policy=disable_non_proxied_udp"]);
   } finally {
     if (chrome) await chrome.close();
     endStandIns(root, ["plain"]);
@@ -2534,7 +2577,7 @@ test("a browser too busy to open a window, a page with no answer, and a browser 
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Acme", "<h1>Acme</h1>"));
   });
   setTimeLimit(60_000);
-  let chrome = await launch();
+  let chrome = await launch({ guard: await guardFor(`${origin}/`) });
   let stopped = 0;
   // A browser's main process, the one the run started, among this
   // process's children.
@@ -3356,10 +3399,17 @@ test("the browser opens no port: the run drives it over a pipe", { skip: noBrows
 });
 
 // Names that resolve here as a DNS server answers them, for the run's rule:
-// `answers`, by name, an address or an error code. The browser is given its
-// own answers (--host-resolver-rules), as it asks the DNS again for itself,
-// and told that the servers standing in for sites on the public internet
-// are there (see helpers.js publicAt).
+// `answers`, by name, an address or an error code, or a list of them, given
+// one after the other and the last of them from then on, as a DNS server of
+// a site's can answer each time otherwise. The browser asks the DNS for
+// nothing: its requests go through the run's proxy, which connects to the
+// address the run's lookup gave (see proxy.js), so the servers standing in
+// for sites on the public internet stand at those addresses for the proxy
+// (see helpers.js reachAt()). asked(name): how many times the DNS was asked
+// for the name.
+const askedFor = new Map();
+const asked = (name) => askedFor.get(name) || 0;
+
 async function withNames(answers, body) {
   const dns = require("node:dns");
   const lookup = dns.lookup;
@@ -3367,8 +3417,11 @@ async function withNames(answers, body) {
     if (typeof options === "function") [options, callback] = [{}, options];
     const answer = answers[host];
     if (answer === undefined) return lookup(host, options, callback);
-    if (!/^\d/.test(answer)) return process.nextTick(callback, Object.assign(new Error(`getaddrinfo ${answer} ${host}`), { code: answer, hostname: host }));
-    process.nextTick(callback, null, options && options.all ? [{ address: answer, family: 4 }] : answer, 4);
+    const n = asked(host);
+    askedFor.set(host, n + 1);
+    const one = Array.isArray(answer) ? answer[Math.min(n, answer.length - 1)] : answer;
+    if (!/^\d/.test(one)) return process.nextTick(callback, Object.assign(new Error(`getaddrinfo ${one} ${host}`), { code: one, hostname: host }));
+    process.nextTick(callback, null, options && options.all ? [{ address: one, family: 4 }] : one, 4);
   };
   try {
     return await body();
@@ -3385,6 +3438,7 @@ async function withNames(answers, body) {
 // name leads it to the site's server; the other server is another program
 // on this machine.
 test("from a public site the browser opens no address on this machine: given, after a redirect, or when a page moves on by itself", { skip: noBrowser, timeout: 120_000 }, () => withNames({ "public.example": "93.184.215.14" }, async () => {
+  const stand = reachAt({ "93.184.215.14": "127.0.0.1" });
   setTimeLimit(180_000);
   const seen = [];
   const other = await serve((req, res) => {
@@ -3403,8 +3457,7 @@ test("from a public site the browser opens no address on this machine: given, af
   let chrome = null;
   try {
     fs.writeFileSync(secret, "a file of this machine");
-    chrome = await launch({ args: ["--host-resolver-rules=MAP public.example 127.0.0.1", publicAt(origin)] });
-    chrome.guard = await guardFor(`${site}/`);
+    chrome = await launch({ guard: await guardFor(`${site}/`) });
     assert.equal(chrome.guard.local, false);
     const tab = await openTab(chrome, DEVICES.desktop);
     try {
@@ -3424,6 +3477,7 @@ test("from a public site the browser opens no address on this machine: given, af
     }
   } finally {
     if (chrome) await chrome.close();
+    stand.restore();
     server.close();
     other.server.close();
     fs.rmSync(path.dirname(secret), { recursive: true, force: true });
@@ -3453,11 +3507,11 @@ test("from a public site a frame of another site that is moved later, and a wind
   const port = new URL(origin).port;
   const site = `http://public.example:${port}`;
   // Another site, so its frames run in a process of their own, on port 80
-  // as a site's frames are: the browser takes that port to the server's.
+  // as a site's frames are: the run's proxy takes that port to the server's.
   const framed = "http://framed.example";
-  const chrome = await launch({ args: [`--host-resolver-rules=MAP public.example 127.0.0.1, MAP framed.example 127.0.0.1:${port}`, publicAt(port)] });
+  const stand = reachAt({ "93.184.215.14": "127.0.0.1", "93.184.215.15:80": `127.0.0.1:${port}` });
+  const chrome = await launch({ guard: await guardFor(`${site}/`) });
   try {
-    chrome.guard = await guardFor(`${site}/`);
     const tab = await openTab(chrome, DEVICES.desktop);
     const barred = [];
     tab.on(BARRED, (b) => barred.push(b));
@@ -3479,34 +3533,36 @@ test("from a public site a frame of another site that is moved later, and a wind
     }
   } finally {
     await chrome.close();
+    stand.restore();
     server.close();
     other.server.close();
   }
 }));
 
-// The browser looks a name up again for itself. A site whose DNS answered
-// the run with a public address and the browser with this machine's had
-// the browser show what answers there, the machine's own page on port 80:
-// as the address given, after a redirect, as a frame, as a frame of
-// another site the page moved later and as a window a page opens, with an
-// opener or none. Each is refused once the browser says it reached this
-// machine, before it reads the answer: the request has reached that
-// address, and nothing of what answered is drawn. A window with no opener
-// to a site on the public internet opens: held at its start too, it is let
-// go of as soon as the browser is told to say where it reaches, which it
-// answers only once it runs. Here the run's lookup finds rebind.example on
-// the public internet, and the browser is taken to the other server,
-// another program of this machine, on port 80 of the name; framed.example
-// is a site on the public internet, which the browser is told it reached
-// there (see helpers.js publicAt), as is public.example.
-const REACHED = "on a host the browser reached on this machine or its network";
 
-test("a host the run finds on the public internet that the browser reaches on this machine is not shown: given, after a redirect, as a frame, as a frame moved later or as a window", { skip: noBrowser, timeout: 200_000 }, () => withNames({ "rebind.example": "93.184.215.16", "framed.example": "93.184.215.15", "public.example": "93.184.215.14" }, async () => {
+// A site whose DNS server answers the run's lookup with a public address and
+// a later one with this machine's: with the browser asking the DNS again for
+// itself, it showed what answers there, the machine's own page on port 80,
+// as the address given, after a redirect, as a frame, as a frame of another
+// site the page moved later and as a window a page opens. The browser asks
+// the DNS for nothing now: its requests go through the run's proxy, which
+// connects to the address the run's lookup gave and never asks again. Here
+// rebind.example answers 93.184.215.16 first and 127.0.0.1 from then on;
+// the server standing at 93.184.215.16 is the site's, and the one the proxy
+// would reach at 127.0.0.1 on port 80 is another program of this machine,
+// where the browser's own lookup leads it too (--host-resolver-rules), as
+// such a DNS server answered the browser.
+test("a name whose DNS answer changes between two lookups is reached at its first answer alone: given, after a redirect, as a frame, a frame moved later or a window", { skip: noBrowser, timeout: 200_000 }, () => withNames({ "rebind.example": ["93.184.215.16", "127.0.0.1"], "framed.example": "93.184.215.15", "public.example": "93.184.215.14" }, async () => {
   setTimeLimit(180_000);
   const seen = [];
-  const other = await serve((req, res) => {
+  const inside = await serve((req, res) => {
     seen.push(req.url);
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Inside", '<h1>Inside</h1><div style="height:1400px;background:rgb(255,0,255)"></div>'));
+  });
+  const reached = [];
+  const site = await serve((req, res) => {
+    reached.push(req.url);
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Rebind", `<h1>Rebind ${req.url}</h1>`));
   });
   const framed = await serve((req, res) => res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Framed", "<h2>Framed</h2>")));
   const published = await serve((req, res) => res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Public", "<h1>Public</h1>")));
@@ -3515,371 +3571,114 @@ test("a host the run finds on the public internet that the browser reaches on th
     if (req.url === "/hop") return res.writeHead(302, { Location: "http://rebind.example/from-redirect" }).end();
     if (req.url === "/framed") {
       const later = `<script>setTimeout(() => { document.getElementById("later").src = "http://rebind.example/moved-frame"; }, 500);</script>`;
-      const windows = '<button id="open" onclick="window.open(\'http://rebind.example/window\')">Open</button><a id="blank" target="_blank" href="http://rebind.example/blank">Blank</a><a id="away" target="_blank" href="http://public.example/away">Away</a>';
+      const windows = '<button id="open" onclick="window.open(\'http://rebind.example/window\')">Open</button><a id="blank" target="_blank" rel="noopener" href="http://rebind.example/blank">Blank</a><a id="away" target="_blank" href="http://public.example/away">Away</a>';
       return res.writeHead(200, html).end(page("Framed | Acme", `<h1>Framed</h1><iframe src="http://rebind.example/frame"></iframe><iframe id="later" src="http://framed.example/frame"></iframe>${windows}${later}`));
     }
     res.writeHead(200, html).end(page("Acme | Tools for teams", '<h1>Acme</h1><div style="height:1400px;background:rgb(0,160,0)"></div>'));
   });
-  const otherPort = new URL(other.origin).port;
-  const framedPort = new URL(framed.origin).port;
-  const publicPort = new URL(published.origin).port;
-  const args = [`--host-resolver-rules=MAP rebind.example 127.0.0.1:${otherPort}, MAP framed.example 127.0.0.1:${framedPort}, MAP public.example 127.0.0.1:${publicPort}`, publicAt(framedPort, publicPort)];
-  const chrome = await launch({ args });
+  const port = (one) => new URL(one.origin).port;
+  const stand = reachAt({ "93.184.215.16:80": `127.0.0.1:${port(site)}`, "127.0.0.1:80": `127.0.0.1:${port(inside)}`, "93.184.215.15:80": `127.0.0.1:${port(framed)}`, "93.184.215.14:80": `127.0.0.1:${port(published)}` });
+  const browserSays = `--host-resolver-rules=MAP rebind.example 127.0.0.1:${port(inside)}, MAP framed.example 127.0.0.1:${port(framed)}, MAP public.example 127.0.0.1:${port(published)}`;
+  const chrome = await launch({ guard: await guardFor("http://rebind.example/"), args: [browserSays] });
   try {
     // As the address given.
-    chrome.guard = await guardFor("http://rebind.example/");
-    assert.equal(chrome.guard.local, false);
     let tab = await openTab(chrome, DEVICES.desktop);
     try {
-      await assert.rejects(navigate(tab, "http://rebind.example/"), { message: `Could not open http://rebind.example/: it is ${REACHED}.`, refused: REACHED });
-      assert.equal(await currentUrl(tab), "about:blank");
-      // A site the browser reaches on the public internet is opened.
-      assert.equal((await navigate(tab, "http://public.example/")).status, 200);
+      assert.equal((await navigate(tab, "http://rebind.example/")).status, 200);
+      const { result } = await tab.send("Runtime.evaluate", { expression: "document.querySelector('h1').textContent", returnByValue: true });
+      assert.equal(result.value, "Rebind /");
     } finally {
       await closeTab(chrome, tab);
     }
-    // From a site on this machine: its host and port are the run's own.
+    // From a site on this machine, whose host and port are the run's own: a
+    // redirect, frames and windows there.
     chrome.guard = await guardFor(`${origin}/`);
-    assert.equal(chrome.guard.local, true);
     tab = await openTab(chrome, DEVICES.desktop);
     const barred = [];
     tab.on(BARRED, (b) => barred.push(b));
     try {
-      const away = `${REACHED}, and not on the host and port given`;
-      await assert.rejects(navigate(tab, `${origin}/hop`), { message: `Could not open ${origin}/hop: it leads to http://rebind.example/from-redirect, which is ${away}.`, refused: `it leads to http://rebind.example/from-redirect, which is ${away}` });
+      assert.equal((await navigate(tab, `${origin}/hop`)).url, "http://rebind.example/from-redirect");
       assert.equal((await navigate(tab, `${origin}/framed`)).status, 200);
       await sleep(1_500);
       for (const id of ["open", "blank", "away"]) await tab.send("Runtime.evaluate", { expression: `document.getElementById("${id}").click()`, userGesture: true });
-      const until = Date.now() + 5_000;
-      while (barred.length < 5 && Date.now() < until) await sleep(100);
-      const said = Object.fromEntries(barred.map((b) => [new URL(b.url).pathname, [b.why, b.main, b.window]]));
-      assert.deepEqual(said, {
-        "/from-redirect": [away, true, false],
-        "/frame": [away, false, false],
-        "/moved-frame": [away, false, false],
-        "/window": [away, false, true],
-        "/blank": [away, false, true],
-      });
-      // Each reached the other program, and none of it is shown: the frame
-      // stays empty, the frame of another site on its own page, and the
-      // windows are left with nothing, but the one on the public internet.
-      assert.deepEqual([...seen].sort(), ["/", "/blank", "/frame", "/from-redirect", "/moved-frame", "/window"]);
-      const { result } = await tab.send("Runtime.evaluate", { expression: "document.querySelector('iframe').contentDocument.body.innerText", returnByValue: true });
-      assert.equal(result.value, "");
-      let { targetInfos } = await chrome.browser.send("Target.getTargets");
-      assert.ok(targetInfos.some((t) => t.type === "iframe" && t.url === "http://framed.example/frame"), JSON.stringify(targetInfos.map((t) => [t.type, t.url])));
-      for (const until = Date.now() + 5_000; !targetInfos.some((t) => t.url === "http://public.example/away") && Date.now() < until; await sleep(100)) ({ targetInfos } = await chrome.browser.send("Target.getTargets"));
-      assert.ok(targetInfos.some((t) => t.type === "page" && t.url === "http://public.example/away"), JSON.stringify(targetInfos.map((t) => [t.type, t.url])));
-      assert.ok(!targetInfos.some((t) => /rebind\.example/.test(t.url)), JSON.stringify(targetInfos.map((t) => [t.type, t.url])));
-    } finally {
-      await closeTab(chrome, tab);
-    }
-  } finally {
-    await chrome.close();
-    server.close();
-    other.server.close();
-    framed.server.close();
-    published.server.close();
-  }
-}));
-
-// A frame of another site or a window whose answer the browser says
-// nothing of is not loaded, with the reason: the browser could have
-// reached it anywhere. Here a relay answers the kit's order to say where
-// they reach (Network.enable) with an error for each target the kit did not
-// attach itself (see relayBrowser()), so the browser says nothing of a
-// frame of another site the page moves later, nor of a window: each is
-// refused, though each is a site on the public internet, while the tab's
-// own pages and the frame's first page, which the tab hears, open.
-test("a frame of another site or a window whose answer the browser says nothing of is not loaded", { skip: noBrowser || (process.platform === "win32" && "the relay's wrapper is a shell script"), timeout: 120_000 }, () => withNames({ "framed.example": "93.184.215.15", "public.example": "93.184.215.14" }, async () => {
-  setTimeLimit(180_000);
-  const seen = [];
-  const framed = await serve((req, res) => {
-    seen.push(req.url);
-    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Framed", `<h2>Framed ${req.url}</h2>`));
-  });
-  const html = { "Content-Type": "text/html; charset=utf-8" };
-  const published = await serve((req, res) => {
-    if (req.url !== "/framed") return res.writeHead(200, html).end(page("Public", "<h1>Public</h1>"));
-    const later = '<script>setTimeout(() => { document.getElementById("later").src = "http://framed.example/later"; }, 500);</script>';
-    res.writeHead(200, html).end(page("Framed | Acme", `<h1>Framed</h1><iframe id="later" src="http://framed.example/frame"></iframe><button id="open" onclick="window.open('http://public.example/window')">Open</button>${later}`));
-  });
-  const framedPort = new URL(framed.origin).port;
-  const publicPort = new URL(published.origin).port;
-  const root = tempDir();
-  const relay = relayBrowser(root, findChrome(), { withholdNetwork: true });
-  const saved = process.env.CHROME_PATH;
-  process.env.CHROME_PATH = relay.browser;
-  let chrome = null;
-  try {
-    chrome = await launch({ args: [`--host-resolver-rules=MAP framed.example 127.0.0.1:${framedPort}, MAP public.example 127.0.0.1:${publicPort}`, publicAt(framedPort, publicPort)] });
-    chrome.guard = await guardFor("http://public.example/");
-    const tab = await openTab(chrome, DEVICES.desktop);
-    const barred = [];
-    tab.on(BARRED, (b) => barred.push(b));
-    try {
-      assert.equal((await navigate(tab, "http://public.example/framed")).status, 200);
-      await sleep(1_500);
-      await tab.send("Runtime.evaluate", { expression: 'document.getElementById("open").click()', userGesture: true });
-      const until = Date.now() + 5_000;
-      while (barred.length < 2 && Date.now() < until) await sleep(100);
-      const said = Object.fromEntries(barred.map((b) => [new URL(b.url).pathname, [b.why, b.main, b.window]]));
-      assert.deepEqual(said, {
-        "/later": ["on a host the browser reached at an address it did not name", false, false],
-        "/window": ["on a host the browser reached at an address it did not name", false, true],
-      });
-      assert.deepEqual(seen, ["/frame", "/later"]);
-    } finally {
-      await closeTab(chrome, tab);
-    }
-  } finally {
-    if (chrome) await chrome.close();
-    if (saved === undefined) delete process.env.CHROME_PATH;
-    else process.env.CHROME_PATH = saved;
-    framed.server.close();
-    published.server.close();
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-}));
-
-// What the browser says of where it reached an answer can come after the
-// answer it is of: the answer is held until it comes, 5 s at most, and
-// judged by it then. Here a relay holds it 300 ms (see relayBrowser()):
-// the page the browser reached on this machine is refused still, and the
-// one it reached on the public internet opens. The wait has a second at
-// least, as a call to the browser has, so a frame a page of a site on this
-// machine opens there as the run's time runs out is refused as one the
-// browser reached there too: cut to what the run had left, it was refused
-// as one the browser said nothing of, as this test's page was on a busy
-// machine, where it had the time an earlier test's run left. The test sets
-// a time of its own.
-test("where the browser reached an answer is waited for when the browser says it after the answer", { skip: noBrowser || (process.platform === "win32" && "the relay's wrapper is a shell script"), timeout: 120_000 }, () => withNames({ "rebind.example": "93.184.215.16", "public.example": "93.184.215.14" }, async () => {
-  setTimeLimit(180_000);
-  const seen = [];
-  const other = await serve((req, res) => {
-    seen.push(req.url);
-    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Inside", "<h1>Inside</h1>"));
-  });
-  const published = await serve((req, res) => res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Public", "<h1>Public</h1>")));
-  const local = await serve((req, res) => res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Acme", "<h1>Acme</h1>")));
-  const otherPort = new URL(other.origin).port;
-  const publicPort = new URL(published.origin).port;
-  const root = tempDir();
-  const relay = relayBrowser(root, findChrome(), { holdSpacesMs: 300 });
-  const saved = process.env.CHROME_PATH;
-  process.env.CHROME_PATH = relay.browser;
-  let chrome = null;
-  try {
-    chrome = await launch({ args: [`--host-resolver-rules=MAP rebind.example 127.0.0.1:${otherPort}, MAP public.example 127.0.0.1:${publicPort}`, publicAt(publicPort)] });
-    chrome.guard = await guardFor("http://public.example/");
-    let tab = await openTab(chrome, DEVICES.desktop);
-    try {
-      await assert.rejects(navigate(tab, "http://rebind.example/"), { message: `Could not open http://rebind.example/: it is ${REACHED}.` });
-      assert.equal((await navigate(tab, "http://public.example/")).status, 200);
-    } finally {
-      await closeTab(chrome, tab);
-    }
-    // A frame a page of a site on this machine opens once the run's time is
-    // all but over.
-    chrome.guard = await guardFor(`${local.origin}/`);
-    tab = await openTab(chrome, DEVICES.desktop);
-    try {
-      assert.equal((await navigate(tab, `${local.origin}/`)).status, 200);
-      const barred = [];
-      tab.on(BARRED, (b) => barred.push(b));
-      setTimeLimit(200);
-      await sleep(300);
-      await tab.send("Runtime.evaluate", { expression: 'document.body.append(Object.assign(document.createElement("iframe"), { src: "http://rebind.example/late" }))' });
       const until = Date.now() + 10_000;
-      while (!barred.length && Date.now() < until) await sleep(100);
-      setTimeLimit(180_000);
-      assert.deepEqual(barred.map((b) => [b.url, b.why, b.main]), [["http://rebind.example/late", `${REACHED}, and not on the host and port given`, false]]);
-    } finally {
-      setTimeLimit(180_000);
-      await closeTab(chrome, tab);
-    }
-    assert.deepEqual(seen, ["/", "/late"]);
-  } finally {
-    if (chrome) await chrome.close();
-    if (saved === undefined) delete process.env.CHROME_PATH;
-    else process.env.CHROME_PATH = saved;
-    other.server.close();
-    published.server.close();
-    local.server.close();
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-}));
-
-// The browser says it sent a request for a document, and then nothing of
-// where it reached the answer in the 5 s the run waits: the document is not
-// loaded, as one the browser said nothing of, though the site is on the
-// public internet. Here a relay holds what it says of the answer 6 s.
-test("an answer whose place the browser does not say within 5 s of saying it sent its request is not loaded", { skip: noBrowser || (process.platform === "win32" && "the relay's wrapper is a shell script"), timeout: 120_000 }, () => withNames({ "public.example": "93.184.215.14" }, async () => {
-  setTimeLimit(180_000);
-  const seen = [];
-  const published = await serve((req, res) => {
-    seen.push(req.url);
-    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Public", "<h1>Public</h1>"));
-  });
-  const publicPort = new URL(published.origin).port;
-  const root = tempDir();
-  const relay = relayBrowser(root, findChrome(), { holdSpacesMs: 6_000 });
-  const saved = process.env.CHROME_PATH;
-  process.env.CHROME_PATH = relay.browser;
-  let chrome = null;
-  try {
-    chrome = await launch({ args: [`--host-resolver-rules=MAP public.example 127.0.0.1:${publicPort}`, publicAt(publicPort)] });
-    chrome.guard = await guardFor("http://public.example/");
-    const tab = await openTab(chrome, DEVICES.desktop);
-    try {
-      const began = Date.now();
-      await assert.rejects(navigate(tab, "http://public.example/"), { message: "Could not open http://public.example/: it is on a host the browser reached at an address it did not name." });
-      assert.ok(Date.now() - began >= 4_500, `${Date.now() - began} ms`);
-      assert.deepEqual(seen, ["/"]);
+      while (["/frame", "/moved-frame", "/window", "/blank"].some((one) => !reached.includes(one)) && Date.now() < until) await sleep(100);
+      assert.deepEqual(reached.filter((one) => one !== "/favicon.ico").sort(), ["/", "/blank", "/frame", "/from-redirect", "/moved-frame", "/window"]);
+      assert.deepEqual(barred, []);
     } finally {
       await closeTab(chrome, tab);
     }
-  } finally {
-    if (chrome) await chrome.close();
-    if (saved === undefined) delete process.env.CHROME_PATH;
-    else process.env.CHROME_PATH = saved;
-    published.server.close();
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-}));
-
-// An answer the browser hands on before it says anything of its request,
-// as for one from its cache, for which no request goes out, is taken as
-// such: the run does not wait for a word that may never come, and does not
-// judge it again by where the browser reached it, as the README's Limits
-// say. The browser has said so before it handed the answer on in every run
-// here; this relay holds both what it says of the request and of the
-// answer 1 s, and the page the browser reached on this machine is shown.
-test("an answer the browser hands on before it says anything of its request is taken as one from its cache", { skip: noBrowser || (process.platform === "win32" && "the relay's wrapper is a shell script"), timeout: 120_000 }, () => withNames({ "rebind.example": "93.184.215.16" }, async () => {
-  setTimeLimit(180_000);
-  const seen = [];
-  const other = await serve((req, res) => {
-    seen.push(req.url);
-    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Inside", "<h1>Inside</h1>"));
-  });
-  const otherPort = new URL(other.origin).port;
-  const root = tempDir();
-  const relay = relayBrowser(root, findChrome(), { holdSpacesMs: 1_000, holdRequestsMs: 1_000 });
-  const saved = process.env.CHROME_PATH;
-  process.env.CHROME_PATH = relay.browser;
-  let chrome = null;
-  try {
-    chrome = await launch({ args: [`--host-resolver-rules=MAP rebind.example 127.0.0.1:${otherPort}`] });
-    chrome.guard = await guardFor("http://rebind.example/");
-    const tab = await openTab(chrome, DEVICES.desktop);
-    try {
-      assert.equal((await navigate(tab, "http://rebind.example/")).status, 200);
-      assert.deepEqual(seen, ["/"]);
-    } finally {
-      await closeTab(chrome, tab);
-    }
-  } finally {
-    if (chrome) await chrome.close();
-    if (saved === undefined) delete process.env.CHROME_PATH;
-    else process.env.CHROME_PATH = saved;
-    other.server.close();
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-}));
-
-// A document the browser reached on a private network, as a router's own
-// page is, is refused as one it reached on this machine is: as the address
-// given and as a frame of a site on this machine. The browser is told that
-// the other server is on such a network (--ip-address-space-overrides),
-// which Chrome 155 and 157 name Local and earlier versions Private; with
-// that taken out of the rule, every test of it still passed.
-test("a host the run finds on the public internet that the browser reaches on a private network is not shown: given, or as a frame of a site on this machine", { skip: noBrowser, timeout: 120_000 }, () => withNames({ "rebind.example": "93.184.215.16" }, async () => {
-  setTimeLimit(180_000);
-  const seen = [];
-  const other = await serve((req, res) => {
-    seen.push(req.url);
-    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Router", "<h1>Router</h1>"));
-  });
-  const html = { "Content-Type": "text/html; charset=utf-8" };
-  const { server, origin } = await serve((req, res) => {
-    if (req.url === "/framed") return res.writeHead(200, html).end(page("Framed | Acme", '<h1>Framed</h1><iframe src="http://rebind.example/framed"></iframe>'));
-    res.writeHead(200, html).end(page("Acme", "<h1>Acme</h1>"));
-  });
-  const otherPort = new URL(other.origin).port;
-  const chrome = await launch({ args: [`--host-resolver-rules=MAP rebind.example 127.0.0.1:${otherPort}`, `--ip-address-space-overrides=127.0.0.1:${otherPort}=private`] });
-  try {
-    chrome.guard = await guardFor("http://rebind.example/");
-    let tab = await openTab(chrome, DEVICES.desktop);
-    try {
-      await assert.rejects(navigate(tab, "http://rebind.example/"), { message: `Could not open http://rebind.example/: it is ${REACHED}.`, refused: REACHED });
-    } finally {
-      await closeTab(chrome, tab);
-    }
-    chrome.guard = await guardFor(`${origin}/`);
-    tab = await openTab(chrome, DEVICES.desktop);
-    const barred = [];
-    tab.on(BARRED, (b) => barred.push(b));
-    try {
-      assert.equal((await navigate(tab, `${origin}/framed`)).status, 200);
-      const until = Date.now() + 5_000;
-      while (!barred.length && Date.now() < until) await sleep(100);
-      assert.deepEqual(barred.map((b) => [b.url, b.why, b.main]), [["http://rebind.example/framed", `${REACHED}, and not on the host and port given`, false]]);
-      const { result } = await tab.send("Runtime.evaluate", { expression: "document.querySelector('iframe').contentDocument ? document.querySelector('iframe').contentDocument.body.innerText : ''", returnByValue: true });
-      assert.equal(result.value, "");
-    } finally {
-      await closeTab(chrome, tab);
-    }
-    assert.deepEqual(seen, ["/", "/framed"]);
+    // The other program of this machine was reached by nothing, the DNS was
+    // asked for the name once, and every connection for it went to its
+    // first answer.
+    assert.deepEqual(seen, []);
+    assert.equal(asked("rebind.example"), 1);
+    assert.ok(stand.made().includes("93.184.215.16:80"), stand.made().join(" "));
+    assert.ok(!stand.made().includes("127.0.0.1:80"), stand.made().join(" "));
   } finally {
     await chrome.close();
+    stand.restore();
     server.close();
-    other.server.close();
+    inside.server.close();
+    site.server.close();
+    framed.server.close();
+    published.server.close();
   }
 }));
 
-// The same in a run: the address given on such a host stops it before any
-// file is saved, and from a site on this machine a --page that redirects
-// there is left out and a frame there is not loaded, each named with the
-// reason, where the run saved the other program's page as the --page and
-// drew it in the frame.
-test("a run saves nothing the browser reached on this machine away from the host and port given: not the address given, a --page after a redirect or a frame", { skip: noBrowser || (process.platform === "win32" && "the wrapper is a shell script"), timeout: 200_000 }, () => withNames({ "rebind.example": "93.184.215.16" }, async () => {
+// The same in a run: the address given on such a host, a --page of a site on
+// this machine that redirects there and a frame there are each taken from
+// the site's own server, and nothing of the other program's page is drawn.
+// The browser's own lookup would lead it to the other program, as its
+// CHROME_PATH starts it with --host-resolver-rules.
+test("a run takes a name whose DNS answer changes between two lookups at its first answer alone: the address given, a --page after a redirect and a frame", { skip: noBrowser || (process.platform === "win32" && "the wrapper is a shell script"), timeout: 200_000 }, () => withNames({ "rebind-run.example": ["93.184.215.17", "127.0.0.1"] }, async () => {
   const seen = [];
-  const other = await serve((req, res) => {
+  const inside = await serve((req, res) => {
     seen.push(req.url);
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Inside", '<h1>Inside</h1><div style="height:1400px;background:rgb(255,0,255)"></div>'));
   });
+  const reached = [];
+  const site = await serve((req, res) => {
+    reached.push(req.url);
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Rebind | Tools", `<h1>Rebind</h1><p>The page ${req.url} of the site.</p><div style="height:1400px;background:rgb(0,160,0)"></div>`));
+  });
   const html = { "Content-Type": "text/html; charset=utf-8" };
   const { server, origin } = await serve((req, res) => {
-    if (req.url === "/hop") return res.writeHead(302, { Location: "http://rebind.example/from-redirect" }).end();
-    if (req.url === "/framed") return res.writeHead(200, html).end(page("Framed | Acme", '<h1>Framed</h1><iframe src="http://rebind.example/framed" style="width:800px;height:600px;border:0"></iframe><div style="height:1400px"></div>'));
+    if (req.url === "/hop") return res.writeHead(302, { Location: "http://rebind-run.example/from-redirect" }).end();
+    if (req.url === "/framed") return res.writeHead(200, html).end(page("Framed | Acme", '<h1>Framed</h1><iframe src="http://rebind-run.example/framed" style="width:800px;height:600px;border:0"></iframe><div style="height:1400px"></div>'));
     res.writeHead(200, html).end(page("Acme | Tools for teams", '<h1>Acme</h1><div style="height:1400px;background:rgb(0,160,0)"></div>'));
   });
+  const stand = reachAt({ "93.184.215.17:80": `127.0.0.1:${new URL(site.origin).port}`, "127.0.0.1:80": `127.0.0.1:${new URL(inside.origin).port}` });
   const root = tempDir();
   const browser = path.join(root, "mapped-chrome");
-  fs.writeFileSync(browser, `#!/bin/sh\nexec ${sh(findChrome())} --host-resolver-rules="MAP rebind.example 127.0.0.1:${new URL(other.origin).port}" "$@"\n`, { mode: 0o755 });
+  fs.writeFileSync(browser, `#!/bin/sh\nexec ${sh(findChrome())} --host-resolver-rules="MAP rebind-run.example 127.0.0.1:${new URL(inside.origin).port}" "$@"\n`, { mode: 0o755 });
   const saved = process.env.CHROME_PATH;
   process.env.CHROME_PATH = browser;
   try {
-    await assert.rejects(takeShots("http://rebind.example/", { dir: path.join(root, "given"), pages: 1, sizes: "desktop", timeLimit: 60_000 }), { message: `Could not open http://rebind.example/: it is ${REACHED}.` });
-    assert.equal(fs.existsSync(path.join(root, "given")), false);
-    const away = `${REACHED}, and not on the host and port given`;
+    const given = await takeShots("http://rebind-run.example/", { dir: path.join(root, "given"), pages: 1, sizes: "desktop", timeLimit: 60_000 });
+    assert.deepEqual(given.manifest.pages.map((p) => p.url), ["http://rebind-run.example/"]);
+    // The --page that redirects to the site is taken where it lands, from
+    // the site's own server.
     const { manifest } = await takeShots(`${origin}/`, { dir: path.join(root, "shots"), pages: 1, extra: ["/hop", "/framed"], sizes: "desktop", timeLimit: 120_000 });
-    assert.deepEqual(manifest.pages.map((p) => p.slug), ["home", "framed"]);
-    assert.ok(manifest.notes.includes(`${origin}/hop was asked for but not taken: it leads to http://rebind.example/from-redirect, which is ${away}.`), manifest.notes.join("\n"));
-    const notes = manifest.pages[1].notes;
-    assert.ok(notes.includes(`a frame of it tried to open http://rebind.example/framed, which is ${away}: it was not opened`), notes.join("\n"));
-    // The frame is drawn empty: nothing of the other program's magenta page.
-    const framedShot = manifest.pages[1].shots.find((s) => s.size === "desktop");
-    const shot = readPng(path.join(root, "shots", framedShot.file));
-    let magenta = 0;
-    for (let y = 0; y < shot.height; y += 8) for (let x = 0; x < shot.width; x += 8) if (near(shot.pixel(x, y), MAGENTA, 20)) magenta++;
-    assert.equal(magenta, 0);
-    assert.deepEqual([...seen].sort(), ["/", "/framed", "/from-redirect"]);
+    assert.deepEqual(manifest.pages.map((p) => [p.slug, p.url]), [["home", `${origin}/`], ["from-redirect", "http://rebind-run.example/from-redirect"], ["framed", `${origin}/framed`]]);
+    // The frame is the site's page, and nothing of the other program's
+    // magenta page is in any screenshot.
+    for (const p of manifest.pages) {
+      const shot = readPng(path.join(root, "shots", p.shots.find((s) => s.size === "desktop").file));
+      let magenta = 0;
+      for (let y = 0; y < shot.height; y += 8) for (let x = 0; x < shot.width; x += 8) if (near(shot.pixel(x, y), MAGENTA, 20)) magenta++;
+      assert.equal(magenta, 0, p.slug);
+    }
+    assert.deepEqual(seen, []);
+    assert.deepEqual(reached.filter((one) => one !== "/favicon.ico").sort(), ["/", "/framed", "/from-redirect"]);
+    assert.equal(asked("rebind-run.example"), 1);
   } finally {
     if (saved === undefined) delete process.env.CHROME_PATH;
     else process.env.CHROME_PATH = saved;
+    stand.restore();
     server.close();
-    other.server.close();
+    inside.server.close();
+    site.server.close();
     fs.rmSync(root, { recursive: true, force: true });
   }
 }));
@@ -3970,8 +3769,8 @@ test("a run opens no other address on this machine than the one given: not by it
 // after a redirect, as a page that moves on by itself, a frame or a window
 // a click opens, is not loaded, and sees no request. 0.1.3 opened them and
 // saved what answered. Here both names resolve to public addresses for the
-// run's rule, and the browser takes them to this machine, where the other
-// program is a server of its own.
+// run's rule, and the run's proxy takes them to this machine, where the
+// other program is a server of its own.
 const OTHER_PORT = (n) => `on port ${n}, not 80 or 443, and not on the scheme, host and port given`;
 
 test("from a public site the browser opens no other port than 80 and 443 away from the address given: given, after a redirect, when a page moves on, as a frame or a window", { skip: noBrowser, timeout: 120_000 }, () => withNames({ "public.example": "93.184.215.14", "other.example": "93.184.215.15" }, async () => {
@@ -3990,9 +3789,9 @@ test("from a public site the browser opens no other port than 80 and 443 away fr
     res.writeHead(200, html).end(page("Acme", "<h1>Acme</h1>"));
   });
   const site = `http://public.example:${new URL(origin).port}`;
-  const chrome = await launch({ args: ["--host-resolver-rules=MAP public.example 127.0.0.1, MAP other.example 127.0.0.1", publicAt(origin)] });
+  const stand = reachAt({ "93.184.215.14": "127.0.0.1", "93.184.215.15": "127.0.0.1" });
+  const chrome = await launch({ guard: await guardFor(`${site}/`) });
   try {
-    chrome.guard = await guardFor(`${site}/`);
     const tab = await openTab(chrome, DEVICES.desktop);
     try {
       // The site's own scheme, host and port, which is not 80 or 443.
@@ -4023,6 +3822,7 @@ test("from a public site the browser opens no other port than 80 and 443 away fr
     }
   } finally {
     await chrome.close();
+    stand.restore();
     server.close();
     other.server.close();
   }
@@ -4072,9 +3872,10 @@ test("an http address given on another port is taken at https on that host and p
   });
   await new Promise((resolve) => both.listen(0, "127.0.0.1", resolve));
   const port = both.address().port;
+  const stand = reachAt({ "93.184.215.14": "127.0.0.1" });
   let chrome = null;
   try {
-    chrome = await launch({ args: ["--host-resolver-rules=MAP myapp.dev 127.0.0.1, MAP public.example 127.0.0.1", "--ignore-certificate-errors", publicAt(port)] });
+    chrome = await launch({ args: ["--ignore-certificate-errors"] });
     for (const [given, opened, landed] of [
       // The browser goes to https itself: myapp.dev asks for it.
       [`http://myapp.dev:${port}/`, `http://myapp.dev:${port}/`, `https://myapp.dev:${port}/`],
@@ -4101,6 +3902,7 @@ test("an http address given on another port is taken at https on that host and p
     assert.ok(!seen.includes(`http public.example:${port}/`), seen.join("\n"));
   } finally {
     if (chrome) await chrome.close();
+    stand.restore();
     for (const server of [both, secure, plain]) {
       server.close();
       if (server.closeAllConnections) server.closeAllConnections();
@@ -4114,9 +3916,9 @@ test("an http address given on another port is taken at https on that host and p
 // on the public internet: with the browser's preloading on, each move there
 // was served from that copy, past the rule's port, and saved as the page.
 // Here each is refused, and the other server sees no request and no
-// connection. Both names are public to the run's rule and lead the browser
-// to this machine; its certificate, made here, is taken by a browser told
-// to take any.
+// connection. Both names are public to the run's rule, and the run's proxy
+// takes them to this machine; the certificate, made here, is taken by a
+// browser told to take any.
 test("over https, a page's speculation rules take the browser to no other port of its host or of another host", { skip: noBrowser || noOpenssl, timeout: 120_000 }, () => withNames({ "public.example": "93.184.215.14", "other.example": "93.184.215.15" }, async () => {
   setTimeLimit(180_000);
   const root = tempDir();
@@ -4143,10 +3945,10 @@ test("over https, a page's speculation rules take the browser to no other port o
   await Promise.all([other, site].map((server) => new Promise((resolve) => server.listen(0, "127.0.0.1", resolve))));
   const port = other.address().port;
   const given = `https://public.example:${site.address().port}/`;
+  const stand = reachAt({ "93.184.215.14": "127.0.0.1", "93.184.215.15": "127.0.0.1" });
   let chrome = null;
   try {
-    chrome = await launch({ args: ["--host-resolver-rules=MAP public.example 127.0.0.1, MAP other.example 127.0.0.1", "--ignore-certificate-errors", publicAt(site.address().port)] });
-    chrome.guard = await guardFor(given);
+    chrome = await launch({ args: ["--ignore-certificate-errors"], guard: await guardFor(given) });
     for (const [at, to] of [
       ["/prefetch", `https://public.example:${port}/fetched`],
       ["/prerender", `https://public.example:${port}/rendered`],
@@ -4172,6 +3974,7 @@ test("over https, a page's speculation rules take the browser to no other port o
     assert.equal(connections, 0, "connections to the other server");
   } finally {
     if (chrome) await chrome.close();
+    stand.restore();
     for (const server of [other, site]) {
       server.close();
       server.closeAllConnections();
@@ -4184,10 +3987,10 @@ test("over https, a page's speculation rules take the browser to no other port o
 // footer's on its own port: the page's key has no port, the menu's link
 // outranked the footer's, the run refused it, and the page was lost though
 // the footer's was there to take, in the screenshots and in a demo's tour.
-// The link the run opens is the one kept now. Here the site's name leads
-// the browser to this machine whatever the port, and the kit's own
-// requests for it, robots.txt and the sitemap, to the same server.
-test("of a menu's link to a page on another port and the footer's on the site's own, the screenshots and a demo's tour take the footer's", { skip: noBrowser || (process.platform === "win32" && "the wrapper is a shell script"), timeout: 200_000 }, () => withNames({ "dup.example": "93.184.215.14" }, async () => {
+// The link the run opens is the one kept now. Here the run's proxy takes the
+// site's address on port 80 to a server of this machine, and the kit's own
+// requests for it, robots.txt and the sitemap, go to the same server.
+test("of a menu's link to a page on another port and the footer's on the site's own, the screenshots and a demo's tour take the footer's", { skip: noBrowser, timeout: 200_000 }, () => withNames({ "dup.example": "93.184.215.14" }, async () => {
   const html = { "Content-Type": "text/html; charset=utf-8" };
   const pages = { "/pricing": "Pricing", "/features": "Features", "/customers": "Customers", "/about": "About us" };
   const { server, origin } = await serve((req, res) => {
@@ -4207,10 +4010,7 @@ test("of a menu's link to a page on another port and the footer's on the site's 
     return get(`http://127.0.0.1:${port}${where.pathname}${where.search}`, { ...rest, headers: { ...((rest && rest.headers) || {}), Host: "dup.example" } }, done);
   };
   const root = tempDir();
-  const browser = path.join(root, "mapped-chrome");
-  fs.writeFileSync(browser, `#!/bin/sh\nexec ${sh(findChrome())} --host-resolver-rules="MAP dup.example 127.0.0.1:${port}" ${sh(publicAt(port))} "$@"\n`, { mode: 0o755 });
-  const saved = process.env.CHROME_PATH;
-  process.env.CHROME_PATH = browser;
+  const stand = reachAt({ "93.184.215.14:80": `127.0.0.1:${port}` });
   try {
     const { manifest } = await takeShots("http://dup.example/", { dir: path.join(root, "shots"), pages: 4, sizes: "desktop", timeLimit: 180_000 });
     assert.deepEqual(manifest.pages.map((p) => p.url).sort(), ["http://dup.example/", "http://dup.example/customers", "http://dup.example/features", "http://dup.example/pricing"]);
@@ -4218,9 +4018,8 @@ test("of a menu's link to a page on another port and the footer's on the site's 
     // The same of a demo's tour, which looks for pages while four minutes
     // of the demo are left.
     setTimeLimit(400_000);
-    const chrome = await launch();
+    const chrome = await launch({ guard: await guardFor("http://dup.example/") });
     try {
-      chrome.guard = await guardFor("http://dup.example/");
       const tour = await pickPages(chrome, "http://dup.example/", { pages: 4 });
       assert.deepEqual(tour.pages.map((p) => p.url).sort(), ["http://dup.example/", "http://dup.example/customers", "http://dup.example/features", "http://dup.example/pricing"]);
     } finally {
@@ -4229,8 +4028,7 @@ test("of a menu's link to a page on another port and the footer's on the site's 
     }
   } finally {
     http.get = get;
-    if (saved === undefined) delete process.env.CHROME_PATH;
-    else process.env.CHROME_PATH = saved;
+    stand.restore();
     server.close();
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -4244,10 +4042,10 @@ test("of a menu's link to a page on another port and the footer's on the site's 
 // and the run saved the home page alone, in the screenshots and in a demo's
 // tour. A page that does move on to another site is left out so still. And
 // the home page's version in another language on that site is taken, where
-// it was passed over with no note. Here both names lead the browser and the
-// kit's own requests to one server, which tells them apart by the Host
-// header.
-test("a home page that moves on to another site makes that site the tour's, in the screenshots and a demo's tour", { skip: noBrowser || (process.platform === "win32" && "the wrapper is a shell script"), timeout: 300_000 }, () => withNames({ "alias.example": "93.184.215.14", "main.example": "93.184.215.15", "away.example": "93.184.215.16" }, async () => {
+// it was passed over with no note. Here the run's proxy takes the names'
+// addresses on port 80, and the kit's own requests for them, to one server,
+// which tells them apart by the Host header.
+test("a home page that moves on to another site makes that site the tour's, in the screenshots and a demo's tour", { skip: noBrowser, timeout: 300_000 }, () => withNames({ "alias.example": "93.184.215.14", "main.example": "93.184.215.15", "away.example": "93.184.215.16" }, async () => {
   const html = { "Content-Type": "text/html; charset=utf-8" };
   const pages = { "/pricing": "Pricing", "/features": "Features" };
   const { server, origin } = await serve((req, res) => {
@@ -4273,10 +4071,7 @@ test("a home page that moves on to another site makes that site the tour's, in t
     return get(`http://127.0.0.1:${port}${where.pathname}${where.search}`, { ...rest, headers: { ...((rest && rest.headers) || {}), Host: where.hostname } }, done);
   };
   const root = tempDir();
-  const browser = path.join(root, "mapped-chrome");
-  fs.writeFileSync(browser, `#!/bin/sh\nexec ${sh(findChrome())} --host-resolver-rules="MAP alias.example 127.0.0.1:${port}, MAP main.example 127.0.0.1:${port}, MAP away.example 127.0.0.1:${port}" ${sh(publicAt(port))} "$@"\n`, { mode: 0o755 });
-  const saved = process.env.CHROME_PATH;
-  process.env.CHROME_PATH = browser;
+  const stand = reachAt({ "93.184.215.14:80": `127.0.0.1:${port}`, "93.184.215.15:80": `127.0.0.1:${port}`, "93.184.215.16:80": `127.0.0.1:${port}` });
   const taken = ["http://main.example/", "http://main.example/features", "http://main.example/pricing"];
   try {
     const { manifest } = await takeShots("http://alias.example/", { dir: path.join(root, "shots"), pages: 4, sizes: "desktop", timeLimit: 180_000 });
@@ -4287,9 +4082,8 @@ test("a home page that moves on to another site makes that site the tour's, in t
     // The same of a demo's tour, which looks for pages while four minutes
     // of the demo are left.
     setTimeLimit(400_000);
-    const chrome = await launch();
+    const chrome = await launch({ guard: await guardFor("http://alias.example/") });
     try {
-      chrome.guard = await guardFor("http://alias.example/");
       const tour = await pickPages(chrome, "http://alias.example/", { pages: 4 });
       assert.deepEqual(tour.pages.map((p) => p.url).sort(), taken);
       assert.deepEqual(tour.skipped.map((skip) => [skip.url, skip.reason]), [["http://main.example/customers", "redirected to away.example"]]);
@@ -4301,8 +4095,7 @@ test("a home page that moves on to another site makes that site the tour's, in t
     }
   } finally {
     http.get = get;
-    if (saved === undefined) delete process.env.CHROME_PATH;
-    else process.env.CHROME_PATH = saved;
+    stand.restore();
     server.close();
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -4316,10 +4109,10 @@ test("a home page that moves on to another site makes that site the tour's, in t
 // opens one; one only the sitemap names is not listed at all, as a page
 // left out there is not. Listed with the pages it could take, an agent ran
 // again with such a page as --page, which the run then refused. Here the
-// site on the public internet leads the browser and the kit's own requests
-// to a server of this machine, and the other program is a server that
-// notes what it is asked.
-test("the pages a run could take besides are ones its rule opens: a link it refuses is listed as left out, with the reason", { skip: noBrowser || (process.platform === "win32" && "the wrapper is a shell script"), timeout: 200_000 }, () => withNames({ "public.example": "93.184.215.14" }, async () => {
+// run's proxy takes the site on the public internet, and the kit's own
+// requests for it, to a server of this machine, and the other program is a
+// server that notes what it is asked.
+test("the pages a run could take besides are ones its rule opens: a link it refuses is listed as left out, with the reason", { skip: noBrowser, timeout: 200_000 }, () => withNames({ "public.example": "93.184.215.14" }, async () => {
   const seen = [];
   const other = await serve((req, res) => {
     seen.push(req.url);
@@ -4347,10 +4140,7 @@ test("the pages a run could take besides are ones its rule opens: a link it refu
     return get(`http://127.0.0.1:${port}${where.pathname}${where.search}`, { ...rest, headers: { ...((rest && rest.headers) || {}), Host: "public.example" } }, done);
   };
   const root = tempDir();
-  const browser = path.join(root, "mapped-chrome");
-  fs.writeFileSync(browser, `#!/bin/sh\nexec ${sh(findChrome())} --host-resolver-rules="MAP public.example 127.0.0.1:${port}" ${sh(publicAt(port))} "$@"\n`, { mode: 0o755 });
-  const saved = process.env.CHROME_PATH;
-  process.env.CHROME_PATH = browser;
+  const stand = reachAt({ "93.184.215.14:80": `127.0.0.1:${port}` });
   try {
     const cases = [
       ["http://public.example/", "http://public.example:8443/x", "on port 8443, not 80 or 443, and not on the scheme, host and port given"],
@@ -4369,8 +4159,7 @@ test("the pages a run could take besides are ones its rule opens: a link it refu
     assert.deepEqual(seen, []);
   } finally {
     http.get = get;
-    if (saved === undefined) delete process.env.CHROME_PATH;
-    else process.env.CHROME_PATH = saved;
+    stand.restore();
     server.close();
     other.server.close();
     fs.rmSync(root, { recursive: true, force: true });
@@ -4403,13 +4192,12 @@ test("an address with no scheme that a plain http server answers says to give ht
 // another port of the site's host, a frame there, and a frame at an address
 // MAKERSMCP_REFUSE_ADDRESSES names, on port 80, which the rule would let
 // through otherwise. An address given that the setting names, and a setting
-// that does not parse, stop the run before any work. The browser takes
-// public.example to this machine, as its CHROME_PATH starts it with
-// --host-resolver-rules, and the other server, another program of the
-// site's host, sees no request.
+// that does not parse, stop the run before any work. The run's proxy takes
+// public.example's address to this machine, and the other server, another
+// program of the site's host, sees no request.
 const REFUSED_HERE = "at 93.184.215.99, an address MAKERSMCP_REFUSE_ADDRESSES refuses";
 
-test("a run takes no --page or frame on another port than 80 and 443 away from the address given, nor at an address MAKERSMCP_REFUSE_ADDRESSES names, and goes on with a note", { skip: noBrowser || (process.platform === "win32" && "the wrapper is a shell script"), timeout: 150_000 }, () => withNames({ "public.example": "93.184.215.14", "refused.example": "93.184.215.99" }, async () => {
+test("a run takes no --page or frame on another port than 80 and 443 away from the address given, nor at an address MAKERSMCP_REFUSE_ADDRESSES names, and goes on with a note", { skip: noBrowser, timeout: 150_000 }, () => withNames({ "public.example": "93.184.215.14", "refused.example": "93.184.215.99" }, async () => {
   const seen = [];
   const other = await serve((req, res) => {
     seen.push(req.url);
@@ -4423,10 +4211,8 @@ test("a run takes no --page or frame on another port than 80 and 443 away from t
   });
   const site = `http://public.example:${new URL(origin).port}`;
   const root = tempDir();
-  const browser = path.join(root, "mapped-chrome");
-  fs.writeFileSync(browser, `#!/bin/sh\nexec ${sh(findChrome())} --host-resolver-rules="MAP public.example 127.0.0.1" ${sh(publicAt(origin))} "$@"\n`, { mode: 0o755 });
-  const saved = { CHROME_PATH: process.env.CHROME_PATH, MAKERSMCP_REFUSE_ADDRESSES: process.env.MAKERSMCP_REFUSE_ADDRESSES };
-  process.env.CHROME_PATH = browser;
+  const stand = reachAt({ "93.184.215.14": "127.0.0.1" });
+  const saved = { MAKERSMCP_REFUSE_ADDRESSES: process.env.MAKERSMCP_REFUSE_ADDRESSES };
   process.env.MAKERSMCP_REFUSE_ADDRESSES = "93.184.215.99";
   try {
     const asked = `http://public.example:${otherPort}/asked`;
@@ -4457,6 +4243,7 @@ test("a run takes no --page or frame on another port than 80 and 443 away from t
       if (value === undefined) delete process.env[name];
       else process.env[name] = value;
     }
+    stand.restore();
     server.close();
     other.server.close();
     fs.rmSync(root, { recursive: true, force: true });
@@ -4495,9 +4282,10 @@ test("a page's speculation rules take the browser to no address the run does not
     res.writeHead(200, html).end(page("Acme", "<h1>Acme</h1>"));
   });
   const site = `http://public.example:${new URL(origin).port}`;
+  const stand = reachAt({ "93.184.215.14": "127.0.0.1" });
   let chrome = null;
   try {
-    chrome = await launch({ args: ["--host-resolver-rules=MAP public.example 127.0.0.1", publicAt(origin)] });
+    chrome = await launch();
     const click = async (tab, y, { hover = false } = {}) => {
       if (hover) {
         await tab.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 100, y });
@@ -4544,6 +4332,7 @@ test("a page's speculation rules take the browser to no address the run does not
     assert.equal(connections, 0, "connections to the other server");
   } finally {
     if (chrome) await chrome.close();
+    stand.restore();
     server.close();
     other.server.close();
   }
@@ -5067,7 +4856,7 @@ test("no frame of another site makes the browser start a program of this machine
     setTimeLimit(60_000);
     for (const name of Object.keys(process.env)) if (!(name in env)) delete process.env[name];
     Object.assign(process.env, env);
-    chrome = await launch();
+    chrome = await launch({ guard: await guardFor(`${origin}/`) });
     for (const name of Object.keys(process.env)) if (!(name in saved)) delete process.env[name];
     Object.assign(process.env, saved);
     const tab = await openTab(chrome, DEVICES.desktop);

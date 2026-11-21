@@ -23,7 +23,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { openTab, closeTab, sendInput, navigate, drawnSoFar, currentUrl, BARRED, NOT_A_PAGE } = require("./chrome");
+const { openTab, closeTab, sendInput, navigate, drawnSoFar, currentUrl, BARRED, UNREACHED, NOT_A_PAGE } = require("./chrome");
 const { metrics, walk, waitForContent, settle, watchRequests, networkQuiet, waitForDrawn, waitForFonts, resetPictureWait, waitForPictures } = require("./page");
 const { clean } = require("./clean");
 const { readInfo, siteName } = require("./shots");
@@ -312,7 +312,7 @@ class Recorder {
     // known to take input since (see inputReaches()).
     this.outside = "";
     this.cursor = { x: viewport.width * 0.64, y: viewport.height * 0.76 };
-    this.take = { start: { ...this.cursor }, shownAt: null, moves: [], clicks: [], typing: [], keys: [], scrolls: [], cuts: [], urls: [], refused: [], barred: [] };
+    this.take = { start: { ...this.cursor }, shownAt: null, moves: [], clicks: [], typing: [], keys: [], scrolls: [], cuts: [], urls: [], refused: [], barred: [], unreached: [] };
     this.pages = [];
   }
 
@@ -369,6 +369,11 @@ class Recorder {
       if (b.asked && !this.outside) this.outside = b.url;
       const kind = b.main ? "page" : b.window ? "window" : "frame";
       if (!this.take.barred.some((known) => known.url === b.url)) this.take.barred.push({ url: b.url, why: b.why, kind, handed: Boolean(b.handed) });
+    });
+    // What the run's proxy did not pass on of a page's own requests, as a
+    // picture or the data it fetches (see watchProxy() in chrome.js).
+    tab.on(UNREACHED, (u) => {
+      if (!this.take.unreached.some((known) => known.url === u.url)) this.take.unreached.push({ url: u.url, why: u.why });
     });
     // An app that changes its address without loading a page (its own
     // router): the title bar follows. A new #route is another page; a new

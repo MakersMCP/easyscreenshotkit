@@ -23,31 +23,25 @@
 // which lead back into its network: those are refused wherever they come
 // from, the address given included (see hostRefusals()).
 //
-// The rule is held for the documents the browser loads for the run's pages
-// (see guardBrowser() in chrome.js) and for the files the kit reads itself.
-// What a page asks for itself, its pictures, styles, scripts and data, and
-// the manifest the browser reads for itself, are left to the browser's own
-// rules.
+// The rule holds for every request of the run's browser, which goes
+// through the run's own proxy (see proxy.js): the documents it loads for
+// the run's pages, judged first over the DevTools protocol for the words
+// they are named with (see guardBrowser() in chrome.js), and whatever else
+// the browser asks for, a page's pictures, styles, scripts and data, a
+// WebSocket, a service worker's fetches and the requests the browser makes
+// for itself. It holds too for the files the kit reads itself.
 //
-// A host name is judged by every address it resolves to here, and a request
-// the kit makes itself (a sitemap, a manifest, a screenshot's file) goes to
-// one of those addresses, not to a second answer of the DNS. The browser
-// resolves a name again when it opens it, which a DNS server of the site's
-// can answer otherwise in between: so each document the browser loads is
-// judged again by where the browser says it reached it, before the browser
-// reads it (see reached() and guardBrowser() in chrome.js), and one it
-// reached on this machine or its network is not shown but on the host and
-// port given there; its request has reached that address by then. A site
-// whose DNS answered the run with a public address and the browser with
-// 127.0.0.1 had the browser show the machine's own page on port 80, as the
-// address given, a frame or after a redirect. An address the browser counts
-// as public, as one MAKERSMCP_REFUSE_ADDRESSES names, is judged by the
-// run's lookup alone, as is any address behind a proxy. A
-// name that does not resolve here, or gives no answer in LOOKUP_MS, is not
-// opened: left to the browser's own lookup, it let a DNS server that failed
-// the kit's question, or answered it late, send the browser's next one to
-// this machine. The address given on such a host stops the run before any
-// work.
+// A host name is judged by every address it resolves to here, looked up
+// once in a run (see addressesOf()), and a connection the browser's proxy
+// or the kit itself makes (a sitemap, a manifest, a screenshot's file) goes
+// to one of those addresses, never to a second answer of the DNS (see
+// lookupFor()). The browser asks the DNS for nothing: left to its own
+// lookup, a DNS server of the site's that answered the run with a public
+// address and the browser with 127.0.0.1 had the browser show the
+// machine's own page on port 80, as the address given, a frame or after a
+// redirect. A name that does not resolve here, or gives no answer in
+// LOOKUP_MS, is not opened: such a name has no address the rule could
+// judge. The address given on such a host stops the run before any work.
 
 const dns = require("dns");
 const net = require("net");
@@ -68,20 +62,6 @@ const otherPort = (port, given) => `on port ${port}, not 80 or 443${given ? ", a
 // host that the setting refuses.
 const REFUSE_SETTING = "MAKERSMCP_REFUSE_ADDRESSES";
 const refusedHere = (address) => `at ${address}, an address ${REFUSE_SETTING} refuses`;
-// A document the browser reached on this machine or its network, by its
-// own lookup, where the run's found the host on the public internet or on
-// another host and port; and one the browser said nothing of where it
-// reached (see reached()).
-const REACHED_INSIDE = "on a host the browser reached on this machine or its network";
-const REACHED_UNNAMED = "on a host the browser reached at an address it did not name";
-
-// The address spaces Chrome gives the answer to a request it made itself
-// (resourceIPAddressSpace): Loopback for this machine and Local for a
-// private or link-local network, as Chrome 155 and 157 name them, where
-// earlier versions named this machine Local and such a network Private;
-// Public for the rest, and Unknown through a proxy, whose own address it
-// reached, which says nothing of the page.
-const INSIDE_SPACES = new Set(["Loopback", "Local", "Private"]);
 
 // The ports a run opens on any host on the public internet: those of the
 // web. Any other is opened only on the scheme, host and port of the address
@@ -404,12 +384,10 @@ function addressesFor(hostname) {
 // said after "it is": not a web address, at an address the host's
 // MAKERSMCP_REFUSE_ADDRESSES refuses, not on the public internet, on a host
 // whose name could not be looked up, or on a port other than 80 and 443
-// away from the address given. reached(url, space) says the same of a
-// document the browser has reached, by where it says it reached it (see
-// INSIDE_SPACES). lookupWhy(url): why the name of a host refuses() calls
-// one whose name could not be looked up was not, in a few words (see
-// lookupWhy()). unresolved: why the host of the address given could not be
-// looked up, or "": a run given it opens nothing. refused: why
+// away from the address given. lookupWhy(url): why the name of a host
+// refuses() calls one whose name could not be looked up was not, in a few
+// words (see lookupWhy()). unresolved: why the host of the address given
+// could not be looked up, or "": a run given it opens nothing. refused: why
 // MAKERSMCP_REFUSE_ADDRESSES refuses the address given, or "" likewise.
 // Throws when MAKERSMCP_REFUSE_ADDRESSES does not parse.
 async function guardFor(start) {
@@ -468,27 +446,15 @@ async function guardFor(start) {
       if (where === "inside") return local ? NOT_GIVEN : NOT_PUBLIC;
       return anyPort ? "" : otherPort(port, web);
     },
-    // Why a document refuses() took is not to be shown, now that the
-    // browser has reached it in the address space `space`, or "": the
-    // browser looks a name up again for itself, and one it reached on this
-    // machine or its network is shown only on the host and port given
-    // there. null for space: the browser did not say where it reached it.
-    // Elsewhere the run's own lookup has decided.
-    reached(raw, space) {
-      if (space === null) return REACHED_UNNAMED;
-      if (!INSIDE_SPACES.has(String(space || ""))) return "";
-      const url = parse(raw);
-      if (url && given(url)) return "";
-      return local ? `${REACHED_INSIDE}, and not on the host and port given` : REACHED_INSIDE;
-    },
     lookupWhy(raw) {
       const url = parse(raw);
       return lookupWhy(url ? url.hostname : "");
     },
-    // For a request the kit makes itself, to an address refuses() took: the
-    // lookup that connects it to the addresses refuses() judged, the answer
-    // the name was asked for once (see addressesOf()), and not to a second
-    // answer of the DNS. For the host and port given it hands back the
+    // For a connection the kit or the browser's proxy makes, to an address
+    // refuses() took: the lookup that connects it to the addresses
+    // refuses() judged, the answer the name was asked for once (see
+    // addressesOf()), and not to a second answer of the DNS. For the host
+    // and port given it hands back the
     // addresses the run takes that host for, both of this machine's for a
     // name under localhost, as the browser takes them (see addressesFor()):
     // left to Node.js's own lookup, which can ask with ADDRCONFIG, ::1 was
@@ -602,4 +568,4 @@ function refusedError(url, guard) {
   return new Error(`Could not open ${url}: it is ${guard.refused}.`);
 }
 
-module.exports = { guardFor, getChecked, hostOf, notPublicIp, hostNotPublic, hostRefusals, refusalsProblem, unresolvedError, refusedError, otherPort, refusedHere, NOT_WEB, NOT_PUBLIC, NOT_GIVEN, UNRESOLVED, REFUSE_SETTING, REACHED_INSIDE, REACHED_UNNAMED, INSIDE_SPACES };
+module.exports = { guardFor, getChecked, hostOf, notPublicIp, hostNotPublic, hostRefusals, refusalsProblem, unresolvedError, refusedError, otherPort, refusedHere, NOT_WEB, NOT_PUBLIC, NOT_GIVEN, UNRESOLVED, REFUSE_SETTING };

@@ -172,16 +172,9 @@ function descendants(pid) {
 // the target it was attached by. holdMs: how long the answer to each input
 // event is held before it goes on, so that a frame's move a moment after
 // the answer came, which the browser tells only once the frame has moved,
-// still drops it. withholdNetwork: Network.enable for a target the kit did
-// not attach itself, a frame of another site or a window it is held at the
-// start of, is answered with an error and never reaches the browser, as a
-// browser that does not take it would do. holdSpacesMs: how long what the
-// browser says of where it reached an answer (Network.responseReceivedExtraInfo)
-// is held before it goes on, so it comes after the answer it is of.
-// holdRequestsMs: the same for what it says of a request it sent
-// (Network.requestWillBeSentExtraInfo). Returns the wrapper to set
-// CHROME_PATH to, and dropped(): what it dropped, a line each.
-function relayBrowser(root, browser, { holdMs = 0, withholdNetwork = false, holdSpacesMs = 0, holdRequestsMs = 0 } = {}) {
+// still drops it. Returns the wrapper to set CHROME_PATH to, and dropped():
+// what it dropped, a line each.
+function relayBrowser(root, browser, { holdMs = 0 } = {}) {
   const script = path.join(root, "relay.js");
   const log = path.join(root, "dropped.log");
   fs.writeFileSync(
@@ -219,10 +212,6 @@ const split = (stream, take) => {
 };
 split(fromKit, (text) => {
   const msg = JSON.parse(text);
-  if (${Boolean(withholdNetwork)} && msg.method === "Network.enable" && msg.sessionId && !mainOf.has(msg.sessionId)) {
-    toKit.write(JSON.stringify({ id: msg.id, sessionId: msg.sessionId, error: { code: -32000, message: "withheld by the test" } }) + "\\0");
-    return;
-  }
   if (/^Input\\./.test(msg.method)) inputs.set(msg.id, { session: msg.sessionId, what: msg.method + " " + msg.params.type });
   if (msg.method === "Target.attachToTarget") attaching.set(msg.id, msg.params.targetId);
   child.stdio[3].write(text + "\\0");
@@ -240,14 +229,6 @@ split(child.stdio[4], (text) => {
     const was = frameUrls.get(frame.targetId);
     frameUrls.set(frame.targetId, frame.url);
     if (was !== undefined && was !== frame.url) for (const [session, main] of mainOf) if (main === frame.parentFrameId) dropFor(session, "a frame of the page moved on to " + frame.url);
-  }
-  if (${Number(holdSpacesMs)} > 0 && msg.method === "Network.responseReceivedExtraInfo") {
-    setTimeout(() => toKit.write(text + "\\0"), ${Number(holdSpacesMs)});
-    return;
-  }
-  if (${Number(holdRequestsMs)} > 0 && msg.method === "Network.requestWillBeSentExtraInfo") {
-    setTimeout(() => toKit.write(text + "\\0"), ${Number(holdRequestsMs)});
-    return;
   }
   if (inputs.has(msg.id)) {
     if (dropped.has(msg.id)) return void inputs.delete(msg.id);
@@ -297,16 +278,37 @@ function runUntilOver(cli, args, { env = process.env, holdMs = 20_000 } = {}) {
   });
 }
 
-// The switch that has the browser count servers of this process, on
-// 127.0.0.1, as ones it reached on the public internet
-// (--ip-address-space-overrides), for a test whose site on the public
-// internet is such a server: the run judges each page again by where the
-// browser says it reached it, and one on this machine is not shown away
-// from the host and port given (see guardBrowser() in chrome.js). servers:
-// their addresses or ports.
-function publicAt(...servers) {
-  const ports = servers.map((server) => (/^\d+$/.test(String(server)) ? String(server) : new URL(server).port));
-  return `--ip-address-space-overrides=${ports.map((port) => `127.0.0.1:${port}=public`).join(",")}`;
+// Servers of this process standing in for sites on the public internet: the
+// run's proxy connects the browser only to an address its rule judged (see
+// proxy.js), the one the name's lookup gave, so a test whose names resolve
+// to public addresses (see withNames() in the tests) has the proxy's
+// connections to those addresses go to its servers on 127.0.0.1 instead.
+// map: by "address" or "address:port", where the connection goes, as
+// "127.0.0.1" on the same port or "127.0.0.1:<port>". A connection to any
+// other address on the public internet fails, as no connection leaves this
+// machine in a test, and one to an address that is not goes as it would.
+// made(): the connections asked for, as "address:port", in order. Returns
+// { made, restore }, restore putting the proxy's own back.
+function reachAt(map) {
+  const net = require("node:net");
+  const { dialer } = require("../skills/easyscreenshotkit/scripts/lib/proxy");
+  const { notPublicIp } = require("../skills/easyscreenshotkit/scripts/lib/address");
+  const before = dialer.connect;
+  const made = [];
+  dialer.connect = (options) => {
+    const at = `${options.host}:${options.port}`;
+    made.push(at);
+    const to = map[at] ?? map[options.host];
+    if (to !== undefined) {
+      const [host, port] = String(to).split(":");
+      return before({ ...options, host, port: port ? Number(port) : options.port, family: 4 });
+    }
+    if (notPublicIp(options.host)) return before(options);
+    const socket = new net.Socket();
+    process.nextTick(() => socket.destroy(Object.assign(new Error(`no connection leaves this machine in a test: ${at}`), { code: "ECONNREFUSED" })));
+    return socket;
+  };
+  return { made: () => [...made], restore: () => (dialer.connect = before) };
 }
 
 // A DNS server of a site's that answers the first question for each name of
@@ -352,4 +354,4 @@ async function withRebinding(names, body) {
   }
 }
 
-module.exports = { readPng, pngOf, serve, near, descendants, relayBrowser, runUntilOver, tempProblem, sh, publicAt, withRebinding };
+module.exports = { readPng, pngOf, serve, near, descendants, relayBrowser, runUntilOver, tempProblem, sh, reachAt, withRebinding };

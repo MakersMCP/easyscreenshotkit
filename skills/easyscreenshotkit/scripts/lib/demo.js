@@ -106,20 +106,23 @@ moves on so; a click on a link to one, or to a page that redirects to one,
 leaves the page where it was, with a note in steps.json, and a frame or a
 window a page opens there is not loaded; a tour leaves such a page out and
 says so. A host whose name does not resolve here, or gives no answer in
-10 s, is not opened either, and an address given on one stops the demo. A
-host name is judged as the demo looks it up, and the browser looks it up
-again: a page, a frame or a window it reaches on this machine or its
-network by then is not shown, though its request has gone there. The
-rule is for the pages the demo opens: a page's own pictures, styles, scripts
-and the data it fetches are left to the browser's own rules, and on a site
-you run on your machine they can come from other ports of it.
+10 s, is not opened either, and an address given on one stops the demo.
+The browser reaches the network only through a proxy the demo starts for
+it on 127.0.0.1, which holds every request it makes to the same rule, a
+page's pictures, styles, scripts and data included, and connects to the
+address the demo's own lookup gave a host's name, asked once: on a site you
+run on your machine, what a page takes from another port of it is not
+fetched, with a note in steps.json. A user who may not connect to
+127.0.0.1, and a browser that sends its requests past the proxy, stop the
+demo before it opens the site.
 
 MAKERSMCP_REFUSE_ADDRESSES, a comma list of IP addresses and CIDR ranges,
 names addresses the machine refuses besides, as a service that runs the
-kit for others names its own: no page is opened at one as the demo looks a
-name up, the address given included, which then stops the demo. Empty or
-unset, it refuses nothing more; a value that does not parse stops the demo
-before any work, with exit code 2.
+kit for others names its own: no page is opened and no request of the
+browser's sent at one as the demo looks a name up, the address given
+included, which then stops the demo. Empty or unset, it refuses nothing
+more; a value that does not parse stops the demo before any work, with
+exit code 2.
 
 A click on a link to an address of another kind, such as mailto:, or to
 a page that redirects to one, or a page that goes to one, leaves the page
@@ -157,7 +160,9 @@ the system cannot start stops the demo before any work, with what is wrong
 with it, and so does a browser that preloads pages though its profile asks
 it not to, as a Chrome policy can make it, or that does not use that
 profile, as a snap's or a Flatpak's can, which sees a temp folder of its
-own. The demo drives the browser over a pipe, so it opens no port.`;
+own, or that sends its requests or WebRTC's UDP past the demo's proxy. The
+demo drives the browser over a pipe, so the browser opens no port; the
+demo's one port is that proxy's, on 127.0.0.1.`;
 
 function parseDemo(argv) {
   const options = { pages: 4, extra: [], hide: [], zoom: 1.5, frame: true, background: "", fps: 30, theme: "light", lang: "", reducedMotion: false, clean: true, gif: true, json: false, timeout: 900 };
@@ -303,7 +308,7 @@ function barredNote({ url, why, kind, handed = false }) {
 // had its own move left out of the notes.
 const NOTED = 5;
 
-function refusalNotes({ barred = [], refused = [] }) {
+function refusalNotes({ barred = [], refused = [], unreached = [] }) {
   const rank = { page: 0, window: 1, frame: 2 };
   const sorted = [...barred].sort((a, b) => rank[a.kind] - rank[b.kind]);
   const notes = [];
@@ -312,6 +317,11 @@ function refusalNotes({ barred = [], refused = [] }) {
   notes.push(...sorted.slice(0, NOTED).map(barredNote));
   const more = sorted.length - NOTED;
   if (more > 0) notes.push(`The pages, their frames or their windows tried to open ${more === 1 ? "1 more address, which was" : `${more} more addresses, which were`} not opened.`);
+  // What the run's proxy did not pass on of the pages' own requests, as a
+  // picture or the data a page fetches (see watchProxy() in chrome.js).
+  for (const { url, why } of unreached.slice(0, NOTED)) notes.push(`A page asked for ${String(url).slice(0, 200)}, which is ${why}: nothing was sent there.`);
+  const others = unreached.length - NOTED;
+  if (others > 0) notes.push(`The pages asked for ${others === 1 ? "1 more address" : `${others} more addresses`} the run does not open: nothing was sent there.`);
   return notes;
 }
 
@@ -517,8 +527,7 @@ async function makeDemo(rawUrl, options = {}) {
     if (guard.unresolved) throw unresolvedError(asked, guard);
     if (guard.refused) throw refusedError(asked, guard);
     fs.mkdirSync(frames);
-    chrome = await launch({ lang, args: [`--force-device-scale-factor=${density}`] });
-    chrome.guard = guard;
+    chrome = await launch({ lang, args: [`--force-device-scale-factor=${density}`], guard });
     recorder = new Recorder(chrome, { dir: frames, out: target, base: asked, fps, viewport, hide: [...hide, ...(script ? script.hide : [])], clean: tidy, theme, lang, reducedMotion, log });
     try {
       await checkBackdrop(chrome, background, frames);

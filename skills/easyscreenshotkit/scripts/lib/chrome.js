@@ -11,9 +11,11 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const dgram = require("dgram");
 const { spawn } = require("child_process");
 const { timeLeft, sleep } = require("./time");
-const { NOT_WEB, INSIDE_SPACES } = require("./address");
+const { NOT_WEB } = require("./address");
+const { startProxy, authorityOfUrl, wordsFor } = require("./proxy");
 const programs = require("./programs");
 
 const MAC = [
@@ -377,26 +379,62 @@ const open = new Set();
 // Windows in the background keep drawing (the three --disable-*background*
 // flags), so a page waiting its turn is not left half loaded, and colors are
 // written in sRGB whatever the machine's display. args: more switches for
-// this run (a demo draws its pages at a higher pixel density).
-async function launch({ lang = "", args = [] } = {}) {
+// this run (a demo draws its pages at a higher pixel density). guard: the
+// run's rule for the addresses its pages may open (see address.js), or
+// none for a browser that draws the kit's own pages; chrome.guard, which a
+// run may set later, is the one the browser's proxy judges by (see
+// proxy.js), and with none the proxy opens no address.
+async function launch({ lang = "", args = [], guard = null } = {}) {
   const problem = browserProblem();
   if (problem) throw new Error(problem);
   const place = programs.remember(browserPlace());
   const binary = place.file;
   const name = path.basename(binary);
+  // The proxy that is the browser's one way to the network, started first
+  // and asked once by this process: where a firewall keeps this user from
+  // 127.0.0.1, the browser could not reach it either, and every page would
+  // fail in the browser's bare words.
+  let chrome = null;
+  const proxy = await startProxy(() => (chrome ? chrome.guard : guard));
+  const blocked = await proxy.reachable();
+  if (blocked) {
+    proxy.close();
+    throw new Error(`${name} was not started: the proxy the run starts for it on 127.0.0.1, the browser's one way to the network, cannot be reached here (${blocked}), as a firewall that keeps this user from 127.0.0.1 can make it. Let this user connect to its own ports on 127.0.0.1.`);
+  }
   // A browser whose lock has a longer name than room was left for in its
   // profile (see roomIn) does not start there: it starts again with the
   // temp folder as its own.
   const wait = startWait();
-  let tried = await start(binary, { lang, args, own: true, wait: wait.ms });
-  if (tried.tooDeep && tried.own) tried = await start(binary, { lang, args, own: false, wait: wait.ms });
-  if (tried.chrome) return tried.chrome;
+  let tried;
+  try {
+    tried = await start(binary, { lang, args, own: true, wait: wait.ms, proxy });
+    if (tried.tooDeep && tried.own) tried = await start(binary, { lang, args, own: false, wait: wait.ms, proxy });
+  } catch (err) {
+    proxy.close();
+    throw err;
+  }
+  if (tried.chrome) {
+    chrome = tried.chrome;
+    chrome.guard = guard;
+    chrome.proxy = proxy;
+    const closeBrowser = chrome.close;
+    chrome.close = async () => {
+      try {
+        await closeBrowser();
+      } finally {
+        proxy.close();
+      }
+    };
+    return chrome;
+  }
+  proxy.close();
   // A program that could not be started, as one whose loader or a library
   // it needs is missing, or one for another system: what is wrong with it.
   if (tried.unstarted) throw new Error(`${name} did not start: ${tried.unstarted}`);
   if (tried.unguarded) throw new Error(`${name} was not started: it hands addresses such as mailto: to programs of this machine, and none could be put in their place, as ${tried.unguarded}.`);
   if (tried.refused) throw new Error(`${name} cannot be told to refuse the downloads a page starts (${tried.refused}), so it was not used: a site could save files on this machine through it. Point CHROME_PATH at another browser.`);
   if (tried.preloading) throw new Error(`${name} ${tried.preloading}`);
+  if (tried.unproxied) throw new Error(`${name} ${tried.unproxied}`);
   if (tried.tooDeep) throw new Error(`${name} did not start: the temp folder's path, ${os.tmpdir()}, is too long for the socket it opens there. Point TMPDIR at a folder with a shorter path.`);
   const free = freeInTemp();
   if (free !== null && free < TEMP_NEEDED) throw new Error(`${name} did not start: the temp folder, ${os.tmpdir()}, has only ${Math.round(free / 1024)} KB free. Free some space there, or point TMPDIR at another disk.`);
@@ -504,19 +542,21 @@ function freeInTemp() {
 // what it downloads for itself, which it leaves behind when it quits or is
 // killed before the download has ended. Both go with the profile then.
 // wait: how long it has to answer, its version, the order to refuse
-// downloads and whether it preloads all within it. Returns {chrome} once it
-// answers, else {own, tooDeep, silent, refused, preloading}: whether its
-// profile was its temp folder, whether it ended because its lock's socket
-// did not fit in that folder, whether it was still running, its pipe open,
-// without an answer when the wait ran out, the error it answered the order
-// to refuse downloads with, and what it said of its preloading when that
-// is not off (see preloadingSaid()). A profile that cannot be made, as in a
-// temp folder this user cannot write in, and a program the system will not
-// start, as one another process has open for writing or with no memory left
-// to start it, which Node throws where it does not say so in an error
-// event, are said in unstarted, in place of Node's bare words, and the
-// profile goes.
-async function start(binary, { lang, args, own, wait = START_MS }) {
+// downloads, whether it preloads and whether it goes through its proxy all
+// within it. proxy: the run's proxy, the browser's one way to the network
+// (see proxy.js). Returns {chrome} once it answers, else {own, tooDeep,
+// silent, refused, preloading, unproxied}: whether its profile was its temp
+// folder, whether it ended because its lock's socket did not fit in that
+// folder, whether it was still running, its pipe open, without an answer
+// when the wait ran out, the error it answered the order to refuse
+// downloads with, what it said of its preloading when that is not off (see
+// preloadingSaid()), and why it does not go through its proxy (see
+// proxySaid()). A profile that cannot be made, as in a temp folder this
+// user cannot write in, and a program the system will not start, as one
+// another process has open for writing or with no memory left to start it,
+// which Node throws where it does not say so in an error event, are said in
+// unstarted, in place of Node's bare words, and the profile goes.
+async function start(binary, { lang, args, own, wait = START_MS, proxy }) {
   let profile;
   try {
     profile = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-chrome-"));
@@ -538,12 +578,12 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
   // host; and it connected ahead to the address of a page's move, a frame,
   // a window and a link under the pointer before the guard had judged it.
   // A page's own <link rel="prefetch"> is a request of the page's, as a
-  // picture is, which the browser still sends by its own rules, and the
-  // run's rule leaves to it (see address.js); a move to such an address is
-  // refused all the same. Whether the browser took the setting is asked of
-  // it once it answers (see preloadingSaid()). Its downloads go in the
-  // profile too, behind the order that refuses them (see below), with what
-  // the browser writes of a download as it refuses it (see downloadsIn()).
+  // picture is, which goes through the run's proxy as every request does
+  // (see proxy.js); a move to such an address is refused all the same.
+  // Whether the browser took the setting is asked of it once it answers
+  // (see preloadingSaid()). Its downloads go in the profile too, behind the
+  // order that refuses them (see below), with what the browser writes of a
+  // download as it refuses it (see downloadsIn()).
   let downloads = {};
   try {
     fs.mkdirSync(path.join(profile, "Default"));
@@ -594,6 +634,17 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
         // another host, over UDP, past the address the run judged (see
         // address.js); over TCP each goes to the host and port it names.
         "--disable-quic",
+        // Every request of the browser goes through the run's proxy (see
+        // proxy.js), those for this machine's own addresses too, which the
+        // browser would otherwise send past any proxy (<-loopback>), and
+        // WebRTC sends no UDP past it: with no proxy that takes UDP, its
+        // connections go through the proxy too. Chrome 155 and 157 take
+        // this policy as --webrtc-ip-handling-policy; with
+        // --force-webrtc-ip-handling-policy in its place a page's STUN
+        // requests still reached a server on 127.0.0.1.
+        `--proxy-server=http://127.0.0.1:${proxy.port}`,
+        "--proxy-bypass-list=<-loopback>",
+        "--webrtc-ip-handling-policy=disable_non_proxied_udp",
         ...(lang ? [`--lang=${lang}`] : []),
         ...args,
         // Chrome refuses to start as root without it (a container, a CI box).
@@ -735,6 +786,7 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
   const left = () => Math.max(1, until - Date.now());
   let refused = "";
   let preloading = "";
+  let unproxied = "";
   try {
     // One that answers with an error has answered all the same.
     const version = await browser.send("Browser.getVersion", {}, left(), { fixed: true }).catch((err) => {
@@ -753,10 +805,12 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
       if (err.answered) refused = err.message;
       throw err;
     });
-    // Its own preloading is off, as its profile asks (see above): one that
-    // says it is on, or cannot say, is not used.
-    preloading = await preloadingSaid(browser, left, profile);
-    if (preloading) throw new Error(preloading);
+    // Its own preloading is off, as its profile asks (see above), and its
+    // requests go through its proxy, as it was started: one that says its
+    // preloading is on, or cannot say, or that sends its requests past the
+    // proxy, is not used.
+    ({ preloading, unproxied } = await startChecks(browser, left, profile, proxy));
+    if (preloading || unproxied) throw new Error(preloading || unproxied);
     // Read now: a browser that is quitting removes the link to it before
     // the folder, and a stop can land in between. In a profile that is the
     // browser's temp folder, it goes with the profile.
@@ -792,7 +846,7 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
   // machine, or a browser that hangs. One that closed its pipe was not slow
   // to answer: Chrome short of threads closes it at once and can go on
   // running for seconds, and what it printed says why it did not start.
-  const silent = !exited && !refused && !preloading && !browser.closed();
+  const silent = !exited && !refused && !preloading && !unproxied && !browser.closed();
   // A program the system could not start, or one that ended before it
   // answered as one the system cannot run does (see programs.js), and
   // what is wrong with it.
@@ -806,30 +860,18 @@ async function start(binary, { lang, args, own, wait = START_MS }) {
   await close();
   await sleep(300);
   removeProfile(profile);
-  return { own: inProfile, tooDeep: removeStrayLocks(locksBefore) || deep, silent, refused, preloading, unstarted, said: exited && !answered ? printed() : "" };
+  return { own: inProfile, tooDeep: removeStrayLocks(locksBefore) || deep, silent, refused, preloading, unproxied, unstarted, said: exited && !answered ? printed() : "" };
 }
 
-// What the browser says of its preloading, asked in its first tab, the one
-// it starts with (about:blank), or in a tab of its own that is closed again
-// when it has none yet, so no page is added beside the run's own: "" when its
-// own preloading is off, as its profile asks (see start()), else why it is
-// not used, said after its name. Preload.enable has it tell the state of its
-// preloading first (Preload.preloadEnabledStateUpdated), where
-// disabledByPreference is the profile's setting as the browser holds it: a
-// Chrome policy (NetworkPredictionOptions) holds it in the profile's place,
-// and a program that starts the browser with another profile of its own
-// gives it that one's. A browser that answers Preload.enable with an error,
-// or tells no state, cannot be told to preload nothing either. left: the
-// time the start has left; a call with no answer in it fails as start()'s
-// others do. profile: the one the run made for it. On Linux one that
-// preloads is told apart from one that did not use that profile at all,
-// as a browser installed as a snap or a Flatpak does, which sees a temp
-// folder of its own where the profile's path names another folder, and as
-// one does that a program starts with a profile of its own: told to lift a
-// policy, the user of a snap had nothing to lift.
-const AHEAD = "so it was not used: a page could have it open an address the run does not open, before the run had judged that address.";
-
-async function preloadingSaid(browser, left, profile) {
+// What the browser says of its preloading, and whether it sends its
+// requests through the run's proxy, asked in its first tab, the one it
+// starts with (about:blank), or in a tab of its own that is closed again
+// when it has none yet, so no page is added beside the run's own: {
+// preloading, unproxied }, each "" when it holds, else why the browser is
+// not used, said after its name. left: the time the start has left; a call
+// with no answer in it fails as start()'s others do. profile: the one the
+// run made for it; proxy: the run's proxy.
+async function startChecks(browser, left, profile, proxy) {
   const { targetInfos = [] } = await browser.send("Target.getTargets", {}, left(), { fixed: true });
   const first = targetInfos.find((info) => info.type === "page");
   const made = !first;
@@ -839,23 +881,8 @@ async function preloadingSaid(browser, left, profile) {
   try {
     ({ sessionId } = await browser.send("Target.attachToTarget", { targetId, flatten: true }, left(), { fixed: true }));
     tab = browser.session(sessionId);
-    let state = null;
-    tab.on("Preload.preloadEnabledStateUpdated", (p) => {
-      if (!state) state = p;
-    });
-    try {
-      await tab.send("Preload.enable", {}, left(), { fixed: true });
-    } catch (err) {
-      if (!err.answered) throw err;
-      return `cannot say whether it preloads pages (${err.message}), ${AHEAD} Point CHROME_PATH at another browser.`;
-    }
-    // Told before the answer; a moment more for a browser that tells it
-    // after.
-    for (let i = 0; i < 10 && !state; i++) await sleep(50);
-    if (!state) return `does not say whether it preloads pages, ${AHEAD} Point CHROME_PATH at another browser.`;
-    if (state.disabledByPreference === true) return "";
-    if (process.platform === "linux" && !usesProfile(profile)) return `did not use the profile the run made for it in the temp folder, ${os.tmpdir()}, and preloads pages, ${AHEAD} A browser installed as a snap or a Flatpak sees a temp folder of its own, and a program that starts the browser can give it a profile of its own: point CHROME_PATH at a browser from its own package, as Google Chrome's, or at the browser's own program, or point TMPDIR at a folder that browser can reach.`;
-    return `preloads pages though its profile asks it not to, as a Chrome policy (NetworkPredictionOptions) or a program that starts it with a profile of its own can make it, ${AHEAD} Lift that policy, or point CHROME_PATH at the browser's own program.`;
+    const preloading = await preloadingSaid(tab, left, profile);
+    return { preloading, unproxied: preloading ? "" : await proxySaid(tab, left, proxy) };
   } finally {
     // A tab made for it is gone before the run opens its own; the first tab
     // is let go of.
@@ -863,6 +890,88 @@ async function preloadingSaid(browser, left, profile) {
     if (made) await browser.send("Target.closeTarget", { targetId }, Math.min(5_000, left()), { fixed: true, watched: false }).catch(() => {});
     else if (sessionId) browser.send("Target.detachFromTarget", { sessionId }, 5_000, { fixed: true, watched: false }).catch(() => {});
   }
+}
+
+// What the browser says of its preloading, in the tab startChecks() gives
+// it: "" when its own preloading is off, as its profile asks (see start()),
+// else why it is not used. Preload.enable has it tell the state of its
+// preloading first (Preload.preloadEnabledStateUpdated), where
+// disabledByPreference is the profile's setting as the browser holds it: a
+// Chrome policy (NetworkPredictionOptions) holds it in the profile's place,
+// and a program that starts the browser with another profile of its own
+// gives it that one's. A browser that answers Preload.enable with an error,
+// or tells no state, cannot be told to preload nothing either. On Linux one
+// that preloads is told apart from one that did not use that profile at
+// all, as a browser installed as a snap or a Flatpak does, which sees a temp
+// folder of its own where the profile's path names another folder, and as
+// one does that a program starts with a profile of its own: told to lift a
+// policy, the user of a snap had nothing to lift.
+const AHEAD = "so it was not used: a page could have it open an address the run does not open, before the run had judged that address.";
+
+async function preloadingSaid(tab, left, profile) {
+  let state = null;
+  tab.on("Preload.preloadEnabledStateUpdated", (p) => {
+    if (!state) state = p;
+  });
+  try {
+    await tab.send("Preload.enable", {}, left(), { fixed: true });
+  } catch (err) {
+    if (!err.answered) throw err;
+    return `cannot say whether it preloads pages (${err.message}), ${AHEAD} Point CHROME_PATH at another browser.`;
+  }
+  // Told before the answer; a moment more for a browser that tells it
+  // after.
+  for (let i = 0; i < 10 && !state; i++) await sleep(50);
+  if (!state) return `does not say whether it preloads pages, ${AHEAD} Point CHROME_PATH at another browser.`;
+  if (state.disabledByPreference === true) return "";
+  if (process.platform === "linux" && !usesProfile(profile)) return `did not use the profile the run made for it in the temp folder, ${os.tmpdir()}, and preloads pages, ${AHEAD} A browser installed as a snap or a Flatpak sees a temp folder of its own, and a program that starts the browser can give it a profile of its own: point CHROME_PATH at a browser from its own package, as Google Chrome's, or at the browser's own program, or point TMPDIR at a folder that browser can reach.`;
+  return `preloads pages though its profile asks it not to, as a Chrome policy (NetworkPredictionOptions) or a program that starts it with a profile of its own can make it, ${AHEAD} Lift that policy, or point CHROME_PATH at the browser's own program.`;
+}
+
+// Whether the browser sends its requests through the run's proxy, as it is
+// started (see start()), in the tab startChecks() gives it: "" once a plain
+// http request and a tunnel for a name no lookup answers, and a request for
+// an address of this machine, the proxy's probes (see proxy.js), have each
+// reached the proxy through it, and WebRTC has sent no UDP to a STUN server
+// of the run's own on 127.0.0.1 as it gathered its candidates, else why the
+// browser is not used. A Chrome policy (ProxySettings) holds the browser's
+// proxy in place of the switch, and a program that starts the browser can
+// leave a switch out: such a browser asks the DNS itself and connects where
+// it answers, sends its requests for this machine's own addresses past the
+// proxy, or, with WebRTC's own policy (WebRtcIPHandling) or without its
+// switch, sends UDP past it, each past the run's rule. PROBE_WAIT_MS: how
+// long the probes have to come, within the start's time.
+const PAST = "so it was not used: a page could have it reach an address the run does not open.";
+const PROBE_WAIT_MS = 10_000;
+
+async function proxySaid(tab, left, proxy) {
+  const stun = dgram.createSocket("udp4");
+  let packets = 0;
+  stun.on("message", () => packets++);
+  stun.on("error", () => {});
+  try {
+    await new Promise((resolve, reject) => {
+      stun.once("error", reject);
+      stun.bind(0, "127.0.0.1", resolve);
+    });
+    const wait = Math.max(1, Math.min(PROBE_WAIT_MS, left() - 1_000));
+    const ask = (url) => `fetch(${JSON.stringify(url)}, { mode: "no-cors", cache: "no-store" }).then(() => 1, () => 0)`;
+    // WebRTC gathers its candidates as the offer is set, and is done with
+    // them once its state says complete: a STUN request comes before that.
+    const gathered = `new Promise((done) => { try { const rtc = new RTCPeerConnection({ iceServers: [{ urls: "stun:127.0.0.1:${stun.address().port}" }] }); rtc.createDataChannel("probe"); rtc.onicegatheringstatechange = () => { if (rtc.iceGatheringState === "complete") { rtc.close(); done(1); } }; rtc.createOffer().then((offer) => rtc.setLocalDescription(offer)).catch(() => done(0)); } catch (e) { done(0); } })`;
+    const expression = `Promise.race([Promise.all([${ask(`http://${proxy.probe}/`)}, ${ask(`https://${proxy.probe}/`)}, ${ask(proxy.loopback)}, ${gathered}]), new Promise((done) => setTimeout(done, ${wait}))])`;
+    await tab.send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }, wait + 1_000, { fixed: true }).catch((err) => {
+      if (!err.answered && !err.timedOut) throw err;
+    });
+    // A packet on its way from the browser's process to this one.
+    await sleep(100);
+  } finally {
+    stun.close();
+  }
+  if (!proxy.saw("http") || !proxy.saw("connect")) return `does not send its requests through the proxy the run starts for it, as a Chrome policy (ProxySettings) or a program that starts it without the run's switches can make it, ${PAST} Lift that policy, or point CHROME_PATH at the browser's own program.`;
+  if (!proxy.saw("loopback") || proxy.saw("direct")) return `sends its requests for this machine's own addresses past the proxy the run starts for it, as a program that starts it without the run's switches can make it, ${PAST} Point CHROME_PATH at the browser's own program.`;
+  if (packets) return `sends WebRTC's UDP past the proxy the run starts for it, as a Chrome policy (WebRtcIPHandling) or a program that starts it without the run's switches can make it, ${PAST} Lift that policy, or point CHROME_PATH at the browser's own program.`;
+  return "";
 }
 
 // Whether a browser that answers uses the profile the run made for it: on
@@ -1177,6 +1286,13 @@ function redirectOf(p) {
 // window the page opened, and neither for a frame in the page.
 const BARRED = "easyscreenshotkit.addressRefused";
 
+// The event a tab gets when the run's proxy did not pass on a request of
+// its page or of a frame in its process, as a picture, a script, the data
+// it fetches or a WebSocket (see watchProxy()): {url, why}, url the scheme,
+// host and port it was for, why what that address is, as said after "it
+// is". A document refused so is told as BARRED.
+const UNREACHED = "easyscreenshotkit.requestRefused";
+
 // The rule for the addresses a run's pages may open (chrome.guard, see
 // address.js), held for every document the browser loads for them: the
 // page, each frame in it, one that runs in a process of its own too, and
@@ -1184,32 +1300,28 @@ const BARRED = "easyscreenshotkit.addressRefused";
 // them. The browser asks before it sends each such request, on its own
 // connection, which sees the requests of every tab, frame and window; a
 // request the guard refuses is not sent, and the tab it belongs to is told
-// (BARRED). The kit's own tabs open files the kit made, and a page that is
-// no tab's, nor a frame or a window of one, is Chrome's own and opens what
-// is not a web address as Chrome lets it. A frame inside a frame of another
-// site can belong to no tab the kit can tell: what it opens is judged all
-// the same, and then no tab is told. A page's pictures, scripts, styles and
-// the data it fetches are not documents: the browser's own rules hold for
-// them.
+// (BARRED), which gives the words a page left out or a move refused is
+// named with. The kit's own tabs open files the kit made, and a page that
+// is no tab's, nor a frame or a window of one, is Chrome's own and opens
+// what is not a web address as Chrome lets it. A frame inside a frame of
+// another site can belong to no tab the kit can tell: what it opens is
+// judged all the same, and then no tab is told. What holds every request,
+// whatever made it, is the browser's proxy (see proxy.js), which judges
+// each by the same rule and connects only to an address the run's own
+// lookup gave.
 // The answer to each such request is held a moment too, before the browser
-// reads it. One the browser reached on this machine or its network, as it
-// says (see spaceOf()), is not read but on the host and port given there
-// (see reached() in address.js): the browser looks a name up again for
-// itself, and a site whose DNS answered the run with a public address and
-// the browser with 127.0.0.1 had it show the machine's own page on port 80,
-// as the address given, as a frame and after a redirect. The request has
-// reached that address by then; what answered is not shown, and the tab is
-// told as of a document refused. And one that redirects to an address of
-// another kind, as a 302 to mailto:, is not followed, on any system, and
-// the tab is told of it as of a move there, one the browser was not asked
-// to open (no asked, see openTab()). Followed, it had the browser hand the
-// address to a program of the machine, and a page that redirected there was
-// said to fail in the browser's bare words (net::ERR_ABORTED), or, for a
-// frame or a page that moved there once it had loaded, went without a
-// note.
-// A window a page opens is held at its start until the browser says where
-// it reaches its documents (see hearAddresses()), as a frame of another
-// site is: with nothing said of it, its documents are not read.
+// reads it. One the proxy gave for itself, as it refused the address or
+// could not connect to it, is failed: a refusal is told to the tab as a
+// document refused, and a connection that could not be made in the words
+// the browser gives one, as net::ERR_CONNECTION_REFUSED, where the proxy's
+// own answer would have been read as the page's. And one that redirects to
+// an address of another kind, as a 302 to mailto:, is not followed, on any
+// system, and the tab is told of it as of a move there, one the browser was
+// not asked to open (no asked, see openTab()). Followed, it had the browser
+// hand the address to a program of the machine, and a page that redirected
+// there was said to fail in the browser's bare words (net::ERR_ABORTED),
+// or, for a frame or a page that moved there once it had loaded, went
+// without a note.
 // Turned on once for a browser, when its first tab opens with the guard
 // set; timeoutMs: how long the browser has to take it. A turn-on that
 // failed, as one that ran out of time on a busy machine, is not kept: the
@@ -1218,158 +1330,6 @@ const BARRED = "easyscreenshotkit.addressRefused";
 // The listeners go on once for the browser, so a request is not continued
 // or failed twice.
 const QUICK = { fixed: true, watched: false };
-
-// What the browser says of the requests it sends for documents, by each
-// request's id in its Network domain (Fetch's networkId): how many it sent
-// over the network since its last answer was judged (sent), the address
-// spaces of the answers that came since (spaces), and who waits for one.
-// Chrome says where it reached an answer (Network.responseReceivedExtraInfo,
-// resourceIPAddressSpace) before it hands the answer to the paused request,
-// on the session of the target whose frame asked for it: the tab's for its
-// page and the frames in its process, and its own for a frame of another
-// site that runs in a process of its own and for a window. So each of
-// those is heard, a frame of another site and a window held at their start
-// until the browser says where they reach (Target.setAutoAttach with
-// waitForDebuggerOnStart): without, a frame that moved on once it ran in a
-// process of its own, and a window, came with nothing said of them. An
-// answer from the browser's cache comes with nothing said, as no request
-// went out for it, and so the run takes an answer the browser hands on
-// before it has said anything of its request as one from its cache, not
-// judged again by where the browser reached it (see spaceOf()): it does not
-// wait for a word that may never come. The browser has said what it sent
-// before it handed the answer on in every run here. At most HEARD_MAX
-// requests are kept, the oldest let go of first, and each goes once it has
-// loaded or failed.
-const HEARD_MAX = 2_000;
-
-function heardOf(chrome, id) {
-  const heard = chrome.heard || (chrome.heard = new Map());
-  let known = heard.get(id);
-  if (!known) {
-    known = { sent: 0, spaces: [], waiting: [] };
-    heard.set(id, known);
-    if (heard.size > HEARD_MAX) heard.delete(heard.keys().next().value);
-  }
-  return known;
-}
-
-// Has a session of the browser (a tab, a window, a frame of another site)
-// heard for heardOf(), with Network on, and each frame of another site
-// that comes in it held at its start until it is heard in turn; a target of
-// another kind, as a worker, is let go of at once. The frames' sessions end
-// with this one. Resolves once the browser has taken it, and fails as a
-// call does when it does not. id: the target's, which stands among those
-// heard (see heardFrame()) from the moment this is sent until the browser
-// fails it or the session ends. A target held at its start is let go of
-// (see letGo()) right after this is sent, not once it is answered: the
-// browser takes a session's calls in their order, so it hears the target's
-// documents from then on, and a window opened with no opener, which has no
-// page of its own yet, answers Network.enable only once it runs, so waiting
-// for that answer held it for good. One the browser did not take it for
-// has its documents not read (see spaceOf()).
-function hearAddresses(chrome, session, timeoutMs = 10_000, id = "") {
-  const { browser } = chrome;
-  const heard = chrome.heardTargets || (chrome.heardTargets = new Set());
-  session.on("Network.requestWillBeSentExtraInfo", ({ requestId }) => {
-    if (requestId) heardOf(chrome, requestId).sent++;
-  });
-  session.on("Network.responseReceivedExtraInfo", ({ requestId, resourceIPAddressSpace }) => {
-    if (!requestId) return;
-    const known = heardOf(chrome, requestId);
-    known.spaces.push(String(resourceIPAddressSpace || ""));
-    for (const wake of known.waiting.splice(0)) wake();
-  });
-  const done = ({ requestId }) => {
-    if (chrome.heard) chrome.heard.delete(requestId);
-  };
-  session.on("Network.loadingFinished", done);
-  session.on("Network.loadingFailed", done);
-  const frames = new Map();
-  session.on("Target.attachedToTarget", ({ sessionId, targetInfo = {} }) => {
-    if (!sessionId) return;
-    const frame = browser.session(sessionId);
-    if (targetInfo.type !== "iframe") {
-      letGo(frame)
-        .then(() => session.send("Target.detachFromTarget", { sessionId }, 10_000, QUICK).catch(() => {}))
-        .finally(() => frame.close());
-      return;
-    }
-    frames.set(sessionId, frame);
-    hearAddresses(chrome, frame, 10_000, targetInfo.targetId || "").catch(() => {});
-    letGo(frame);
-  });
-  session.on("Target.detachedFromTarget", ({ sessionId }) => {
-    const frame = frames.get(sessionId);
-    if (!frame) return;
-    frames.delete(sessionId);
-    frame.close();
-  });
-  session.over.then(() => {
-    for (const frame of frames.values()) frame.close();
-    frames.clear();
-    if (id) heard.delete(id);
-  });
-  if (id) heard.add(id);
-  return Promise.all([
-    session.send("Network.enable", { maxTotalBufferSize: 1, maxResourceBufferSize: 1 }, timeoutMs),
-    session.send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, timeoutMs),
-  ]).catch((err) => {
-    if (id) heard.delete(id);
-    throw err;
-  });
-}
-
-// Whether the documents of a frame are heard (see hearAddresses()): the
-// tab's page and the frames in its process, on the tab's session, and a
-// frame of another site and a window, on their own while the browser took
-// the order for them. A document request the browser pauses for such a
-// frame that it said nothing of, as no session heard it, is none of the
-// frame's documents: the browser asks for a link's file with a download
-// attribute so, which it then refuses as it refuses every download (see
-// start()), and the page stays as it is: refused as a document the browser
-// said nothing of, it would be named so in the notes of a page that only
-// started a download, besides the refused download.
-function heardFrame(chrome, frameId) {
-  const known = chrome.owners && chrome.owners.get(frameId);
-  if (!known || !known.tab || known.own) return false;
-  return known.tab.targetId === frameId || (known.tab.frames && known.tab.frames.has(frameId)) || Boolean(chrome.heardTargets && chrome.heardTargets.has(frameId));
-}
-
-// Lets a target held at its start (waitForDebuggerOnStart) run.
-function letGo(session) {
-  return session.send("Runtime.runIfWaitingForDebugger", {}, 10_000, QUICK).catch(() => {});
-}
-
-// The address space of the answer a paused document request got, as the
-// browser said it (see hearAddresses()): the one most inside of those said
-// since its last answer was judged, so each hop of a redirect is judged by
-// its own; "" for an answer the browser hands on before it has said
-// anything of the request, as for one from its cache, for which no request
-// went out; and null when the browser said nothing of the request at all,
-// as for a target it did not take hearAddresses() for, or nothing in
-// SPACE_MS of the answer to a request it said it sent. The wait takes what
-// the run has left, a second at least, as a call to the browser does: cut
-// to what was left, a page opened as the run's time ran out was refused as
-// one the browser said nothing of, where it said so a moment later.
-const SPACE_MS = 5_000;
-
-async function spaceOf(chrome, networkId) {
-  if (!networkId) return null;
-  const known = heardOf(chrome, networkId);
-  if (!known.spaces.length && known.sent) {
-    await new Promise((resolve) => {
-      const timer = setTimeout(resolve, Math.max(1_000, Math.min(SPACE_MS, timeLeft())));
-      known.waiting.push(() => {
-        clearTimeout(timer);
-        resolve();
-      });
-    });
-    if (!known.spaces.length) return null;
-  }
-  const spaces = known.spaces.splice(0);
-  known.sent = 0;
-  return spaces.find((space) => INSIDE_SPACES.has(space)) || spaces[0] || "";
-}
 
 function guardBrowser(chrome, timeoutMs) {
   if (chrome.guarding) return chrome.guarding;
@@ -1409,40 +1369,21 @@ function guardBrowser(chrome, timeoutMs) {
       const known = owners.get(targetId);
       if (known && known.tab.targetId !== targetId) owners.delete(targetId);
     });
-    // A window a page opens comes held at its start (see turning, below):
-    // one of a tab of the run's is heard first (see hearAddresses()), and
-    // any other page, as a tab the kit opens itself, is let go of at once.
-    // One that was not held, as the kit's own attach to its tab, is not
-    // this one's to let go of.
-    browser.on("Target.attachedToTarget", ({ sessionId, targetInfo: t = {}, waitingForDebugger }) => {
-      if (!sessionId || !waitingForDebugger) return;
-      adopt({ targetInfo: t });
-      const known = owners.get(t.targetId);
-      const held = browser.session(sessionId);
-      if (known && known.window && !known.own) {
-        hearAddresses(chrome, held, 10_000, t.targetId).catch(() => {});
-        letGo(held);
-        return;
-      }
-      letGo(held)
-        .then(() => browser.send("Target.detachFromTarget", { sessionId }, 10_000, QUICK).catch(() => {}))
-        .finally(() => held.close());
-    });
     browser.on("Fetch.requestPaused", async (p) => {
       const go = () => void browser.send("Fetch.continueRequest", { requestId: p.requestId }, 10_000, QUICK).catch(() => {});
       const url = String((p.request && p.request.url) || "");
       const owner = owners.get(p.frameId);
       if (p.responseStatusCode !== undefined || p.responseErrorReason !== undefined) {
-        // Where the browser reached the answer, before it reads it.
-        if (p.responseStatusCode !== undefined && chrome.guard && !(owner && owner.own) && /^https?:/i.test(url)) {
-          const space = !p.networkId && heardFrame(chrome, p.frameId) ? "" : await spaceOf(chrome, p.networkId);
-          const why = chrome.guard.reached(url, space);
-          if (why) {
-            const known = owners.get(p.frameId) || owner;
-            if (known && known.tab) known.tab.emit(BARRED, { url, why, main: p.frameId === known.tab.targetId, window: Boolean(known.window) });
-            return void browser.send("Fetch.failRequest", { requestId: p.requestId, errorReason: "Aborted" }, 10_000, QUICK).catch(() => {});
-          }
+        // What the proxy answered for itself, for an address it refused or
+        // could not connect to, as its own headers say (see answeredBy() in
+        // proxy.js), which a site cannot write for it.
+        const own = chrome.proxy && p.responseStatusCode !== undefined && !(owner && owner.own) ? chrome.proxy.answeredBy(p.responseHeaders) : null;
+        if (own && own.why) {
+          const known = owners.get(p.frameId) || owner;
+          if (known && known.tab) known.tab.emit(BARRED, { url, why: own.why, main: p.frameId === known.tab.targetId, window: Boolean(known.window) });
+          return void browser.send("Fetch.failRequest", { requestId: p.requestId, errorReason: "Aborted" }, 10_000, QUICK).catch(() => {});
         }
+        if (own && own.code) return void browser.send("Fetch.failRequest", { requestId: p.requestId, errorReason: wordsFor(own.code)[1] }, 10_000, QUICK).catch(() => {});
         const to = redirectOf(p);
         if (!to || !outside(to) || (owner && owner.own)) return go();
         if (owner && owner.tab) owner.tab.emit(BARRED, { url: to, why: NOT_WEB, main: p.frameId === owner.tab.targetId, window: Boolean(owner.window), stays: true });
@@ -1459,9 +1400,6 @@ function guardBrowser(chrome, timeoutMs) {
   }
   const turning = (async () => {
     await browser.send("Target.setDiscoverTargets", { discover: true }, timeoutMs);
-    // Each page that opens from now on, a window a page opens among them,
-    // held at its start (see the listener above).
-    await browser.send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true, flatten: true, filter: [{ type: "page" }] }, timeoutMs);
     const documents = (requestStage) => ({ urlPattern: "*", resourceType: "Document", requestStage });
     await browser.send("Fetch.enable", { patterns: [documents("Request"), documents("Response")] }, timeoutMs);
   })();
@@ -1470,6 +1408,47 @@ function guardBrowser(chrome, timeoutMs) {
     if (chrome.guarding === turning) chrome.guarding = null;
   });
   return turning;
+}
+
+// Tells a tab of what the proxy did not pass on of its page's requests and
+// those of the frames in its process (UNREACHED), as the browser says each
+// got the proxy's own refusal (see answeredBy() in proxy.js), or that its
+// tunnel failed for an address the proxy refused. A frame of another site
+// runs in a process of its own, whose requests this session does not hear:
+// the proxy holds them all the same, with no note. A document is left to
+// guardBrowser(), which tells it as refused.
+function watchProxy(chrome, cdp) {
+  const asked = new Map();
+  const told = new Set();
+  cdp.on("Network.requestWillBeSent", (p) => {
+    if (p.requestId && p.type !== "Document") asked.set(p.requestId, String((p.request && p.request.url) || ""));
+  });
+  const settle = (requestId, why) => {
+    const url = asked.get(requestId);
+    asked.delete(requestId);
+    if (!url || !why) return;
+    const at = authorityOfUrl(url);
+    if (told.has(at)) return;
+    told.add(at);
+    let shown = url;
+    try {
+      const parsed = new URL(url);
+      shown = `${parsed.protocol}//${parsed.host}`;
+    } catch {
+      // Shown as it came.
+    }
+    cdp.emit(UNREACHED, { url: shown, why });
+  };
+  cdp.on("Network.responseReceived", ({ requestId, response = {} }) => {
+    const headers = Object.entries(response.headers || {}).map(([name, value]) => ({ name, value }));
+    const own = chrome.proxy ? chrome.proxy.answeredBy(headers) : null;
+    settle(requestId, own && own.why);
+  });
+  cdp.on("Network.loadingFailed", ({ requestId, errorText }) => {
+    const url = asked.get(requestId) || "";
+    settle(requestId, errorText === "net::ERR_TUNNEL_CONNECTION_FAILED" && chrome.proxy ? chrome.proxy.refused.get(authorityOfUrl(url)) : "");
+  });
+  cdp.on("Network.loadingFinished", ({ requestId }) => asked.delete(requestId));
 }
 
 // A new window holding one tab, set up as the device: its screen, touch,
@@ -1516,15 +1495,8 @@ async function openTab(chrome, device, { lang = "", theme = "light", reducedMoti
     owners.set(targetId, { tab, own });
     // The tab's frames, one that runs in a process of its own too, which
     // keeps its id as it moves there.
-    // Those in its process, whose documents its session hears; one that
-    // moves to a process of its own is heard there (see heardFrame()).
-    cdp.frames = new Set();
-    cdp.on("Page.frameAttached", ({ frameId }) => {
-      owners.set(frameId, { tab, own });
-      cdp.frames.add(frameId);
-    });
+    cdp.on("Page.frameAttached", ({ frameId }) => owners.set(frameId, { tab, own }));
     cdp.on("Page.frameDetached", ({ frameId, reason }) => {
-      cdp.frames.delete(frameId);
       if (reason !== "swap" && frameId !== targetId) owners.delete(frameId);
     });
     // The input events under way, each told when the tab's page commits
@@ -1560,9 +1532,13 @@ async function openTab(chrome, device, { lang = "", theme = "light", reducedMoti
     }
     await cdp.send("Inspector.enable", {}, left()).catch(() => {});
     await cdp.send("Page.enable", {}, left());
-    // Where the browser reaches the tab's documents, its frames' of other
-    // sites too, is heard before its first page opens (see guardBrowser()).
-    if (cdp.guard) await hearAddresses(chrome, cdp, left());
+    // What the proxy does not pass on of the tab's requests is heard before
+    // its first page opens (see watchProxy()), with no answer kept.
+    if (cdp.guard) {
+      cdp.proxy = chrome.proxy || null;
+      watchProxy(chrome, cdp);
+      await cdp.send("Network.enable", { maxTotalBufferSize: 1, maxResourceBufferSize: 1 }, left());
+    }
     await cdp.send(
       "Emulation.setDeviceMetricsOverride",
       {
@@ -1749,6 +1725,12 @@ async function navigate(cdp, url) {
   listen("Page.downloadWillBegin", (p) => {
     if (p.frameId === cdp.targetId && asked) goes({ url: p.url, why: NOT_A_PAGE, stays: true });
   });
+  // The address the page's own document was last asked at, a redirect's
+  // included: the one whose tunnel failed when the browser says so.
+  let asking = url;
+  listen("Network.requestWillBeSent", (p) => {
+    if (p.type === "Document" && p.frameId === cdp.targetId && p.request && p.request.url) asking = p.request.url;
+  });
   try {
     const wait = waitOf(ANSWER_MS);
     const { errorText, loaderId, isDownload } = await cdp.send("Page.navigate", { url }, wait.ms).catch((err) => {
@@ -1765,8 +1747,20 @@ async function navigate(cdp, url) {
       const why = `it leads to ${refusal.url}, which is ${refusal.why}`;
       throw Object.assign(new Error(`Could not open ${url}: ${why}.`), { refused: why });
     }
+    // Through the run's proxy the browser hears of an https address it could
+    // not connect to only that its tunnel failed: the proxy's records say
+    // why, a refusal in the run's words and a connection that could not be
+    // made in those the browser gives one it makes itself.
+    const tunnel = errorText === "net::ERR_TUNNEL_CONNECTION_FAILED" && cdp.proxy ? authorityOfUrl(asking) : "";
+    const refusedThere = tunnel ? cdp.proxy.refused.get(tunnel) : "";
+    if (refusedThere) {
+      const direct = withoutFragment(asking) === withoutFragment(url);
+      const why = direct ? refusedThere : `it leads to ${withoutFragment(asking)}, which is ${refusedThere}`;
+      throw Object.assign(new Error(`Could not open ${url}: ${direct ? `it is ${why}` : why}.`), { refused: why });
+    }
+    const failed = tunnel && cdp.proxy.unreached.get(tunnel) ? wordsFor(cdp.proxy.unreached.get(tunnel))[0] : errorText;
     // reason: the browser's own words, for a page left out over it.
-    if (errorText) throw Object.assign(new Error(`Could not open ${url}: ${errorText}`), { reason: errorText });
+    if (failed) throw Object.assign(new Error(`Could not open ${url}: ${failed}`), { reason: failed });
     // The wait is cleared once the page has loaded: left running, it kept
     // the process alive that long after the last page.
     const limit = loaderId ? Math.max(1_000, Math.min(20_000, timeLeft() - 60_000)) : 2_000;
@@ -1897,4 +1891,4 @@ function removeProfiles(browsers) {
   }
 }
 
-module.exports = { findChrome, browserProblem, onPath, launch, startWait, openTab, closeTab, sendInput, guardBrowser, navigate, drawnSoFar, currentUrl, killBrowsers, removeProfiles, removeStrayLocks, removeFetchFolders, fetchFolders, roomIn, lockFolderOf, userAgentFor, busy, CRASHED, BARRED, NOT_A_PAGE };
+module.exports = { findChrome, browserProblem, onPath, launch, startWait, openTab, closeTab, sendInput, guardBrowser, navigate, drawnSoFar, currentUrl, killBrowsers, removeProfiles, removeStrayLocks, removeFetchFolders, fetchFolders, roomIn, lockFolderOf, userAgentFor, busy, CRASHED, BARRED, UNREACHED, NOT_A_PAGE };

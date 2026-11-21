@@ -22,7 +22,7 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
-const { launch, browserProblem, openTab, closeTab, navigate, currentUrl, CRASHED, BARRED } = require("./chrome");
+const { launch, browserProblem, openTab, closeTab, navigate, currentUrl, CRASHED, BARRED, UNREACHED } = require("./chrome");
 const { AROUND, metrics, scrollTo, walk, showsContent, waitForContent, settle, watchRequests, networkQuiet, waitForDrawn, showsLoadingSign, looksEmpty, waitForFonts, clearHover, resetPictureWait, capture, captureScreen, capturePage } = require("./page");
 const { clean } = require("./clean");
 const { homeOf, pageKey, routeOf, viewKey, pathOf, pageUrl, anchorOf, siteOf, fold, wordsOf, kindOf, rankLinks, routeLinks, visitOrder, readSiteIndex, indexNotes, localeOf, alternateFor, oneLine, ROUTE_LINK } = require("./pick");
@@ -723,6 +723,17 @@ function downloadNotes(downloads = []) {
 // refused first had its own move left out of its notes.
 const BARRED_SHOWN = 3;
 
+// The notes on what the run's proxy did not pass on of a page's requests,
+// a picture, a script, the data it fetches or a WebSocket at an address the
+// run does not open (see watchProxy() in chrome.js): BARRED_SHOWN at most,
+// and how many more.
+function unreachedNotes(unreached = []) {
+  const notes = unreached.slice(0, BARRED_SHOWN).map((u) => `it asked for ${String(u.url).slice(0, 200)}, which is ${u.why}: nothing was sent there`);
+  const more = unreached.length - BARRED_SHOWN;
+  if (more > 0) notes.push(`it asked for ${more === 1 ? "1 more address" : `${more} more addresses`} the run does not open: nothing was sent there`);
+  return notes;
+}
+
 function barredNotes(barred = []) {
   const rank = (b) => (b.main ? 0 : b.window ? 1 : 2);
   const sorted = [...barred].sort((a, b) => rank(a) - rank(b));
@@ -782,6 +793,12 @@ async function visit(chrome, page, group, theme, ctx, { check = null, links = fa
     tab.on(BARRED, (b) => {
       if (!barred.some((known) => known.url === b.url)) barred.push(b);
     });
+    // What the run's proxy did not pass on of the page's own requests, as a
+    // picture or the data it fetches: its notes say so too.
+    const unreached = [];
+    tab.on(UNREACHED, (u) => {
+      if (!unreached.some((known) => known.url === u.url)) unreached.push(u);
+    });
     // The downloads the page started, which the browser refused (see
     // launch()): a page that thanks for a download and sends the browser to
     // the file is taken as it is drawn, and its notes say so.
@@ -817,7 +834,7 @@ async function visit(chrome, page, group, theme, ctx, { check = null, links = fa
           const now = await readInfo(tab);
           Object.assign(got.info, { title: now.title, heading: now.heading, viewHeading: now.viewHeading, description: now.description, lang: now.lang, textHash: now.textHash });
         }
-        return { ...got, barred, downloads, ...(movedFrom && movedOn(movedFrom, got.nav.url) ? { movedFrom } : {}) };
+        return { ...got, barred, unreached, downloads, ...(movedFrom && movedOn(movedFrom, got.nav.url) ? { movedFrom } : {}) };
       }
       movedFrom = movedFrom || urls.get(taken) || nav.url;
       // The page it moved to is a new one: none of the waits, the clean-up
@@ -1272,8 +1289,7 @@ async function takeShots(rawUrl, options = {}) {
     const guard = await guardFor(asked);
     if (guard.unresolved) throw unresolvedError(asked, guard);
     if (guard.refused) throw refusedError(asked, guard);
-    chrome = await launch({ lang });
-    chrome.guard = guard;
+    chrome = await launch({ lang, guard });
     const [first] = groups;
     const firstTheme = themes[0];
     // The #route views whose other windows are still to be taken.
@@ -1366,7 +1382,7 @@ async function takeShots(rawUrl, options = {}) {
       // A page that moved on by itself once it had loaded is the page it
       // moved to (see visit()), and its note says so.
       if (movedOn(page.asked, result.nav.url)) page.notes.push(result.movedFrom ? `opened ${page.asked}, which moved on to ${result.nav.url} once it had loaded` : `opened ${page.asked} and landed on ${result.nav.url}`);
-      page.notes.push(...barredNotes(result.barred), ...downloadNotes(result.downloads));
+      page.notes.push(...barredNotes(result.barred), ...unreachedNotes(result.unreached), ...downloadNotes(result.downloads));
       kept.push(page);
       saveShots(page, result, firstTheme, run, written);
       log(`${String(page.n).padStart(2, "0")} ${page.slug}  ${pathOf(result.nav.url)}`);

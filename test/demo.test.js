@@ -17,6 +17,7 @@ const { pickPages, tourSteps, SECTIONS } = require("../skills/easyscreenshotkit/
 const { setTimeLimit } = require("../skills/easyscreenshotkit/scripts/lib/time");
 const { readSteps } = require("../skills/easyscreenshotkit/scripts/lib/steps");
 const { findChrome, launch, openTab, closeTab, navigate } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
+const { guardFor } = require("../skills/easyscreenshotkit/scripts/lib/address");
 const { findFfmpeg, makeGif, startVideo, gifIsWhole, mp4Frames } = require("../skills/easyscreenshotkit/scripts/lib/ffmpeg");
 const { checkBackdrop } = require("../skills/easyscreenshotkit/scripts/lib/compose");
 const { readPng, pngOf, serve, near, descendants, relayBrowser, runUntilOver, tempProblem, sh } = require("./helpers");
@@ -1106,7 +1107,7 @@ test("a tour with #routes asked for with --page: clicked to through their links,
     const targets = again.steps.filter((s) => s.action === "click").map((s) => s.target);
     assert.deepEqual(targets, [{ css: 'a[href="/app/#/plant/Fern"]' }, { css: 'a[href="#/растения"]' }]);
     setTimeLimit(120_000);
-    const chrome = await launch();
+    const chrome = await launch({ guard: await guardFor(`${origin}/`) });
     try {
       for (const [at, target] of [[`${origin}/`, targets[0]], [`${origin}/app/#/plant/Fern`, targets[1]]]) {
         const tab = await openTab(chrome, { width: 1600, height: 900, scale: 1, mobile: false, touch: false, agent: "desktop" });
@@ -1131,7 +1132,7 @@ test("a tour with #routes asked for with --page: clicked to through their links,
 test("a tour lists the #route links of the home page and the address given, and the #routes its sitemap lists, in one note, also when it needs no more pages", { skip: (!findChrome() && "no Chrome, Chromium, Edge or Brave installed") || noTemp, timeout: 120_000 }, async () => {
   const { server, origin } = await fixture({ sitemap: ["/", "/app/#/x", "/app/#/plants"] });
   setTimeLimit(110_000);
-  const chrome = await launch();
+  const chrome = await launch({ guard: await guardFor(`${origin}/app/`) });
   try {
     const tour = await pickPages(chrome, `${origin}/app/`, { pages: 2 });
     assert.deepEqual(tour.pages.map((p) => p.url.slice(origin.length)), ["/", "/app/"]);
@@ -1159,7 +1160,7 @@ test("a tour lists the #route links of the home page and the address given, and 
 test("a tour leaves out a --page that cannot be opened, and goes on, and fails with none of the pages asked for", { skip: (!findChrome() && "no Chrome, Chromium, Edge or Brave installed") || noTemp, timeout: 150_000 }, async () => {
   const { server, origin } = await fixture();
   setTimeLimit(50_000);
-  const chrome = await launch();
+  const chrome = await launch({ guard: await guardFor(origin) });
   try {
     const tour = await pickPages(chrome, origin, { pages: 2, extra: ["/nothing"] });
     assert.deepEqual(tour.pages.map((p) => p.url.slice(origin.length)), ["/"]);
@@ -1193,7 +1194,7 @@ test("a tour leaves out a --page that cannot be opened, and goes on, and fails w
 test("a tour does not list a --page it could not take with the #route links to give with --page", { skip: (!findChrome() && "no Chrome, Chromium, Edge or Brave installed") || noTemp, timeout: 120_000 }, async () => {
   const { server, origin } = await fixture({ sitemap: ["/", "/missing/#/gone", "/app/#/x"] });
   setTimeLimit(110_000);
-  const chrome = await launch();
+  const chrome = await launch({ guard: await guardFor(origin) });
   try {
     const tour = await pickPages(chrome, origin, { pages: 2, extra: ["/missing/#/gone"] });
     assert.deepEqual(tour.skipped, [{ url: `${origin}/missing/#/gone`, reason: "the page answered 404" }]);
@@ -1232,7 +1233,7 @@ test("a tour leaves out a --page that does not answer as it opens it, and can ke
     res.writeHead(404).end("not found");
   });
   setTimeLimit(170_000);
-  const chrome = await launch();
+  const chrome = await launch({ guard: await guardFor(origin) });
   try {
     const tour = await pickPages(chrome, origin, { pages: 1, extra: ["/early", "/late"] });
     assert.deepEqual(tour.pages.map((p) => [p.url.slice(origin.length), p.why]), [["/", "the home page"], ["/late", "asked for with --page"]]);
@@ -1361,6 +1362,7 @@ test("a tour starts at the address given when the home page cannot be taken, and
   try {
     for (const [reason, home] of HOME_LOST) {
       const { server, origin } = await fixture({ home });
+      chrome.guard = await guardFor(`${origin}/app/#/plants`);
       try {
         const tour = await pickPages(chrome, `${origin}/app/#/plants`, { pages: 2 });
         assert.deepEqual(tour.pages.map((p) => [p.url.slice(origin.length), p.why]), [["/app/#/plants", "the address given"]], String(reason));
@@ -1376,6 +1378,7 @@ test("a tour starts at the address given when the home page cannot be taken, and
     const deep = await fixture({ home: HOME_LOST[0][1] });
     // A tour looks for pages while four minutes of the run are left.
     setTimeLimit(300_000);
+    chrome.guard = await guardFor(`${deep.origin}/features`);
     try {
       const tour = await pickPages(chrome, `${deep.origin}/features`, { pages: 3 });
       assert.deepEqual(tour.pages.map((p) => [p.url.slice(deep.origin.length), p.kind, p.why]), [["/features", "product", "the address given"], ["/pricing", "pricing", 'menu link "Pricing"']]);
@@ -1387,6 +1390,7 @@ test("a tour starts at the address given when the home page cannot be taken, and
     // An address given that is the home page, or that cannot be taken
     // either, still stops the demo.
     const { server, origin } = await fixture({ home: HOME_LOST[0][1] });
+    chrome.guard = await guardFor(origin);
     try {
       await assert.rejects(pickPages(chrome, origin, { pages: 2 }), new RegExp(`^Error: ${origin}/ answered 404, so no demo was recorded\\.$`));
       await assert.rejects(pickPages(chrome, `${origin}/nowhere/#/x`, { pages: 2 }), new RegExp(`^Error: ${origin}/nowhere/#/x answered 404, so no demo was recorded\\.$`));
@@ -1412,7 +1416,7 @@ test("a tour whose home page names a version in another language that answers an
     if (req.url === "/fr/") return req.socket.destroy();
     res.writeHead(404).end("not found");
   });
-  const chrome = await launch();
+  const chrome = await launch({ guard: await guardFor(`${origin}/`) });
   try {
     for (const [lang, why] of [["es", /^the page answered 404$/], ["fr", /^could not be opened: net::ERR_[A-Z_]+$/]]) {
       // A tour looks for pages while four minutes of the run are left.
@@ -2390,6 +2394,36 @@ async function withNames(answers, body) {
     dns.lookup = lookup;
   }
 }
+
+// What the run's proxy did not pass on of a page's own requests, as a
+// picture of another program of this machine on a site given there, is in
+// steps.json's notes, once for that address, with the reason (see
+// proxy.js): the browser reaches the network only through it.
+test("a demo names in steps.json what the proxy did not pass on of its pages' requests", { skip: missing, timeout: 200_000 }, async () => {
+  const seen = [];
+  const other = await serve((req, res) => {
+    seen.push(req.url);
+    res.end("inside");
+  });
+  const elsewhere = other.origin;
+  const { server, origin } = await serve((req, res) => {
+    if (req.url !== "/") return res.writeHead(404).end("not found");
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Acme | Tools", `<h1>Acme</h1><p>Tools for teams.</p><img src="${elsewhere}/one.png"><img src="${elsewhere}/two.png">`));
+  });
+  const root = tempDir();
+  try {
+    const steps = path.join(root, "steps.yaml");
+    fs.writeFileSync(steps, "steps:\n  - visit: /\n  - wait: 1\n");
+    await makeDemo(origin, { dir: path.join(root, "demo"), steps, gif: false, timeLimit: 150_000 });
+    const { notes } = JSON.parse(fs.readFileSync(path.join(root, "demo", "steps.json"), "utf8"));
+    assert.deepEqual(notes.filter((note) => /nothing was sent there/.test(note)), [`A page asked for ${elsewhere}, which is not on the public internet, and not on the host and port given: nothing was sent there.`]);
+    assert.deepEqual(seen, []);
+  } finally {
+    server.close();
+    other.server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 // A name the demo cannot look up is not opened, whatever the browser's own
 // lookup would answer: not as the address given, by a visit step, or by a
