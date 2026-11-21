@@ -97,9 +97,11 @@ From the address given a demo opens web addresses on the public internet
 only, on port 80 or 443 unless they are on the scheme, host and port given
 or at https on the host and port of an http address given, and that host and
 port when the address given is on this machine or its network, as a site you
-run there is; a steps file's url is the address given when the command line
+run there is, with https on 443 of a name or a public address given by http
+on port 80; a steps file's url is the address given when the command line
 gives none. A visit step to localhost, 127.0.0.1, a private network or
-another address of that kind, to another port of a host on the public
+another address of that kind, or to an address of this machine's own on the
+public internet, to another port of a host on the public
 internet, or to a page that redirects to one or moves on to one before it
 has loaded, stops the demo, and so does a click on a link to a page that
 moves on so; a click on a link to one, or to a page that redirects to one,
