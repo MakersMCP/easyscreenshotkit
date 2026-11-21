@@ -917,7 +917,7 @@ async function startChecks(browser, left, profile, proxy, pid) {
     ({ sessionId } = await browser.send("Target.attachToTarget", { targetId, flatten: true }, left(), { fixed: true }));
     tab = browser.session(sessionId);
     const preloading = await preloadingSaid(tab, left, profile);
-    const switches = preloading ? "" : await switchesSaid(browser, left, pid);
+    const switches = preloading ? "" : await switchesSaid(browser, left, pid, proxy);
     const said = preloading || switches ? { why: switches } : await proxySaid(tab, left, proxy);
     return { preloading, unproxied: said.why || "", late: said.late || null };
   } finally {
@@ -1038,26 +1038,42 @@ async function proxySaid(tab, left, proxy) {
 }
 
 // Whether the browser runs with the run's switches that hold it to its
-// proxy where no probe of the start's would see it go past (see start()):
+// proxy, those no probe of the start's sees whole (see start()): its
+// --proxy-server, --proxy-bypass-list and --webrtc-ip-handling-policy,
 // MediaRouter and WebRtcHideLocalIpsWithMdns in its --disable-features, and
-// the run's --host-resolver-rules. Chrome takes the last value of a switch
-// it is given more than once, so a program that starts the browser with a
-// --disable-features of its own after the run's turned its Media Router
-// back on, and a page's PresentationRequest had it search every network of
-// the machine for screens to cast to and connect to each that answered,
-// past the proxy, while it passed every probe; one that left the switches
-// out did that too, and looked up itself a name a page gave WebRTC. On
-// Linux the browser's command line is read in /proc, where Chrome keeps it
-// as its words joined by spaces, a switch after a space with -- or - before
-// its name, for the process the browser says is its own
-// (SystemInfo.getProcessInfo) once that is the one the run started or one
-// under it. "" when they hold, and on other systems, where nothing is read
-// (see the README), else why the browser is not used, said after its name.
+// its --host-resolver-rules. Chrome takes the last value of a switch it is
+// given more than once, so a program that starts the browser with a switch
+// of its own after the run's had it do what that switch says, past the
+// proxy, while it passed every probe: with a --proxy-bypass-list of its own
+// that kept <-loopback> and named one port of 127.0.0.1, a page's pictures
+// and fetch() reached that port of this machine; with a --disable-features
+// of its own, its Media Router searched every network of the machine for
+// screens to cast to and connected to each that answered; and one that left
+// the switches out looked up itself a name a page gave WebRTC. The probes
+// see only the proxy's own port and a name no lookup answers, and WebRTC's
+// UDP in the moment they wait. --no-proxy-server, --proxy-pac-url and
+// --proxy-auto-detect, which Chrome takes in place of --proxy-server
+// wherever they stand, are not taken either. On Linux the browser's
+// command line is read in /proc, for the process the browser says is its
+// own (SystemInfo.getProcessInfo) once that is the one the run started or
+// one under it, so a browser a program starts apart from the run, as a
+// launcher that detaches it does, is not used. Chrome keeps its command
+// line there as its words joined by spaces, a switch after a space with --
+// or - before its name, and can put switches of its own before the address
+// it opens: the value of each switch of the run's is read from the last
+// switch of its name to the next space, and is taken only when it is the
+// run's and what follows is another switch, the address the run opens,
+// about:blank, at the end, or the end.
+// A value of a program's own that reads there as the run's followed by
+// more words is not told apart from the run's (see the README). "" when the
+// switches hold, and on other systems, where nothing is read, else why the
+// browser is not used, said after its name.
 const OWN_FEATURES = ["MediaRouter", "WebRtcHideLocalIpsWithMdns"];
 const OWN_RULES = "MAP * ^NOTFOUND, EXCLUDE 127.0.0.1";
+const OVERRIDES = ["no-proxy-server", "proxy-pac-url", "proxy-auto-detect"];
 const UNSWITCHED = "as a program that starts it with switches of its own after the run's, or without the run's, can make it, so it was not used";
 
-async function switchesSaid(browser, left, pid) {
+async function switchesSaid(browser, left, pid, proxy) {
   if (process.platform !== "linux") return "";
   const cannot = (why) => `cannot say which switches it runs with (${why}), so it was not used: with switches of its own after the run's it could reach an address the run does not open, past the proxy the run starts for it. Point CHROME_PATH at the browser's own program.`;
   let processInfo = [];
@@ -1072,22 +1088,36 @@ async function switchesSaid(browser, left, pid) {
   if (!startedBy(own.id, pid)) return cannot(`its process, ${own.id}, is not one the run started`);
   let line = "";
   try {
-    line = fs.readFileSync(`/proc/${own.id}/cmdline`, "latin1").replace(/\0/g, " ");
+    line = fs.readFileSync(`/proc/${own.id}/cmdline`, "latin1").replace(/\0/g, " ").replace(/ +$/, "");
   } catch (err) {
     return cannot(`its command line could not be read, ${err.code || err.message}`);
   }
-  // Where the value of the last switch of that name starts, or -1.
+  // The value of the last switch of that name, to the next space, or null
+  // for none; "" for one whose value does not end where a switch, the
+  // run's about:blank at the end, or the line does, which no value of the
+  // run's is: a browser that adds no switch of its own has the run's last
+  // switch before that address.
   const last = (name) => {
     let at = -1;
     const pattern = new RegExp(`(?:^| )--?${name}=`, "g");
     for (let found = pattern.exec(line); found; found = pattern.exec(line)) at = found.index + found[0].length;
-    return at;
+    if (at < 0) return null;
+    const words = line.slice(at).split(" ");
+    let value = words[0];
+    // The run's rules hold spaces: they are read whole where they are there.
+    if (name === "host-resolver-rules" && line.startsWith(OWN_RULES, at)) value = OWN_RULES;
+    const after = line.slice(at + value.length);
+    return after === "" || after === " about:blank" || after.startsWith(" -") ? value : "";
   };
-  const features = last("disable-features");
-  const named = features < 0 ? [] : line.slice(features).split(" ")[0].split(",").map((one) => one.split("<")[0]);
+  const has = (name) => new RegExp(`(?:^| )--?${name}(?:=| |$)`).test(line);
+  const named = (last("disable-features") || "").split(",").map((one) => one.split("<")[0]);
   if (!OWN_FEATURES.every((one) => named.includes(one))) return `runs without ${OWN_FEATURES.join(" and ")} in its last --disable-features, ${UNSWITCHED}: a page could have it search this machine's networks for screens to cast to and connect to them, past the proxy the run starts for it. Point CHROME_PATH at the browser's own program.`;
-  const rules = last("host-resolver-rules");
-  if (rules < 0 || !line.startsWith(OWN_RULES, rules) || ![undefined, " "].includes(line[rules + OWN_RULES.length])) return `runs without the run's --host-resolver-rules last, ${UNSWITCHED}: a page could have it look a name up itself and reach an address the run does not open, past the proxy the run starts for it. Point CHROME_PATH at the browser's own program.`;
+  if (last("host-resolver-rules") !== OWN_RULES) return `runs without the run's --host-resolver-rules last, ${UNSWITCHED}: a page could have it look a name up itself and reach an address the run does not open, past the proxy the run starts for it. Point CHROME_PATH at the browser's own program.`;
+  const override = OVERRIDES.find(has);
+  if (override) return `runs with --${override}, which Chrome takes in place of the run's --proxy-server, as a program that starts it with switches of its own can make it, so it was not used: a page could have it reach an address the run does not open, past the proxy the run starts for it. Point CHROME_PATH at the browser's own program.`;
+  for (const [name, value] of [["proxy-server", `http://127.0.0.1:${proxy.port}`], ["proxy-bypass-list", "<-loopback>"], ["webrtc-ip-handling-policy", "disable_non_proxied_udp"]]) {
+    if (last(name) !== value) return `runs without the run's --${name} last, ${UNSWITCHED}: a page could have it reach an address the run does not open, past the proxy the run starts for it. Point CHROME_PATH at the browser's own program.`;
+  }
   return "";
 }
 

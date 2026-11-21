@@ -1579,20 +1579,78 @@ test("a site on localhost given as the address is taken through the proxy, a Web
   }
 });
 
+// A program for CHROME_PATH that starts the real browser, `real`, without
+// the run's switches that `dropped` matches, relays its pipe (file
+// descriptors 3 and 4), and names as the browser's own process, as the start
+// asks it (SystemInfo.getProcessInfo), a process of its own whose command
+// line holds every switch of the run's, so the start's reading of the
+// switches (see switchesSaid() in chrome.js) finds them and its probes of
+// the proxy decide (see proxySaid()), as they do for a browser a Chrome
+// policy sends past the proxy, whose switches are the run's. It writes the
+// switches it started the browser with to `told`, a line each.
+function decoyBrowser(root, name, real, dropped, told) {
+  const relay = path.join(root, `${name}.js`);
+  fs.writeFileSync(
+    relay,
+    `"use strict";
+const fs = require("fs");
+const { spawn } = require("child_process");
+const args = process.argv.slice(2);
+const decoy = spawn(process.execPath, ["-e", "const p = process.ppid; setInterval(() => { if (process.ppid !== p) process.exit(); }, 200);", "--", ...args], { stdio: "ignore" });
+const started = args.filter((arg) => !${dropped}.test(arg));
+fs.writeFileSync(${JSON.stringify(told)}, started.join("\\n"));
+const child = spawn(${JSON.stringify(real)}, started, { stdio: ["ignore", "ignore", "inherit", "pipe", "pipe"] });
+const fromKit = fs.createReadStream(null, { fd: 3 });
+const toKit = fs.createWriteStream(null, { fd: 4 });
+for (const stream of [fromKit, toKit, child.stdio[3], child.stdio[4]]) stream.on("error", () => {});
+const asked = new Set();
+const split = (stream, take) => {
+  let bytes = Buffer.alloc(0);
+  stream.on("data", (chunk) => {
+    bytes = Buffer.concat([bytes, chunk]);
+    let at;
+    while ((at = bytes.indexOf(0)) >= 0) {
+      const text = bytes.subarray(0, at).toString();
+      bytes = bytes.subarray(at + 1);
+      take(text);
+    }
+  });
+};
+split(fromKit, (text) => {
+  const msg = JSON.parse(text);
+  if (msg.method === "SystemInfo.getProcessInfo") asked.add(msg.id);
+  child.stdio[3].write(text + "\\0");
+});
+split(child.stdio[4], (text) => {
+  const msg = JSON.parse(text);
+  if (asked.has(msg.id) && msg.result) msg.result.processInfo = msg.result.processInfo.map((one) => (one.type === "browser" ? { ...one, id: decoy.pid } : one));
+  toKit.write(JSON.stringify(msg) + "\\0");
+});
+fromKit.on("end", () => child.stdio[3].end());
+child.on("exit", (code) => {
+  decoy.kill();
+  process.exit(code === null ? 1 : code);
+});
+`,
+  );
+  const browser = path.join(root, name);
+  fs.writeFileSync(browser, `#!/bin/sh\nexec ${sh(process.execPath)} ${sh(relay)} "$@"\n`, { mode: 0o755 });
+  return browser;
+}
+
 // A browser that sends its requests past the run's proxy, as a Chrome policy
 // (ProxySettings) or a program that starts it without the run's switches
 // can make it, asks the DNS and connects for itself, past the run's rule:
 // it is not used. Here the program CHROME_PATH names starts the browser
-// with the proxy's switches taken out.
+// with the proxy's switches taken out; on Linux, where the start reads the
+// browser's switches first, it names a process of its own that holds them
+// as the browser's, so the probes of the proxy decide (see decoyBrowser()).
 test("a browser that sends its requests past the proxy is not used", { skip: noBrowser || (process.platform === "win32" && "the wrapper is a shell script"), timeout: 60_000 }, async () => {
   setTimeLimit(60_000);
   const root = tempDir();
-  const browser = path.join(root, "unproxied");
   const told = path.join(root, "args");
-  // It writes down what it starts the browser with, a line each.
-  fs.writeFileSync(browser, `#!/bin/sh\nfor a in "$@"; do shift; case "$a" in --proxy-server=*|--proxy-bypass-list=*) ;; *) set -- "$@" "$a" ;; esac; done\nprintf '%s\\n' "$@" > ${sh(told)}\nexec ${sh(findChrome())} "$@"\n`, { mode: 0o755 });
   const saved = process.env.CHROME_PATH;
-  process.env.CHROME_PATH = browser;
+  process.env.CHROME_PATH = decoyBrowser(root, "unproxied", findChrome(), "/^--proxy-(server|bypass-list)=/", told);
   try {
     await assert.rejects(launch(), {
       message: "unproxied does not send its requests through the proxy the run starts for it, as a Chrome policy (ProxySettings) or a program that starts it without the run's switches can make it, so it was not used: a page could have it reach an address the run does not open. Lift that policy, or point CHROME_PATH at the browser's own program.",
@@ -1616,7 +1674,8 @@ test("a browser that sends its requests past the proxy is not used", { skip: noB
 // or without --webrtc-ip-handling-policy, is not used: a page could have it
 // reach a program of this machine, or send packets anywhere, past the rule.
 // Here the program CHROME_PATH names starts the browser with that switch
-// taken out.
+// taken out, and names a process that holds it as the browser's (see
+// decoyBrowser()).
 test("a browser that sends this machine's addresses or WebRTC's UDP past the proxy is not used", { skip: noBrowser || (process.platform === "win32" && "the wrapper is a shell script"), timeout: 90_000 }, async () => {
   setTimeLimit(90_000);
   const root = tempDir();
@@ -1624,14 +1683,12 @@ test("a browser that sends this machine's addresses or WebRTC's UDP past the pro
   // The browser itself, found before CHROME_PATH names a wrapper.
   const real = findChrome();
   try {
-    for (const [name, left, message] of [
-      ["bypassed", "--proxy-bypass-list=*", "bypassed sends its requests for this machine's own addresses past the proxy the run starts for it, as a program that starts it without the run's switches can make it, so it was not used: a page could have it reach an address the run does not open. Point CHROME_PATH at the browser's own program."],
-      ["leaky", "--webrtc-ip-handling-policy=*", "leaky sends WebRTC's UDP past the proxy the run starts for it, as a Chrome policy (WebRtcIPHandling) or a program that starts it without the run's switches can make it, so it was not used: a page could have it reach an address the run does not open. Lift that policy, or point CHROME_PATH at the browser's own program."],
+    for (const [name, dropped, message] of [
+      ["bypassed", "/^--proxy-bypass-list=/", "bypassed sends its requests for this machine's own addresses past the proxy the run starts for it, as a program that starts it without the run's switches can make it, so it was not used: a page could have it reach an address the run does not open. Point CHROME_PATH at the browser's own program."],
+      ["leaky", "/^--webrtc-ip-handling-policy=/", "leaky sends WebRTC's UDP past the proxy the run starts for it, as a Chrome policy (WebRtcIPHandling) or a program that starts it without the run's switches can make it, so it was not used: a page could have it reach an address the run does not open. Lift that policy, or point CHROME_PATH at the browser's own program."],
     ]) {
-      const browser = path.join(root, name);
-      fs.writeFileSync(browser, `#!/bin/sh\nfor a in "$@"; do shift; case "$a" in ${left}) ;; *) set -- "$@" "$a" ;; esac; done\nexec ${sh(real)} "$@"\n`, { mode: 0o755 });
-      process.env.CHROME_PATH = browser;
-      await assert.rejects(launch(), { message });
+      process.env.CHROME_PATH = decoyBrowser(root, name, real, dropped, path.join(root, `${name}.args`));
+      await assert.rejects(launch(), { message }, name);
     }
   } finally {
     if (saved === undefined) delete process.env.CHROME_PATH;
@@ -1641,23 +1698,32 @@ test("a browser that sends this machine's addresses or WebRTC's UDP past the pro
 });
 
 // A browser that runs with switches of its own after the run's, or without
-// the run's, that keep its Media Router off and its lookups to the run's
-// own, is not used: Chrome takes the last value of a switch, so a program
-// that started it with a --disable-features of its own after the run's had
-// its Media Router search the machine's networks for screens to cast to and
-// connect to those that answered, past the proxy, while it passed every
-// probe of the start's. Here the program CHROME_PATH names adds a switch or
-// takes one out; and one that relays the browser's pipe answers the
-// question of which process is the browser's with an error, or names one
-// the run did not start. On Linux, where the browser's command line is read.
-test("a browser that runs with switches of its own after the run's, or without the run's, is not used", { skip: noBrowser || (process.platform !== "linux" && "the browser's command line is read on Linux"), timeout: 150_000 }, async () => {
-  setTimeLimit(150_000);
+// the run's, that hold it to its proxy, its Media Router off and its
+// lookups to the run's own, is not used: Chrome takes the last value of a
+// switch, so a program that started it with a --proxy-bypass-list of its
+// own after the run's, <-loopback> kept and one port of 127.0.0.1 named, had
+// a page's picture and fetch() reach that port of this machine past the
+// proxy, and one with a --disable-features of its own had its Media Router
+// search the machine's networks for screens to cast to and connect to
+// those that answered, while each passed every probe of the start's. Nor is
+// one with a switch Chrome takes in place of --proxy-server wherever it
+// stands. Here the program CHROME_PATH names adds a switch, before or after
+// the run's, or takes one out; one starts the browser apart from the run
+// and stays; and one that relays the browser's pipe answers the question of
+// which process is the browser's with an error, names none, or names one
+// the run did not start. A browser launch() hands back where it was to
+// refuse one is closed before the test fails. On Linux, where the
+// browser's command line is read.
+test("a browser that runs with switches of its own after the run's, or without the run's, is not used", { skip: noBrowser || (process.platform !== "linux" && "the browser's command line is read on Linux"), timeout: 300_000 }, async () => {
+  setTimeLimit(300_000);
   const root = tempDir();
   const saved = process.env.CHROME_PATH;
   // The browser itself, found before CHROME_PATH names a wrapper.
   const real = findChrome();
   const features = (name) => `${name} runs without MediaRouter and WebRtcHideLocalIpsWithMdns in its last --disable-features, as a program that starts it with switches of its own after the run's, or without the run's, can make it, so it was not used: a page could have it search this machine's networks for screens to cast to and connect to them, past the proxy the run starts for it. Point CHROME_PATH at the browser's own program.`;
   const rules = (name) => `${name} runs without the run's --host-resolver-rules last, as a program that starts it with switches of its own after the run's, or without the run's, can make it, so it was not used: a page could have it look a name up itself and reach an address the run does not open, past the proxy the run starts for it. Point CHROME_PATH at the browser's own program.`;
+  const proxied = (name, which) => `${name} runs without the run's --${which} last, as a program that starts it with switches of its own after the run's, or without the run's, can make it, so it was not used: a page could have it reach an address the run does not open, past the proxy the run starts for it. Point CHROME_PATH at the browser's own program.`;
+  const overridden = (name, which) => `${name} runs with --${which}, which Chrome takes in place of the run's --proxy-server, as a program that starts it with switches of its own can make it, so it was not used: a page could have it reach an address the run does not open, past the proxy the run starts for it. Point CHROME_PATH at the browser's own program.`;
   const cannot = (name, why) => `${name} cannot say which switches it runs with (${why}), so it was not used: with switches of its own after the run's it could reach an address the run does not open, past the proxy the run starts for it. Point CHROME_PATH at the browser's own program.`;
   const leaving = (pattern) => `for a in "$@"; do shift; case "$a" in ${pattern}) ;; *) set -- "$@" "$a" ;; esac; done\n`;
   // A program that relays the browser's pipe, as the browser's parent, and
@@ -1694,35 +1760,58 @@ split(fromKit, (text) => {
 });
 split(child.stdio[4], (text) => {
   const msg = JSON.parse(text);
-  if (asked.has(msg.id) && msg.result) msg.result.processInfo = msg.result.processInfo.map((one) => (one.type === "browser" ? { ...one, id: 1 } : one));
+  if (asked.has(msg.id) && msg.result) msg.result.processInfo = mode === "none" ? msg.result.processInfo.filter((one) => one.type !== "browser") : msg.result.processInfo.map((one) => (one.type === "browser" ? { ...one, id: 1 } : one));
   toKit.write(JSON.stringify(msg) + "\\0");
 });
 fromKit.on("end", () => child.stdio[3].end());
 child.on("exit", (code) => process.exit(code === null ? 1 : code));
 `,
   );
+  // launch() with CHROME_PATH at the program `name` whose script is body:
+  // the error it throws, or a browser it hands back, closed at once.
+  const launched = async (name, body) => {
+    const browser = path.join(root, name);
+    fs.writeFileSync(browser, `#!/bin/sh\n${body}`, { mode: 0o755 });
+    process.env.CHROME_PATH = browser;
+    const got = await launch().then(
+      (chrome) => chrome,
+      (err) => err,
+    );
+    if (got instanceof Error) return got.message;
+    await got.close();
+    return "used";
+  };
   try {
     for (const [name, body, message] of [
       ["appended", `exec ${sh(real)} "$@" --disable-features=Translate\n`, features("appended")],
       ["dashed", `exec ${sh(real)} "$@" -disable-features=Translate\n`, features("dashed")],
+      ["router", `exec ${sh(real)} "$@" --disable-features=MediaRouter\n`, features("router")],
+      ["named", `exec ${sh(real)} "$@" --disable-features=WebRtcHideLocalIpsWithMdns\n`, features("named")],
       ["unfeatured", `${leaving("--disable-features=*")}exec ${sh(real)} "$@"\n`, features("unfeatured")],
       ["resolving", `${leaving("--host-resolver-rules=*")}exec ${sh(real)} "$@"\n`, rules("resolving")],
       ["rerouted", `exec ${sh(real)} "$@" "--host-resolver-rules=MAP * 127.0.0.1"\n`, rules("rerouted")],
+      ["further", `exec ${sh(real)} "$@" "--host-resolver-rules=MAP * ^NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost"\n`, rules("further")],
+      ["spaced", `exec ${sh(real)} "$@" "--host-resolver-rules=MAP * ^NOTFOUND, EXCLUDE 127.0.0.1 ,EXCLUDE localhost"\n`, rules("spaced")],
+      ["bypassed", `exec ${sh(real)} "$@" "--proxy-bypass-list=<-loopback>;127.0.0.1:6379"\n`, proxied("bypassed", "proxy-bypass-list")],
+      ["bypassspaced", `exec ${sh(real)} "$@" "--proxy-bypass-list=<-loopback> ;127.0.0.1:6379"\n`, proxied("bypassspaced", "proxy-bypass-list")],
+      ["served", `exec ${sh(real)} "$@" --proxy-server=http://127.0.0.1:1\n`, proxied("served", "proxy-server")],
+      ["policy", `exec ${sh(real)} "$@" --webrtc-ip-handling-policy=default_public_interface_only\n`, proxied("policy", "webrtc-ip-handling-policy")],
+      ["direct", `exec ${sh(real)} --no-proxy-server "$@"\n`, overridden("direct", "no-proxy-server")],
+      ["scripted", `exec ${sh(real)} "$@" --proxy-pac-url=http://127.0.0.1:1/proxy.pac\n`, overridden("scripted", "proxy-pac-url")],
       ["unnamed", `exec ${sh(process.execPath)} ${sh(relay)} error "$@"\n`, cannot("unnamed", "SystemInfo.getProcessInfo wasn't found")],
+      ["nameless", `exec ${sh(process.execPath)} ${sh(relay)} none "$@"\n`, cannot("nameless", "it names no process of its own")],
       ["elsewhere", `exec ${sh(process.execPath)} ${sh(relay)} other "$@"\n`, cannot("elsewhere", "its process, 1, is not one the run started")],
     ]) {
-      const browser = path.join(root, name);
-      fs.writeFileSync(browser, `#!/bin/sh\n${body}`, { mode: 0o755 });
-      process.env.CHROME_PATH = browser;
-      await assert.rejects(launch(), { message }, name);
+      assert.equal(await launched(name, body), message, name);
     }
+    // A browser a program starts apart from the run, which then stays: its
+    // process is no process the run started.
+    const apart = await launched("apart", `setsid -f ${sh(real)} "$@"\nexec sleep 20\n`);
+    assert.match(apart, /^apart cannot say which switches it runs with \(its process, \d+, is not one the run started\), so it was not used: /);
     // A switch of its own before the run's is the browser's, as the run's
-    // comes last.
-    const before = path.join(root, "before");
-    fs.writeFileSync(before, `#!/bin/sh\nexec ${sh(real)} --disable-features=Translate "--host-resolver-rules=MAP * 127.0.0.1" "$@"\n`, { mode: 0o755 });
-    process.env.CHROME_PATH = before;
-    const chrome = await launch();
-    await chrome.close();
+    // comes last; and one the run does not read, after it.
+    assert.equal(await launched("before", `exec ${sh(real)} --disable-features=Translate "--host-resolver-rules=MAP * 127.0.0.1" --proxy-server=http://127.0.0.1:1 "--proxy-bypass-list=<-loopback>;127.0.0.1:6379" --webrtc-ip-handling-policy=default "$@"\n`), "used");
+    assert.equal(await launched("muted", `exec ${sh(real)} "$@" --mute-audio\n`), "used");
   } finally {
     if (saved === undefined) delete process.env.CHROME_PATH;
     else process.env.CHROME_PATH = saved;
