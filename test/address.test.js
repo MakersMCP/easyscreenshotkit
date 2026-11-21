@@ -505,7 +505,7 @@ test("a host written with dots at its end is looked up once, however many", asyn
 // was taken without them. 127.0.0.1 and ::1 reach no address of each
 // other, and can be two programs on one port.
 test("on the port given, this machine's own names are the host given where they reach an address of it", () =>
-  withNames({ "inside.example": "127.0.0.1" }, async () => {
+  withNames({ "loopback-name.example": "127.0.0.1" }, async () => {
     const ask = (resolve, host) => new Promise((done) => resolve(host, { all: true }, (err, list) => done(err ? err.code : list.map((one) => one.address))));
     const fromFour = await guardFor("http://127.0.0.1:4000/");
     for (const [url, why] of [
@@ -515,7 +515,7 @@ test("on the port given, this machine's own names are the host given where they 
       ["http://[::1]:4000/", NOT_GIVEN],
       ["http://localhost:4001/", NOT_GIVEN],
       ["http://127.0.0.2:4000/", NOT_GIVEN],
-      ["http://inside.example:4000/", NOT_GIVEN],
+      ["http://loopback-name.example:4000/", NOT_GIVEN],
     ]) {
       assert.equal(await fromFour.refuses(url), why, url);
     }
@@ -539,10 +539,12 @@ test("on the port given, this machine's own names are the host given where they 
 // Behind a proxy in fake-ip mode every name answers in 198.18.0.0/15, which
 // is not on the public internet: no host but the one given is opened, and
 // the reason names the address and that range, where it said only that a
-// host such as github.githubassets.com was not on the public internet. An
-// address written so in the address itself is that address, as before.
+// host such as github.githubassets.com was not on the public internet. A
+// name that answers with an IPv6 form of such an address is named with
+// that form. An address written so in the address itself is that address,
+// as before.
 test("a name that answers in the range a proxy in fake-ip mode gives is refused with that address and the range named", () =>
-  withNames({ "fake-site.example": "198.18.0.2", "fake-assets.example": "198.18.0.3", "fake-inside.example": "10.0.0.8" }, async () => {
+  withNames({ "fake-site.example": "198.18.0.2", "fake-assets.example": "198.18.0.3", "fake-inside.example": "10.0.0.8", "fake-six.example": "::ffff:198.18.0.4" }, async () => {
     const fake = (address, away) => `at ${address}, in the range a proxy in fake-ip mode gives every name, 198.18.0.0/15, which is not on the public internet${away ? ", and not on the host and port given" : ""}`;
     const ask = (resolve, host) => new Promise((done) => resolve(host, { all: true }, (err, list) => done(err ? [err.code, err.refused] : list.map((one) => one.address))));
     const guard = await guardFor("https://fake-site.example/");
@@ -550,6 +552,7 @@ test("a name that answers in the range a proxy in fake-ip mode gives is refused 
     for (const [url, why] of [
       ["https://fake-site.example/pricing", ""],
       ["https://fake-assets.example/app.css", fake("198.18.0.3", true)],
+      ["https://fake-six.example/app.js", fake("::ffff:198.18.0.4", true)],
       ["http://198.18.0.3/", NOT_GIVEN],
       ["http://fake-inside.example/", NOT_GIVEN],
     ]) {
@@ -557,6 +560,7 @@ test("a name that answers in the range a proxy in fake-ip mode gives is refused 
     }
     const none = await guardFor("");
     assert.equal(await none.refuses("https://fake-assets.example/app.css"), fake("198.18.0.3", false));
+    assert.equal(await none.refuses("https://fake-six.example/app.js"), fake("::ffff:198.18.0.4", false));
     assert.deepEqual(await ask(none.lookupFor("https://public.example/"), "fake-assets.example"), ["ENOTPUBLIC", `it is ${fake("198.18.0.3", false)}`]);
   }));
 

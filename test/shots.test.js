@@ -5373,20 +5373,37 @@ test("--pwa says which screenshots of the site's manifest it did not read, and c
 // is a tab that crashed, which the demo names as such: the browser's word
 // for the navigation, net::ERR_ABORTED, comes a moment before the one for
 // the crash, and the demo stopped in the first, naming the kit's own file.
-// Here a tab stands in for the browser's, its crash told 150 ms after.
+// Here a browser stands in for the real one: its tab of the kit's own, as
+// openTab() opens it, answers the navigation with net::ERR_ABORTED and says
+// 150 ms later that it crashed (Inspector.targetCrashed), as a tab whose
+// renderer is killed before its page has come does; openTab() hears that
+// word, and navigate() waits for it.
 test("a page of the kit's own whose tab crashes as it loads is said to have crashed", async () => {
-  const { EventEmitter } = require("node:events");
-  const tab = new EventEmitter();
-  tab.own = true;
-  tab.send = async (method) => {
-    if (method !== "Page.navigate") return {};
-    setTimeout(() => (tab.crashed = true), 150);
-    return { errorText: "net::ERR_ABORTED" };
+  // A tab's session as the browser's connection gives one, with its events
+  // and its calls, which answer at once; navigate answers as `answer` says.
+  const stand = (answer) => {
+    const listeners = new Map();
+    const tab = {
+      over: new Promise(() => {}),
+      on: (method, listener) => listeners.set(method, [...(listeners.get(method) || []), listener]),
+      off: (method, listener) => listeners.set(method, (listeners.get(method) || []).filter((one) => one !== listener)),
+      emit: (method, params) => (listeners.get(method) || []).forEach((listener) => listener(params)),
+      send: async (method) => (method === "Page.navigate" ? answer(tab) : method === "Runtime.evaluate" ? { result: {} } : {}),
+      fail: (message) => (tab.failed = message),
+      close() {},
+      closed: () => false,
+    };
+    return { guard: null, userAgent: "", owners: new Map(), browser: { send: async (method) => (method === "Target.createTarget" ? { targetId: "kit-tab" } : method === "Target.attachToTarget" ? { sessionId: "kit-session" } : {}), session: () => tab } };
   };
-  await assert.rejects(navigate(tab, "file:///kit/frames/compose.html"), { message: CRASHED });
+  const DEVICE = { width: 1200, height: 800, scale: 1, mobile: false, touch: false, agent: "desktop" };
+  const crashing = stand((tab) => {
+    setTimeout(() => tab.emit("Inspector.targetCrashed", {}), 150);
+    return { errorText: "net::ERR_ABORTED", loaderId: "kit-loader" };
+  });
+  const tab = await openTab(crashing, DEVICE, { own: true });
+  await assert.rejects(navigate(tab, "https://easyscreenshotkit.invalid/frames/compose.html"), { message: CRASHED });
+  assert.equal(tab.failed, CRASHED);
   // One that failed with no crash keeps the browser's words.
-  const still = new EventEmitter();
-  still.own = true;
-  still.send = async (method) => (method === "Page.navigate" ? { errorText: "net::ERR_FILE_NOT_FOUND" } : {});
-  await assert.rejects(navigate(still, "file:///kit/frames/compose.html"), { message: "Could not open file:///kit/frames/compose.html: net::ERR_FILE_NOT_FOUND" });
+  const still = await openTab(stand(() => ({ errorText: "net::ERR_FILE_NOT_FOUND" })), DEVICE, { own: true });
+  await assert.rejects(navigate(still, "https://easyscreenshotkit.invalid/frames/compose.html"), { message: "Could not open https://easyscreenshotkit.invalid/frames/compose.html: net::ERR_FILE_NOT_FOUND" });
 });

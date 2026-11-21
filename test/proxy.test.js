@@ -1528,8 +1528,10 @@ test("a site that is down is said so in the browser's own words through the prox
 // and an XMLHttpRequest, a picture with crossorigin and a WebSocket, which
 // the browser fails in its own words and not with the proxy's answer, and
 // which went without a note; and past three addresses on one page, how many
-// more it asked for.
-test("a run names in a page's notes what the proxy did not pass on of its requests, in each way a page asks", { skip: noBrowser, timeout: 150_000 }, async () => {
+// more it asked for. The run has 300 s for its seven pages: it keeps 40 s
+// for each page asked for, so in 120 s a run whose first six pages took more
+// than 80 s, as on a busy machine, left out the seventh as out of time.
+test("a run names in a page's notes what the proxy did not pass on of its requests, in each way a page asks", { skip: noBrowser, timeout: 330_000 }, async () => {
   const traps = [];
   for (let i = 0; i < 11; i++) traps.push(await trap());
   const at = (i) => `127.0.0.1:${traps[i].port}`;
@@ -1550,7 +1552,7 @@ test("a run names in a page's notes what the proxy did not pass on of its reques
   const root = tempDir();
   const asked = (i) => `it asked for ${i === 9 ? "ws" : i === 10 ? "https" : "http"}://${at(i)}, which is ${NOT_GIVEN}: nothing was sent there`;
   try {
-    const { manifest } = await takeShots(`${origin}/`, { dir: path.join(root, "shots"), pages: 7, extra: Object.keys(ways), sizes: "desktop", timeLimit: 120_000 });
+    const { manifest } = await takeShots(`${origin}/`, { dir: path.join(root, "shots"), pages: 7, extra: Object.keys(ways), sizes: "desktop", timeLimit: 300_000 });
     const notesOf = (where) => {
       const one = manifest.pages.find((p) => new URL(p.url).pathname === where);
       assert.ok(one, `${where} was not taken`);
