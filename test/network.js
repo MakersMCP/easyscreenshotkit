@@ -52,11 +52,13 @@
 // page that fetch()es from 40 other such names over https as it has
 // loaded: the browser asks the proxy for a tunnel to each, 32 at once at
 // most, where it sends a page's pictures a few at a time, and plain http
-// requests through a proxy 6 at a time. The kit's command takes it
-// as the user who ran the test, with --json, saving in <folder>. It prints
-// one line of JSON: { status, said, manifest, after }, the exit code, the
-// last lines on stderr, the manifest it printed and how long its process
-// lived after it printed it, in ms.
+// requests through a proxy 6 at a time; with <names> "endless", a page that
+// fetch()es from another such name over https every tenth of a second for
+// as long as it is open. The kit's command takes it as the user who ran the
+// test, with --json, saving in <folder>, or with <command> "demo" records a
+// demo of it, with no GIF. It prints one line of JSON: { status, said,
+// manifest, after }, the exit code, the last lines on stderr, the manifest
+// it printed and how long its process lived after it printed it, in ms.
 
 const { spawn, spawnSync } = require("node:child_process");
 const dgram = require("node:dgram");
@@ -324,20 +326,21 @@ async function alone(uid, gid, cli, folder) {
   process.stdout.write(`${JSON.stringify(told)}\n`);
 }
 
-async function silent(uid, gid, cli, folder, names) {
+async function silent(uid, gid, cli, folder, names, command = "shots") {
   ip("link", "set", "lo", "up");
   const dns = dgram.createSocket("udp4");
   dns.on("message", () => {});
   await new Promise((resolve) => dns.bind(53, "127.0.0.1", resolve));
-  const dead = names === "burst" ? [] : Array.from({ length: Number(names) }, (_, i) => `http://dead${i + 1}.example/x.png`);
-  const burst = names === "burst" ? '<script>addEventListener("load", () => { for (let n = 1; n <= 40; n++) fetch("https://dead-b" + n + ".example/x", { mode: "no-cors" }).catch(() => {}); });</script>' : "";
+  const dead = ["burst", "endless"].includes(names) ? [] : Array.from({ length: Number(names) }, (_, i) => `http://dead${i + 1}.example/x.png`);
+  const burst = names === "burst" ? '<script>addEventListener("load", () => { for (let n = 1; n <= 40; n++) fetch("https://dead-b" + n + ".example/x", { mode: "no-cors" }).catch(() => {}); });</script>' : names === "endless" ? '<script>let n = 0; setInterval(() => fetch("https://dead-e" + ++n + ".example/x", { mode: "no-cors" }).catch(() => {}), 100);</script>' : "";
   const page = http.createServer((req, res) => {
     if (req.url === "/logo.svg") return res.writeHead(200, { "Content-Type": "image/svg+xml" }).end('<svg xmlns="http://www.w3.org/2000/svg" width="40" height="30"><rect width="40" height="30" fill="rgb(0,160,0)"/></svg>');
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(`<!doctype html><title>Acme | Tools</title><h1>Acme</h1><p>Tools for teams.</p>${dead.map((src) => `<img src="${src}">`).join("")}<script>setTimeout(() => { const img = new Image(); img.onload = () => (document.title = "Acme | Loaded"); img.src = "http://cdn.good.example/logo.svg"; document.body.append(img); }, 500);</script>${burst}<div style="height:1400px"></div>`);
   });
   await new Promise((resolve) => page.listen(0, "127.0.0.1", resolve));
   const told = await new Promise((resolve) => {
-    const args = ["-U", `--map-user=${uid}`, `--map-group=${gid}`, process.execPath, "--require", __filename, cli, `http://127.0.0.1:${page.address().port}/`, "--pages", "1", "--sizes", "desktop", "--json", "--out", folder];
+    const given = `http://127.0.0.1:${page.address().port}/`;
+    const args = ["-U", `--map-user=${uid}`, `--map-group=${gid}`, process.execPath, "--require", __filename, cli, ...(command === "demo" ? ["demo", given, "--pages", "1", "--no-gif"] : [given, "--pages", "1", "--sizes", "desktop"]), "--json", "--out", folder];
     const child = spawn("unshare", args, { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, DIAL_TO: `127.0.0.1:${page.address().port}` } });
     let out = "";
     let err = "";
@@ -347,7 +350,7 @@ async function silent(uid, gid, cli, folder, names) {
       printed = Date.now();
     });
     child.stderr.on("data", (d) => (err += d));
-    const timer = setTimeout(() => child.kill("SIGKILL"), 100_000);
+    const timer = setTimeout(() => child.kill("SIGKILL"), 150_000);
     child.on("close", (code, signal) => {
       clearTimeout(timer);
       let manifest = null;

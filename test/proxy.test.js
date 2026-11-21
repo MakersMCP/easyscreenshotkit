@@ -653,6 +653,38 @@ test("the proxy finds the status line of a site's answer where the browser finds
   }
 });
 
+// The proxy's reader of a site's answer (see closing() in proxy.js) reads
+// each byte once, as it comes, in whatever parts it comes: every shape of
+// the test above, and a status line with four bytes before HTTP, one with
+// no space at all and one with a carriage return inside it, which the
+// browser ends there, give the same bytes fed one byte a part and in two
+// parts at every split as whole. A reader that forgot a line feed at the
+// end of a part, looked for HTTP at the first four bytes only, read a status
+// line past a carriage return in it or took one with no space for none
+// passed every test that gave it an answer whole, or in the large parts one
+// write makes.
+const SHAPES = {
+  junk: ["\r\nHTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok", "\r\nHTTP/1.1 200 OK\r\n", "\r\n"],
+  four: ["\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok", "\r\n\r\nHTTP/1.1 200 OK\r\n", "\r\n"],
+  cased: ["hTtP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok", "hTtP/1.1 200 OK\r\n", "\r\n"],
+  noversion: ["HTTP 200 OK\r\nContent-Length: 2\r\n\r\nok", "HTTP 200 OK\r\n", "\r\n"],
+  nospace: ["HTTP/1.1200 OK\r\nContent-Length: 2\r\n\r\nok", "HTTP/1.1200 OK\r\n", "\r\n"],
+  bare: ["HTTP/1.1\r\nContent-Length: 2\r\n\r\nok", "HTTP/1.1\r\n", "\r\n"],
+  nocode: ["HTTP/1.1 OK\r\nContent-Length: 2\r\n\r\nok", "HTTP/1.1 OK\r\n", "\r\n"],
+  inside: ["HTTP/1.1\r 100 Continue\r\nContent-Length: 2\r\n\r\nok", "HTTP/1.1\r 100 Continue\r\n", "\r\n"],
+  spaces: ["HTTP/1.1  100  Continue\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok", "HTTP/1.1  100  Continue\r\n\r\nHTTP/1.1 200 OK\r\n", "\r\n"],
+  zeros: ["HTTP/1.1 0100 Continue\n\nHTTP/1.1 200 OK\nContent-Length: 2\n\nok", "HTTP/1.1 0100 Continue\n\nHTTP/1.1 200 OK\n", "\n"],
+  mixed: ["HTTP/1.1 102 Processing\nX-A: 1\n\r\nHTTP/1.1 101 Switching\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok", "HTTP/1.1 102 Processing\nX-A: 1\n\r\nHTTP/1.1 101 Switching\r\n\r\nHTTP/1.1 200 OK\r\n", "\r\n"],
+  continued: ["HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok", "HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\n", "\r\n"],
+  tab: ["HTTP/1.1\t100 Continue\r\n\r\nok", "HTTP/1.1\t100 Continue\r\n", "\r\n"],
+  none: ["SSH-2.0-OpenSSH_9.6\r\n", null],
+};
+
+// How much of the main thread's CPU time has gone since `from`: judged so, as
+// a busy machine makes the clock longer, or the process's where Node.js has
+// no count of a thread's.
+const cpuSince = (from) => (process.threadCpuUsage ? process.threadCpuUsage(from) : process.cpuUsage(from));
+
 // What the reader gives for an answer that comes in `parts`: the bytes it
 // passes on, as text.
 function readInParts(parts) {
@@ -672,6 +704,36 @@ function readInParts(parts) {
   if (!passing) out.push(reader.held());
   return Buffer.concat(out).toString("latin1");
 }
+
+test("the proxy's reader of an answer gives the same bytes whatever parts the answer comes in", () => {
+  const lines = (end) => `Connection: close${end}Proxy-Connection: close${end}`;
+  for (const [shape, [answer, part, end]] of Object.entries(SHAPES)) {
+    const expected = part === null ? answer : `${part}${lines(end)}${answer.slice(part.length)}`;
+    const bytes = Buffer.from(answer, "latin1");
+    assert.equal(readInParts([bytes]), expected, `${shape}, whole`);
+    assert.equal(readInParts([...bytes].map((byte) => Buffer.from([byte]))), expected, `${shape}, a byte a part`);
+    for (let at = 1; at < bytes.length; at++) assert.equal(readInParts([bytes.subarray(0, at), bytes.subarray(at)]), expected, `${shape}, split at ${at}`);
+  }
+});
+
+// Each head read once: 9,000 informational heads, each a part of its own, as
+// a site writes them when it writes each once the last was read, cost the
+// reader a moment of the main thread. Read again from the answer's first
+// byte for each part that came, they took it twelve seconds.
+test("the proxy's reader reads each byte once, however many parts an answer comes in", () => {
+  const head = Buffer.from("HTTP/1.1 100 Continue\r\n\r\n", "latin1");
+  const final = Buffer.from("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok", "latin1");
+  const reader = closing();
+  const before = cpuSince();
+  let marked = null;
+  for (let i = 0; i < 9_000 && !marked; i++) marked = reader.read(head);
+  assert.equal(marked, null);
+  marked = reader.read(final);
+  const spent = cpuSince(before);
+  assert.ok((spent.user + spent.system) / 1000 < 500, `the reader took ${Math.round((spent.user + spent.system) / 1000)} ms of the main thread`);
+  assert.equal(marked.length, head.length * 9_000 + final.length + 44);
+  assert.equal(marked.subarray(-final.length - 44).toString("latin1"), "HTTP/1.1 200 OK\r\nConnection: close\r\nProxy-Connection: close\r\nContent-Length: 2\r\n\r\nok");
+});
 
 // The reader puts the two lines in after the status line of the request's
 // own answer where that line ends within the answer's first HEADERS_MAX
@@ -719,9 +781,7 @@ test("the proxy's reader puts the two lines in by where the status line of the r
 // start of the answer again for each part that came, 256 KB of "HTTP/1.1 100
 // Continue" heads held the main thread more than two seconds and a megabyte
 // of them two minutes, in which the run heard neither its --timeout nor a
-// signal. Judged by the main thread's own CPU time, as a busy machine makes
-// the clock longer, or the process's where Node.js has no count of a thread's.
-const cpuSince = (from) => (process.threadCpuUsage ? process.threadCpuUsage(from) : process.cpuUsage(from));
+// signal. Judged by the main thread's own CPU time (see cpuSince()).
 
 test("a site that answers with many informational heads before its answer costs the proxy little, and the answer goes through", { timeout: 60_000 }, async () => {
   const head = "HTTP/1.1 100 Continue\r\n\r\n";
@@ -1298,11 +1358,13 @@ test("the browser sends nothing past its proxy on the machine's networks: no sea
 
 // On a machine whose one network up is its loopback, as one offline, or a
 // container with no network, a site of the machine given as the address is
-// taken: there the browser never says it is done gathering WebRTC's
-// candidates, and the start, which waited for that among its probes of the
-// proxy, stopped every run as one whose browser was too slow for them,
-// where 0.1.3 took the site. In a network namespace of the test's own with
-// its loopback alone (see network.js), the kit's own command.
+// taken: there the browser does not say it is done gathering WebRTC's
+// candidates for its first seconds, and the start, which waited for that
+// among its probes of the proxy, stopped most runs as ones whose browser
+// was too slow for them, where 0.1.3 took the site. In a network namespace
+// of the test's own with its loopback alone (see network.js), the kit's own
+// command. The next test holds the probe's time where the browser never says
+// so.
 test("on a machine whose one network is its loopback, a site of the machine given as the address is taken", { skip: noBrowser || noNamespace, timeout: 150_000 }, async () => {
   const root = tempDir();
   try {
@@ -1376,6 +1438,66 @@ test("an address of this machine's own, a public one too, is not opened from a s
     ]);
     assert.ok(told.manifest.notes.includes("The sitemap http://[2a02:1205:5000::1]/sitemap.xml, which robots.txt names, was not read: it is at 2a02:1205:5000::1, an address of this machine."), JSON.stringify(told.manifest.notes));
   } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// The start's probe of WebRTC ends 1.5 s after its offer was set, where the
+// browser does not say it is done gathering: waited for, as on a machine
+// whose one network is its loopback, the probe ran to its 10 s and the
+// browser was said to be too slow for the run's checks of its proxy. Here a
+// relay of the browser's pipe, the program CHROME_PATH names, has the
+// probe's page never hear that gathering is done.
+test("the start's probe of WebRTC ends in its time where the browser never says it is done gathering", { skip: noBrowser || (process.platform === "win32" && "the relay is started by a shell script"), timeout: 90_000 }, async () => {
+  setTimeLimit(90_000);
+  const root = tempDir();
+  const relay = path.join(root, "relay.js");
+  const log = path.join(root, "rewritten.log");
+  fs.writeFileSync(
+    relay,
+    `"use strict";
+const fs = require("fs");
+const { spawn } = require("child_process");
+const child = spawn(${JSON.stringify(findChrome())}, process.argv.slice(2), { stdio: ["ignore", "ignore", "inherit", "pipe", "pipe"] });
+const fromKit = fs.createReadStream(null, { fd: 3 });
+const toKit = fs.createWriteStream(null, { fd: 4 });
+for (const stream of [fromKit, toKit, child.stdio[3], child.stdio[4]]) stream.on("error", () => {});
+const split = (stream, take) => {
+  let bytes = Buffer.alloc(0);
+  stream.on("data", (chunk) => {
+    bytes = Buffer.concat([bytes, chunk]);
+    let at;
+    while ((at = bytes.indexOf(0)) >= 0) {
+      const text = bytes.subarray(0, at).toString();
+      bytes = bytes.subarray(at + 1);
+      take(text);
+    }
+  });
+};
+split(fromKit, (text) => {
+  const msg = JSON.parse(text);
+  if (msg.method === "Runtime.evaluate" && /iceGatheringState === "complete"/.test(msg.params.expression)) {
+    msg.params.expression = msg.params.expression.replace('rtc.iceGatheringState === "complete"', "false");
+    fs.appendFileSync(${JSON.stringify(log)}, "rewritten\\n");
+  }
+  child.stdio[3].write(JSON.stringify(msg) + "\\0");
+});
+split(child.stdio[4], (text) => toKit.write(text + "\\0"));
+fromKit.on("end", () => child.stdio[3].end());
+child.on("exit", (code) => process.exit(code === null ? 1 : code));
+`,
+  );
+  const browser = path.join(root, "gathering");
+  fs.writeFileSync(browser, `#!/bin/sh\nexec ${sh(process.execPath)} ${sh(relay)} "$@"\n`, { mode: 0o755 });
+  const saved = process.env.CHROME_PATH;
+  process.env.CHROME_PATH = browser;
+  try {
+    const chrome = await launch();
+    await chrome.close();
+    assert.equal(fs.readFileSync(log, "utf8"), "rewritten\n");
+  } finally {
+    if (saved === undefined) delete process.env.CHROME_PATH;
+    else process.env.CHROME_PATH = saved;
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
@@ -1508,6 +1630,45 @@ test("a site given by http on port 80 at a name of the user's network or an addr
       ],
       JSON.stringify(told.runs.map((run) => run.said)),
     );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// So does a demo: once it has saved, a name still waiting for its lookup is
+// not asked, and its process ends once the system has given up on the 16
+// it was trying. Here a page fetch()es from another name whose DNS gives
+// no answer every tenth of a second for as long as it is open, so names
+// wait at the end of any demo, and asked in turn, 16 at a time, each round
+// 10 s, they held the demo's process that much longer past its end. In the
+// same namespaces.
+const noFfmpeg = !require("../skills/easyscreenshotkit/scripts/lib/ffmpeg").findFfmpeg() && "no ffmpeg on this machine";
+
+test("once a demo has saved, a name still waiting for its lookup is not asked, and the demo's process ends", { skip: noBrowser || noMountNamespace || noFfmpeg, timeout: 200_000 }, async () => {
+  const root = tempDir();
+  try {
+    const resolv = path.join(root, "resolv.conf");
+    const hosts = path.join(root, "hosts");
+    fs.writeFileSync(resolv, "nameserver 127.0.0.1\noptions timeout:10 attempts:1\n");
+    fs.writeFileSync(hosts, "127.0.0.1 localhost\n::1 localhost\n93.184.216.34 cdn.good.example\n");
+    const cli = require.resolve("../skills/easyscreenshotkit/scripts/easyscreenshotkit.js");
+    const script = 'ip link set lo up && mount --bind "$1" /etc/resolv.conf && mount --bind "$2" /etc/hosts && exec "$3" "$4" silent "$5" "$6" "$7" "$8" endless demo';
+    const child = spawn("unshare", ["-rmn", "sh", "-c", script, "sh", resolv, hosts, process.execPath, path.join(__dirname, "network.js"), String(process.getuid()), String(process.getgid()), cli, path.join(root, "demo")], { stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (d) => (out += d));
+    child.stderr.on("data", (d) => (err += d));
+    const timer = setTimeout(() => child.kill("SIGKILL"), 190_000);
+    await new Promise((resolve) => child.on("close", resolve));
+    clearTimeout(timer);
+    let told = null;
+    try {
+      told = JSON.parse(out.trim().split("\n").pop());
+    } catch {
+      assert.fail(`network.js printed no result: ${(out + err).trim().slice(-600)}`);
+    }
+    assert.equal(told.status, 0, told.said || err);
+    assert.ok(told.after < 13_000, `the demo's process lived ${told.after} ms after it printed its manifest`);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

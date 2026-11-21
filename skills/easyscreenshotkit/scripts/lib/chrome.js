@@ -1001,9 +1001,9 @@ async function preloadingSaid(tab, left, profile) {
 // run alone: a browser started as the run starts it sends none and is done
 // gathering in a moment, one that sends them sends the first at once, and
 // on a machine whose one network up is its loopback, as one offline or a
-// container with no network, the browser never says it is done: waited
-// for, that stopped each run there as one too slow for its checks, a site
-// of the machine given as the address too.
+// container with no network, the browser does not say it is done for its
+// first seconds, and waited for, that stopped each run there as one too
+// slow for its checks, a site of the machine given as the address too.
 const PAST = "so it was not used: a page could have it reach an address the run does not open.";
 const PROBE_WAIT_MS = 10_000;
 const GATHER_MS = 1_500;

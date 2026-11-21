@@ -1013,6 +1013,30 @@ const { guardFor, stopLookups } = require(${JSON.stringify(require.resolve("../s
 // private network by its form, as a server under development that is not
 // running, gets no such word, and nor does another address than the one
 // given, as the manifest a page links.
+// Once a run has saved, a name it asks for the first time is not looked up
+// (see stopLookups()), and gives no answer at once, so the run's process
+// waits for no lookup of it: in a process of its own, as the stop holds for
+// the process's life.
+test("a name first asked once the run has stopped its lookups is not looked up", () => {
+  const script = `const dns = require("dns");
+const asked = [];
+const lookup = dns.lookup;
+dns.lookup = (host, ...rest) => { asked.push(host); return lookup(host, ...rest); };
+const address = require(${JSON.stringify(require.resolve("../skills/easyscreenshotkit/scripts/lib/address"))});
+address.stopLookups();
+const started = Date.now();
+address.guardFor("https://after-the-stop.example/").then((guard) => process.stdout.write(JSON.stringify({ unresolved: guard.unresolved, asked, ms: Date.now() - started })));`;
+  const run = spawnSync(process.execPath, ["-e", script], { encoding: "utf8", timeout: 30_000 });
+  let told = null;
+  try {
+    told = JSON.parse(run.stdout);
+  } catch {
+    assert.fail(`the lookup gave nothing: ${run.stdout}${run.stderr}`);
+  }
+  assert.deepEqual({ unresolved: told.unresolved, asked: told.asked }, { unresolved: "no answer in 10 s", asked: [] });
+  assert.ok(told.ms < 5_000, `${told.ms} ms`);
+});
+
 test("a run that cannot reach the address given says that the kit does not use the proxy a setting names", () => {
   const names = ["https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY"];
   const saved = Object.fromEntries(names.map((name) => [name, process.env[name]]));
@@ -1040,8 +1064,12 @@ test("a run that cannot reach the address given says that the kit does not use t
     for (const message of failed) assert.equal(throughNoProxy(message), `${message}${/[.]$/.test(message) ? "" : "."}${word("HTTPS_PROXY")}`, message);
     for (const message of kept) assert.equal(throughNoProxy(message), message, message);
     delete process.env.HTTPS_PROXY;
-    process.env.all_proxy = "socks5://127.0.0.1:1080";
-    assert.equal(throughNoProxy(failed[0]), `${failed[0]}.${word("all_proxy")}`);
+    // Each of the six settings, set alone, is named.
+    for (const name of names) {
+      process.env[name] = "socks5://127.0.0.1:1080";
+      assert.equal(throughNoProxy(failed[0]), `${failed[0]}.${word(name)}`, name);
+      delete process.env[name];
+    }
   } finally {
     for (const name of names) {
       if (saved[name] === undefined) delete process.env[name];

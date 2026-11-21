@@ -103,6 +103,25 @@ test("a run that cannot reach the address given with a proxy setting set says th
   }
 });
 
+// The command looks names up on 32 of libuv's threads, 16 names at once
+// (see lib/address.js), where the variable that sets how many there are is
+// unset, and keeps a number the caller set: with the 4 Node.js starts with,
+// two names whose DNS gave no answer held every name a page asked after
+// them. Read as the command's process ends.
+test("the command sets UV_THREADPOOL_SIZE to 32 where it is unset, and keeps one that is set", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-threads-"));
+  try {
+    const preload = path.join(root, "threads.js");
+    fs.writeFileSync(preload, 'process.on("exit", () => require("fs").writeSync(2, `threads=${process.env.UV_THREADPOOL_SIZE}\\n`));\n');
+    const { UV_THREADPOOL_SIZE, ...base } = process.env;
+    const run = (more) => spawnSync(process.execPath, ["-r", preload, CLI, "--version"], { env: { ...base, ...more }, encoding: "utf8", timeout: 30_000 });
+    assert.match(run({}).stderr, /^threads=32$/m);
+    assert.match(run({ UV_THREADPOOL_SIZE: "7" }).stderr, /^threads=7$/m);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // MAKERSMCP_REFUSE_ADDRESSES, the addresses the host that runs the kit
 // refuses besides: a value that does not parse stops every command before
 // any work, with exit code 2 as an argument the kit refuses and words that
