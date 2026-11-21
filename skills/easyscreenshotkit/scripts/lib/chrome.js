@@ -406,14 +406,22 @@ async function launch({ lang = "", args = [], guard = null } = {}) {
   // temp folder as its own.
   const wait = startWait();
   let tried;
+  // The profiles of the starts that gave no browser, removed again once the
+  // proxy has closed (see below).
+  const profiles = [];
   try {
     tried = await start(binary, { lang, args, own: true, wait: wait.ms, proxy });
-    if (tried.tooDeep && tried.own) tried = await start(binary, { lang, args, own: false, wait: wait.ms, proxy });
+    if (tried.profile) profiles.push(tried.profile);
+    if (tried.tooDeep && tried.own) {
+      tried = await start(binary, { lang, args, own: false, wait: wait.ms, proxy });
+      if (tried.profile) profiles.push(tried.profile);
+    }
   } catch (err) {
     proxy.close();
     throw err;
   }
   if (tried.chrome) {
+    for (const profile of profiles) removeProfile(profile);
     chrome = tried.chrome;
     chrome.guard = guard;
     chrome.proxy = proxy;
@@ -427,7 +435,12 @@ async function launch({ lang = "", args = [], guard = null } = {}) {
     };
     return chrome;
   }
+  // The proxy's socket is closed before a profile that is still there is
+  // removed again: where the system refused to start the browser for want of
+  // file descriptors, it held one of the few left, and Node.js 24's removal
+  // left the profile in the temp folder with one free, and said nothing.
   proxy.close();
+  for (const profile of profiles) removeProfile(profile);
   // A program that could not be started, as one whose loader or a library
   // it needs is missing, or one for another system: what is wrong with it.
   if (tried.unstarted) throw new Error(`${name} did not start: ${tried.unstarted}`);
@@ -574,7 +587,7 @@ async function start(binary, { lang, args, own, wait = START_MS, proxy }) {
   const apart = process.platform === "linux" ? standIns(profile) : {};
   if (apart.problem) {
     removeProfile(profile);
-    return { unguarded: apart.problem };
+    return { unguarded: apart.problem, profile };
   }
   // The browser's own preloading is off (network_prediction_options 2,
   // never): with its default, a page's speculation rules had it prefetch or
@@ -598,7 +611,7 @@ async function start(binary, { lang, args, own, wait = START_MS, proxy }) {
     downloads = downloadsIn(profile);
   } catch (err) {
     removeProfile(profile);
-    return { unstarted: `${unwritten(err)}.` };
+    return { unstarted: `${unwritten(err)}.`, profile };
   }
   const inProfile = own && process.platform === "linux" && roomIn(profile);
   const locksBefore = lockFolders();
@@ -684,7 +697,7 @@ async function start(binary, { lang, args, own, wait = START_MS, proxy }) {
     );
   } catch (err) {
     removeProfile(profile);
-    return { unstarted: whyUnstarted(binary, err) };
+    return { unstarted: whyUnstarted(binary, err), profile };
   }
   let exited = false;
   // Whether the browser ended, or its connection closed, before close()
@@ -891,7 +904,7 @@ async function start(binary, { lang, args, own, wait = START_MS, proxy }) {
   await close();
   await sleep(300);
   removeProfile(profile);
-  return { own: inProfile, tooDeep: removeStrayLocks(locksBefore) || deep, silent, refused, preloading, unproxied, late, unstarted, said: exited && !answered ? printed() : "" };
+  return { own: inProfile, tooDeep: removeStrayLocks(locksBefore) || deep, silent, refused, preloading, unproxied, late, unstarted, said: exited && !answered ? printed() : "", profile };
 }
 
 // What the browser says of its preloading, and whether it sends its
@@ -1158,12 +1171,17 @@ function unwritten(err) {
 // Removes a browser's profile, trying again while a helper of the browser
 // still writes in it, and leaves what cannot be removed for the system's
 // temp clean-up: a removal that fails is no reason to lose a run, nor to
-// say why a browser did not start in other words.
+// say why a browser did not start in other words. Whether it is gone is
+// looked at, and a profile still there is removed once more: Node.js 24's
+// removal with force can leave a folder and say nothing, as it did with one
+// file descriptor free.
 function removeProfile(profile) {
-  try {
-    fs.rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-  } catch {
-    // Left for the system's temp clean-up.
+  for (let tries = 0; tries < 2 && fs.existsSync(profile); tries++) {
+    try {
+      fs.rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    } catch {
+      // Left for the system's temp clean-up.
+    }
   }
 }
 
