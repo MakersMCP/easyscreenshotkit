@@ -31,7 +31,7 @@ const { PWA_SHOTS, LOOKED_AT, planPwa, checkManifest } = require("./pwa");
 const { renderSheet } = require("./sheet");
 const { begin, checkDir, realFolder } = require("./outdir");
 const { setTimeLimit, timeLeft, sleep } = require("./time");
-const { guardFor, hostRefusals, unresolvedError, refusedError } = require("./address");
+const { guardFor, hostRefusals, unresolvedError, refusedError, NOT_WEB } = require("./address");
 const { hideRefusal, shownSelector } = require("./steps");
 const programs = require("./programs");
 const version = require("./version");
@@ -744,13 +744,19 @@ function barredNotes(barred = []) {
 }
 
 // What the waits for a window of a page saw by the time it was taken, as
-// notes, and only what they waited for: a run short of time waits less.
+// notes, and only what they waited for: a run short of time waits less. A
+// page taken on its loading screen as time ran short is told to give more
+// time only when the run's proxy passed on every request of it (see
+// unreachedNotes()): one whose app or data is at an address the run does
+// not open shows that screen with all the time there is, as a longer run
+// says, and the advice beside the note that nothing was sent there sent
+// the user the wrong way.
 function waitNotes(result) {
   const notes = [];
   if (result.loaded === false) notes.push("still showed a loading screen after 20 s");
   const data = dataNote(result) || openNote(result);
   if (data) notes.push(data);
-  if (!result.short && result.loaded === null) notes.push("taken while it still showed a loading screen: time ran short; give more with --timeout");
+  if (!result.short && result.loaded === null) notes.push(`taken while it still showed a loading screen${result.unreached && result.unreached.length ? "" : ": time ran short; give more with --timeout"}`);
   return notes;
 }
 
@@ -1525,6 +1531,15 @@ async function takeShots(rawUrl, options = {}) {
       if (why === "the address given") throw new Error(`${url} was asked for but not taken: ${LEFT_FOR_TIME}. No screenshots were saved.`);
     };
     for (const [url, why] of named) {
+      // One the run does not open is said so first: a page on another port
+      // of the site's host has the path of a page there, and was named as
+      // the same page as that one.
+      const barred = chrome.guard ? await chrome.guard.refuses(url).catch(() => NOT_WEB) : "";
+      if (barred) {
+        rejected.push({ url, reason: barred });
+        notTaken(url, barred);
+        continue;
+      }
       const same = kept.find((page) => page.keys.has(viewKey(url)));
       if (same) {
         notes.push(`${url} was asked for but not taken: the same page as ${same.slug}.`);

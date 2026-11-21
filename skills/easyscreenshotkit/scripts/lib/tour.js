@@ -16,6 +16,7 @@ const { readInfo, readLinks, rejectAtOnce, rejectReason, slugOf, siteName, ident
 const { homeOf, pageKey, routeOf, viewKey, pathOf, readable, siteOf, rankLinks, routeLinks, visitOrder, readSiteIndex, indexNotes, kindOf, alternateFor } = require("./pick");
 const { TOP_COVER } = require("./record");
 const { timeLeft } = require("./time");
+const { NOT_WEB } = require("./address");
 
 const PROBE = { width: 1600, height: 900, scale: 1, mobile: false, touch: false, agent: "desktop" };
 
@@ -178,6 +179,15 @@ async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = 
   const missed = [];
   const named = [...(given && !homeLost ? [[given, "the address given"]] : []), ...asks.map((url) => [url, "asked for with --page"])];
   for (const [url, why] of named) {
+    // One the run does not open is said so first: a page on another port of
+    // the site's host has the path of a page there, and was named as the
+    // same page as that one.
+    const barred = chrome.guard ? await chrome.guard.refuses(url).catch(() => NOT_WEB) : "";
+    if (barred) {
+      skipped.push({ url, reason: barred });
+      missed.push({ url, reason: barred });
+      continue;
+    }
     const same = kept.find((page) => page.keys.has(viewKey(url)));
     if (same) {
       skipped.push({ url, reason: `the same page as ${same.slug}` });

@@ -566,7 +566,14 @@ async function makeDemo(rawUrl, options = {}) {
           record = await recorder.run(step);
         } catch (err) {
           alive();
-          throw new Error(added && n === 1 ? `opening ${asked}: ${err.message}` : `step ${n - added} (${step.action}): ${err.message}`);
+          // The first step opens the demo's first page, the address given or
+          // the file's own first visit: when it could not reach it, the words
+          // that the kit does not use a proxy a setting names go with it (see
+          // address.js throughNoProxy()), before the step is named, as for a
+          // tour's first page. Once a page was reached, another site's visit
+          // that fails needs none.
+          const said = n === 1 ? throughNoProxy(err.message) : err.message;
+          throw new Error(added && n === 1 ? `opening ${asked}: ${said}` : `step ${n - added} (${step.action}): ${said}`);
         }
         alive();
         records.push({ n: n - added, step, ...record });

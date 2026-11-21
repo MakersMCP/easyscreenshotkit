@@ -21,6 +21,7 @@ const { startProxy, dialer, closing, NO_RULE } = require("../skills/easyscreensh
 const { findChrome, launch, openTab, closeTab, navigate, roomIn, proxySaid, BARRED, UNREACHED } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
 const { guardFor, NOT_GIVEN, NOT_PUBLIC } = require("../skills/easyscreenshotkit/scripts/lib/address");
 const { takeShots } = require("../skills/easyscreenshotkit/scripts/lib/shots");
+const { pickPages } = require("../skills/easyscreenshotkit/scripts/lib/tour");
 const { setTimeLimit, sleep } = require("../skills/easyscreenshotkit/scripts/lib/time");
 const { serve, tempProblem, sh, reachAt, pngOf } = require("./helpers");
 
@@ -2234,6 +2235,59 @@ test("a document the proxy refuses past the browser's guard is not shown, and it
   } finally {
     if (chrome) await chrome.close();
     server.close();
+  }
+});
+
+// A page taken on its loading screen as the run's time ran short is not told
+// to give more time when its app is at an address the run does not open:
+// more time does not bring it, as a longer run says it still showed a
+// loading screen after 20 s, and the notes asked for more time beside the
+// note that nothing was sent there. Here an app shell whose module script
+// is on another port of this machine, in a run of 45 s.
+test("a page taken on its loading screen whose app the run does not fetch is not told to give more time", { skip: noBrowser, timeout: 120_000 }, async () => {
+  const other = await trap();
+  const { server, origin } = await serve((req, res) => (req.url === "/" ? res.writeHead(200, html).end(`<!doctype html><title>App</title><div id="app"><h1>Loading…</h1></div><script type="module" src="http://127.0.0.1:${other.port}/app.js"></script>`) : res.writeHead(404).end()));
+  const root = tempDir();
+  try {
+    const { manifest } = await takeShots(`${origin}/`, { dir: path.join(root, "shots"), pages: 1, sizes: "desktop", timeLimit: 45_000 });
+    const [page] = manifest.pages;
+    assert.ok(page.notes.includes(`it asked for http://127.0.0.1:${other.port}, which is ${NOT_GIVEN}: nothing was sent there`), JSON.stringify(page.notes));
+    assert.ok(page.notes.some((note) => ["taken while it still showed a loading screen", "still showed a loading screen after 20 s"].includes(note)), JSON.stringify(page.notes));
+    assert.deepEqual(page.notes.filter((note) => /give more with --timeout/.test(note)), []);
+    assert.deepEqual(other.seen, []);
+  } finally {
+    server.close();
+    other.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A page asked for with --page on another port of the site's host on this
+// machine, at the path of a page the run took, is named with why the run
+// does not open it, where it was said to be the same page as that one: no
+// request goes there either way. In the screenshots and a demo's tour.
+test("a page asked for on another port of the site's host is named with why it is not opened, not as the same page", { skip: noBrowser, timeout: 240_000 }, async () => {
+  const other = await trap();
+  const { server, origin } = await serve((req, res) => (req.url === "/" ? res.writeHead(200, html).end('<!doctype html><title>Acme | Tools</title><h1>Acme</h1><p>Tools for teams.</p><div style="height:1400px"></div>') : res.writeHead(404).end()));
+  const root = tempDir();
+  const elsewhere = `http://127.0.0.1:${other.port}/`;
+  try {
+    const { manifest } = await takeShots(`${origin}/`, { dir: path.join(root, "shots"), pages: 1, extra: [elsewhere], sizes: "desktop", timeLimit: 120_000 });
+    assert.ok(manifest.notes.includes(`${elsewhere} was asked for but not taken: ${NOT_GIVEN}.`), JSON.stringify(manifest.notes));
+    assert.deepEqual(manifest.skipped, [{ url: elsewhere, reason: NOT_GIVEN }]);
+    setTimeLimit(120_000);
+    const chrome = await launch({ guard: await guardFor(`${origin}/`) });
+    try {
+      const tour = await pickPages(chrome, `${origin}/`, { pages: 1, extra: [elsewhere] });
+      assert.deepEqual(tour.skipped, [{ url: elsewhere, reason: NOT_GIVEN }]);
+    } finally {
+      await chrome.close();
+    }
+    assert.deepEqual(other.seen, []);
+  } finally {
+    server.close();
+    other.close();
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });
 

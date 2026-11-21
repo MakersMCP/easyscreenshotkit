@@ -20,7 +20,7 @@ const { findChrome, launch, openTab, closeTab, navigate } = require("../skills/e
 const { guardFor } = require("../skills/easyscreenshotkit/scripts/lib/address");
 const { findFfmpeg, makeGif, startVideo, gifIsWhole, mp4Frames } = require("../skills/easyscreenshotkit/scripts/lib/ffmpeg");
 const { checkBackdrop } = require("../skills/easyscreenshotkit/scripts/lib/compose");
-const { readPng, pngOf, serve, near, descendants, relayBrowser, runUntilOver, tempProblem, sh } = require("./helpers");
+const { readPng, pngOf, serve, near, descendants, relayBrowser, runUntilOver, tempProblem, sh, reachAt } = require("./helpers");
 const { noBus, privateBus, fakePortal } = require("./bus");
 
 const CLI = path.resolve(__dirname, "../skills/easyscreenshotkit/scripts/easyscreenshotkit.js");
@@ -38,6 +38,39 @@ const YELLOW = [250, 220, 0];
 const BLUE = [0, 0, 220];
 const MAGENTA = [255, 0, 255];
 const TEAL = [0, 200, 200];
+
+// A demo from a steps file whose first page cannot be reached says that the
+// kit does not use the proxy a setting names, as a tour's does, whether the
+// kit opens the address given first or the file's own first step visits
+// it, with the step's own words before it; a later visit to another site
+// that fails says nothing of it, as the first page was reached. Here the
+// address is on the public internet, and no connection to it leaves this
+// machine (see helpers.js reachAt()).
+test("a demo whose first page cannot be reached with a proxy setting set says the kit does not use it, after the step's words", { skip: missing, timeout: 240_000 }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-proxied-demo-"));
+  const { server, origin } = await serve((req, res) => res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end('<!doctype html><title>Site</title><body style="margin:0;background:rgb(0,160,0)"><h1>Site</h1><div style="height:1400px"></div></body>'));
+  const stand = reachAt({});
+  const saved = process.env.HTTPS_PROXY;
+  process.env.HTTPS_PROXY = "http://user:secret@proxy.example:3128";
+  const word = " easyscreenshotkit does not use the proxy HTTPS_PROXY names: its browser and its own requests connect to each site themselves, so on a network that reaches the web only through that proxy, it reaches no site.";
+  const steps = (name, text) => {
+    const file = path.join(root, name);
+    fs.writeFileSync(file, text);
+    return file;
+  };
+  try {
+    const failed = (url) => `Could not open ${url}: net::ERR_CONNECTION_REFUSED`;
+    await assert.rejects(makeDemo("http://93.184.215.14/", { dir: path.join(root, "added"), steps: steps("wait.yaml", "steps:\n  - wait: 1\n"), gif: false, timeLimit: 120_000 }), { message: `opening http://93.184.215.14/: ${failed("http://93.184.215.14/")}.${word}` });
+    await assert.rejects(makeDemo("http://93.184.215.14/", { dir: path.join(root, "first"), steps: steps("visit.yaml", "steps:\n  - visit: /\n"), gif: false, timeLimit: 120_000 }), { message: `step 1 (visit): ${failed("http://93.184.215.14/")}.${word}` });
+    await assert.rejects(makeDemo(`${origin}/`, { dir: path.join(root, "later"), steps: steps("later.yaml", "steps:\n  - visit: /\n  - visit: http://93.184.215.15/\n"), gif: false, timeLimit: 120_000 }), { message: `step 2 (visit): ${failed("http://93.184.215.15/")}` });
+  } finally {
+    if (saved === undefined) delete process.env.HTTPS_PROXY;
+    else process.env.HTTPS_PROXY = saved;
+    stand.restore();
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("demo options: defaults, flags, and what is refused", () => {
   const plain = parseDemo(["acme.com"]);
