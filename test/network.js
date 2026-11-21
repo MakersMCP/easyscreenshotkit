@@ -516,6 +516,62 @@ async function upgraded(uid, gid, cli, folder) {
   process.stdout.write(`${JSON.stringify({ runs })}\n`);
 }
 
+// Run as
+//
+//   unshare -rn node network.js lossy <uid> <gid> <cli> <folder>
+//
+// it stands in for a network that loses every other connection to a site
+// whole, its first among them, as a lossy path or a load balancer with a
+// backend that does not answer can: a dummy network holds the site at
+// 93.184.216.34, which serves a page on port 8080, where the browser does
+// not try https first, and nftables drops every packet of every other
+// connection made to it. The kit's command takes the
+// site as the user who ran the test, with --json, saving in <folder>. It
+// prints one line of JSON: { status, said, manifest, took }, the exit code,
+// the last lines on stderr, the manifest it printed and how long it ran, in
+// ms.
+async function lossy(uid, gid, cli, folder) {
+  ip("link", "set", "lo", "up");
+  ip("link", "add", "d0", "type", "dummy");
+  ip("link", "set", "d0", "up");
+  ip("addr", "add", "93.184.216.34/32", "dev", "d0");
+  const page = http.createServer((req, res) => res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end("<!doctype html><title>Acme | Tools</title><h1>Acme</h1><p>Tools for teams, on a lossy network.</p><div style=\"height:1400px\"></div>"));
+  await new Promise((resolve) => page.listen(8080, "93.184.216.34", resolve));
+  for (const rule of [
+    "add table inet lossy",
+    "add set inet lossy known { type ipv4_addr . inet_service; }",
+    "add set inet lossy lost { type ipv4_addr . inet_service; }",
+    "add chain inet lossy out { type filter hook output priority 0; }",
+    "add rule inet lossy out ip daddr 93.184.216.34 tcp flags & (syn|ack) == syn ip daddr . tcp sport != @known numgen inc mod 2 == 0 add @lost { ip daddr . tcp sport }",
+    "add rule inet lossy out ip daddr 93.184.216.34 tcp flags & (syn|ack) == syn ip daddr . tcp sport != @lost add @known { ip daddr . tcp sport }",
+    "add rule inet lossy out ip daddr . tcp sport @lost drop",
+  ]) {
+    const done = spawnSync("nft", [rule], { encoding: "utf8" });
+    if (done.status !== 0) throw new Error(`nft ${rule}: ${String(done.stderr || done.error).trim()}`);
+  }
+  const began = Date.now();
+  const told = await new Promise((resolve) => {
+    const child = spawn("unshare", ["-U", `--map-user=${uid}`, `--map-group=${gid}`, process.execPath, cli, "http://93.184.216.34:8080/", "--pages", "1", "--sizes", "desktop", "--json", "--out", folder], { stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (d) => (out += d));
+    child.stderr.on("data", (d) => (err += d));
+    const timer = setTimeout(() => child.kill("SIGKILL"), 120_000);
+    child.on("close", (code, signal) => {
+      clearTimeout(timer);
+      let manifest = null;
+      try {
+        manifest = JSON.parse(out);
+      } catch {
+        manifest = null;
+      }
+      resolve({ status: code === null ? signal : code, said: err.trim().split("\n").slice(-3).join(" | "), manifest, took: Date.now() - began });
+    });
+  });
+  page.close();
+  process.stdout.write(`${JSON.stringify(told)}\n`);
+}
+
 // As the preload of the kit's command (see silent()): the kit's proxy
 // reaches 93.184.216.34 on port 80 at DIAL_TO, the page's own server.
 if (require.main !== module && process.env.DIAL_TO) {
@@ -526,7 +582,7 @@ if (require.main !== module && process.env.DIAL_TO) {
 }
 
 const [mode, ...rest] = process.argv.slice(2);
-const modes = { outer, alone, silent, own, site6, upgraded };
+const modes = { outer, alone, silent, own, site6, upgraded, lossy };
 if (require.main === module) (modes[mode] || inner)(...rest).catch((err) => {
   process.stdout.write(JSON.stringify({ failed: String((err && err.message) || err) }));
   process.exitCode = 1;

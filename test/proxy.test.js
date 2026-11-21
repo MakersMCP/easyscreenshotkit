@@ -259,26 +259,33 @@ test("the proxy keeps the last outcome for each host and port, by the way it was
 
 // A host's addresses are tried in their order, the next beside one that has
 // not connected in a quarter of a second, each once though the lookup gives
-// it twice, and the first to connect is taken, the others ended; the
-// proxy's close() ends a connection under way, and no other address is
-// tried after it. Tried one after another, 30 s each, a host whose
-// addresses did not answer held a request two minutes, and the run's
-// process lived on that long after its end. Here 93.184.215.40 does not
-// answer, and 93.184.215.41 is the site's server.
-test("the proxy tries each address of a host once, the next beside one that has not connected, and its close() ends what is under way", { timeout: 60_000 }, async () => {
+// it twice, and the first to connect is taken, the others ended; once each
+// is under way, two more connections to them are started a quarter of a
+// second apart while none has connected, as the browser starts a second
+// connection to a host that does not answer at once; a host that refuses
+// is tried once; the proxy's close() ends a connection under way, and no
+// other address is tried after it. Tried one after another, 30 s each, a
+// host whose addresses did not answer held a request two minutes, and the
+// run's process lived on that long after its end. Here 93.184.215.40 does
+// not answer, and 93.184.215.41 is the site's server.
+test("the proxy tries each address of a host, the next beside one that has not connected, then two more, and its close() ends what is under way", { timeout: 60_000 }, async () => {
   const site = await serve((req, res) => res.end(`site ${req.url}`));
+  const closed = await serve((req, res) => res.end("gone"));
+  const closedPort = Number(new URL(closed.origin).port);
+  await new Promise((resolve) => closed.server.close(resolve));
   const made = [];
   const silent = [];
   const before = dialer.connect;
   dialer.connect = (options) => {
     made.push(`${options.host}:${options.port}`);
     if (options.host === "93.184.215.41") return before({ ...options, host: "127.0.0.1", port: Number(new URL(site.origin).port), family: 4 });
+    if (options.host === "93.184.215.42") return before({ ...options, host: "127.0.0.1", port: closedPort, family: 4 });
     const socket = new net.Socket();
     silent.push(socket);
     return socket;
   };
   const lookup = dns.lookup;
-  const answers = { "both.example": ["93.184.215.40", "93.184.215.40", "93.184.215.41"], "silent.example": ["93.184.215.40", "93.184.215.40", "93.184.215.40"] };
+  const answers = { "both.example": ["93.184.215.40", "93.184.215.40", "93.184.215.41"], "silent.example": ["93.184.215.40", "93.184.215.40", "93.184.215.40"], "refusing.example": ["93.184.215.42"] };
   dns.lookup = (host, options, callback) => {
     if (typeof options === "function") [options, callback] = [{}, options];
     const list = answers[String(host).replace(/\.$/, "")];
@@ -292,24 +299,132 @@ test("the proxy tries each address of a host once, the next beside one that has 
     const started = Date.now();
     assert.equal((await askProxy(proxy.port, "http://both.example/x")).body, "site /x");
     assert.ok(Date.now() - started < 5_000, `the answer took ${Date.now() - started} ms`);
-    assert.deepEqual(made, ["93.184.215.40:80", "93.184.215.41:80"]);
-    assert.deepEqual(silent.map((socket) => socket.destroyed), [true]);
-    // A host none of whose addresses answers, its one address given three
-    // times: tried once, then ended with the proxy.
+    assert.deepEqual(made.slice(0, 2), ["93.184.215.40:80", "93.184.215.41:80"]);
+    assert.ok(silent.every((socket) => socket.destroyed));
+    // A host that refuses: tried once, and failed at once.
     made.length = 0;
+    const refusedAt = Date.now();
+    assert.equal(await unanswered(proxy.port, "http://refusing.example/"), "ECONNRESET");
+    assert.ok(Date.now() - refusedAt < 2_000, `the refusal took ${Date.now() - refusedAt} ms`);
+    assert.deepEqual(made, ["93.184.215.42:80"]);
+    assert.equal(proxy.unreached.get("refusing.example:80"), "ECONNREFUSED");
+    // A host none of whose addresses answers, its one address given three
+    // times: tried, then twice more a quarter of a second apart, then no
+    // more, and ended with the proxy.
+    made.length = 0;
+    silent.length = 0;
     const asked = askProxy(proxy.port, "http://silent.example/y").then(() => "answered", (err) => err.code);
     await sleep(1_200);
-    assert.deepEqual(made, ["93.184.215.40:80"]);
+    assert.deepEqual(made, ["93.184.215.40:80", "93.184.215.40:80", "93.184.215.40:80"]);
     proxy.close();
     assert.equal(await asked, "ECONNRESET");
     await sleep(600);
-    assert.deepEqual(made, ["93.184.215.40:80"]);
-    assert.deepEqual(silent.map((socket) => socket.destroyed), [true, true]);
+    assert.equal(made.length, 3);
+    assert.deepEqual(silent.map((socket) => socket.destroyed), [true, true, true]);
   } finally {
     dialer.connect = before;
     dns.lookup = lookup;
     if (proxy) proxy.close();
     site.server.close();
+  }
+});
+
+// A connection the network loses costs a page nothing: the proxy starts
+// another beside it, as the browser does. With one connection to the
+// site's one address, which the network lost, the page waited 30 s and was
+// left out with net::ERR_TIMED_OUT, where 0.1.3's browser took it at once.
+// Here every other connection to the site is lost, the first among them.
+test("a connection the network loses has another started beside it, and the page comes at once", { timeout: 60_000 }, async () => {
+  const site = await serve((req, res) => res.end(`site ${req.url}`));
+  const before = dialer.connect;
+  let n = 0;
+  const lost = [];
+  dialer.connect = (options) => {
+    if (n++ % 2 === 0) {
+      const socket = new net.Socket();
+      lost.push(socket);
+      return socket;
+    }
+    return before({ ...options, host: "127.0.0.1", port: Number(new URL(site.origin).port), family: 4 });
+  };
+  const lookup = dns.lookup;
+  dns.lookup = (host, options, callback) => {
+    if (typeof options === "function") [options, callback] = [{}, options];
+    if (String(host).replace(/\.$/, "") !== "lossy.example") return lookup(host, options, callback);
+    process.nextTick(callback, null, options && options.all ? [{ address: "93.184.215.50", family: 4 }] : "93.184.215.50", 4);
+  };
+  let proxy = null;
+  try {
+    const guard = await guardFor("http://lossy.example/");
+    proxy = await startProxy(() => guard);
+    for (const path of ["/a", "/b", "/c"]) {
+      const started = Date.now();
+      assert.equal((await askProxy(proxy.port, `http://lossy.example${path}`)).body, `site ${path}`);
+      assert.ok(Date.now() - started < 5_000, `${path} took ${Date.now() - started} ms`);
+    }
+    assert.ok(lost.length >= 3 && lost.every((socket) => socket.destroyed));
+    // A host whose one address refuses the connection started beside the
+    // lost one is not waited for: it refuses, and the request fails then.
+    const closed = await serve((req, res) => res.end("gone"));
+    const closedPort = Number(new URL(closed.origin).port);
+    await new Promise((resolve) => closed.server.close(resolve));
+    n = 0;
+    dialer.connect = (options) => {
+      if (n++ === 0) {
+        const socket = new net.Socket();
+        lost.push(socket);
+        return socket;
+      }
+      return before({ ...options, host: "127.0.0.1", port: closedPort, family: 4 });
+    };
+    const started = Date.now();
+    assert.equal(await unanswered(proxy.port, "http://lossy.example/d"), "ECONNRESET");
+    assert.ok(Date.now() - started < 5_000, `the refusal took ${Date.now() - started} ms`);
+    assert.equal(proxy.unreached.get("lossy.example:80"), "ECONNREFUSED");
+  } finally {
+    dialer.connect = before;
+    dns.lookup = lookup;
+    if (proxy) proxy.close();
+    site.server.close();
+  }
+});
+
+// In a network namespace of the test's own that loses every other
+// connection to the site whole, its first among them, the kit's own command
+// takes the page at once, where the proxy's one connection was lost and the
+// run failed after 30 s with net::ERR_TIMED_OUT, while 0.1.3's browser took
+// it. With nftables (see network.js).
+const noLossy = (() => {
+  if (process.platform !== "linux") return "network namespaces are Linux's";
+  const probe = spawnSync("unshare", ["-rn", "sh", "-c", `ip link add d0 type dummy && nft add table inet probe && unshare -U --map-user=${process.getuid()} --map-group=${process.getgid()} true`], { encoding: "utf8" });
+  if (probe.error || probe.status !== 0) return `no nftables in a network namespace of the test's own here (unshare -rn with ip, nft and unshare -U --map-user: ${String(probe.stderr || probe.error || probe.status).trim().slice(0, 200)})`;
+  return false;
+})();
+
+test("on a network that loses every other connection to a site, the page is taken at once", { skip: noBrowser || noLossy, timeout: 200_000 }, async () => {
+  const root = tempDir();
+  try {
+    const folder = path.join(root, "shots");
+    const cli = require.resolve("../skills/easyscreenshotkit/scripts/easyscreenshotkit.js");
+    const child = spawn("unshare", ["-rn", process.execPath, path.join(__dirname, "network.js"), "lossy", String(process.getuid()), String(process.getgid()), cli, folder], { stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (d) => (out += d));
+    child.stderr.on("data", (d) => (err += d));
+    const timer = setTimeout(() => child.kill("SIGKILL"), 190_000);
+    await new Promise((resolve) => child.on("close", resolve));
+    clearTimeout(timer);
+    let told = null;
+    try {
+      told = JSON.parse(out.trim().split("\n").pop());
+    } catch {
+      assert.fail(`network.js printed no result: ${(out + err).trim().slice(-600)}`);
+    }
+    assert.equal(told.status, 0, told.said || told.failed || err);
+    assert.deepEqual(told.manifest.pages.map((page) => page.title), ["Acme | Tools"]);
+    assert.ok(told.took < 25_000, `the run took ${told.took} ms`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });
 

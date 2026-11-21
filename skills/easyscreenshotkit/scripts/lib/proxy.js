@@ -52,7 +52,8 @@ const NO_RULE = "not an address this browser opens";
 
 // A connection to a host that has not been made in this time is given up
 // on, whichever of its addresses were tried; and an address that has not
-// connected in STAGGER_MS has the next one tried beside it (see dial()).
+// connected in STAGGER_MS has the next one tried beside it, and once each
+// was, another connection to them (see dial()).
 const CONNECT_MS = 30_000;
 const STAGGER_MS = 250;
 
@@ -129,19 +130,38 @@ function addressesBy(lookup, hostname) {
 // connected in STAGGER_MS, or at once when one fails, as a browser tries a
 // host's addresses, and the first to connect is taken and the others ended.
 // An address the list holds twice, as a resolver can give each answer more
-// than once, is tried once. All of it is given up CONNECT_MS after it
-// began. Each dial is kept in `dials` while it goes, so that the proxy's
-// close() ends it: its connections under way are ended, its timers
-// cleared, and no other address is tried. Tried one after another with 30 s
-// each, a picture on a host whose four addresses did not answer kept the
-// run's process alive two minutes after it had saved, and longer where the
-// resolver gave each address five times. Fails with the last error.
+// than once, is tried once in that order. Once each address is under way,
+// another connection to them, in turn, is started beside those each
+// STAGGER_MS that none has connected, EXTRA in all, as the browser starts a
+// second connection to a host that has not answered in a quarter of a
+// second: with one connection to each address, one the network lost, on a
+// lossy path, behind a NAT or a load balancer with a backend that does not
+// answer, cost a page CONNECT_MS and then the page, where the browser's
+// second connection got through. One that fails has the next address tried
+// at once; an address that refuses a connection is not tried again, and
+// once every address under way has refused one, the dial fails then: a
+// host that refuses fails at once. All of it is given up CONNECT_MS after
+// it began. Each dial is kept in `dials`
+// while it goes, so that the proxy's close() ends it: its connections under
+// way are ended, its timers cleared, and no other address is tried. Tried
+// one after another with 30 s each, a picture on a host whose four
+// addresses did not answer kept the run's process alive two minutes after
+// it had saved, and longer where the resolver gave each address five
+// times. Fails with the last error.
+const EXTRA = 2;
+
 function dial(list, port, dials) {
   const seen = new Set();
   const addresses = list.filter(({ address }) => !seen.has(address) && seen.add(address));
   return new Promise((resolve, reject) => {
-    const tries = new Set();
+    // The connections under way, each with its address, and the addresses
+    // that refused one.
+    const tries = new Map();
+    const refusing = new Set();
+    // The next address not tried yet, and the connections started beside
+    // them once each was.
     let next = 0;
+    let extra = 0;
     let last = null;
     let over = false;
     let stagger = null;
@@ -152,29 +172,24 @@ function dial(list, port, dials) {
       clearTimeout(stagger);
       clearTimeout(limit);
       dials.delete(entry);
-      for (const one of tries) if (one !== socket) one.destroy();
+      for (const one of tries.keys()) if (one !== socket) one.destroy();
       tries.clear();
       if (err) reject(err);
       else resolve(socket);
     };
     const entry = { stop: () => end(Object.assign(new Error("the proxy has closed"), { code: "ECONNABORTED" })) };
-    const another = () => {
-      clearTimeout(stagger);
-      if (over) return;
-      if (next >= addresses.length) {
-        if (!tries.size) end(last || Object.assign(new Error("no address"), { code: "ENOTFOUND" }));
-        return;
-      }
-      const { address, family } = addresses[next++];
+    const failed = () => end(last || Object.assign(new Error("no address"), { code: "ENOTFOUND" }));
+    // A connection to one address: whether it was started.
+    const start = ({ address, family }) => {
       let socket;
       try {
         socket = dialer.connect({ host: address, port: Number(port), ...(family ? { family } : {}) });
       } catch (err) {
         // A port or an address the system will not connect to at all.
         last = err;
-        return another();
+        return false;
       }
-      tries.add(socket);
+      tries.set(socket, address);
       socket.once("connect", () => end(null, socket));
       // Kept for the socket's life: an error with no listener is thrown at
       // the process.
@@ -182,9 +197,24 @@ function dial(list, port, dials) {
         socket.destroy();
         if (over || !tries.delete(socket)) return;
         last = err;
-        another();
+        if (err && err.code === "ECONNREFUSED") refusing.add(address);
+        if (next < addresses.length) another();
+        else if ([...tries.values()].every((one) => refusing.has(one))) failed();
       });
-      stagger = setTimeout(another, STAGGER_MS);
+      return true;
+    };
+    // The next connection: to the next address not tried yet, or, while
+    // one is still under way, another to them in turn, past those that
+    // refused one.
+    const another = () => {
+      clearTimeout(stagger);
+      if (over) return;
+      let started = false;
+      while (!started && next < addresses.length) started = start(addresses[next++]);
+      const open = addresses.filter((one) => !refusing.has(one.address));
+      if (!started && tries.size && open.length && extra < EXTRA) start(open[extra++ % open.length]);
+      if ([...tries.values()].every((one) => refusing.has(one))) return failed();
+      if (next < addresses.length || extra < EXTRA) stagger = setTimeout(another, STAGGER_MS);
     };
     dials.add(entry);
     limit = setTimeout(() => end(Object.assign(new Error(`no connection in ${CONNECT_MS / 1000} s`), { code: "ETIMEDOUT" })), CONNECT_MS);
