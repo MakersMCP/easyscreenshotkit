@@ -13,7 +13,7 @@ const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const test = require("node:test");
 const { takeShots, readInfo, DEVICES } = require("../skills/easyscreenshotkit/scripts/lib/shots");
-const { findChrome, launch, startWait, openTab, closeTab, navigate, currentUrl, killBrowsers, removeProfiles, removeStrayLocks, removeFetchFolders, fetchFolders, roomIn, BARRED } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
+const { findChrome, launch, startWait, openTab, closeTab, navigate, currentUrl, killBrowsers, removeProfiles, removeStrayLocks, removeFetchFolders, fetchFolders, roomIn, BARRED, CRASHED } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
 const { guardFor } = require("../skills/easyscreenshotkit/scripts/lib/address");
 const { setTimeLimit, sleep } = require("../skills/easyscreenshotkit/scripts/lib/time");
 const { watchRequests, networkQuiet, showsLoadingSign, looksEmpty, waitForContent } = require("../skills/easyscreenshotkit/scripts/lib/page");
@@ -2332,8 +2332,12 @@ const take = (text) => {
   }
   // The start's probes of the proxy (see proxySaid() in chrome.js): a plain
   // request and a tunnel for the name it asks for, and a request for the
-  // address of this machine it asks for, each sent to the proxy.
-  if (method === "Runtime.evaluate" && proxy && mode !== "unproxied" && /easyscreenshotkit\\.invalid/.test(params.expression || "")) {
+  // address of this machine it asks for, each sent to the proxy, and then
+  // the word that they are done, as the browser gives it. One in mode
+  // unproxied is done with them sending nothing to the proxy, as a browser
+  // whose requests go past it is.
+  if (method === "Runtime.evaluate" && proxy && mode === "unproxied" && /easyscreenshotkit\\.invalid/.test(params.expression || "")) return answer({ id, result: { result: { type: "string", value: "done" } }, ...(sessionId ? { sessionId } : {}) });
+  if (method === "Runtime.evaluate" && proxy && /easyscreenshotkit\\.invalid/.test(params.expression || "")) {
     const host = /https?:\\/\\/([^/"]+)\\//.exec(params.expression)[1];
     const port = Number(new URL(proxy).port);
     const ask = (line) => new Promise((done) => {
@@ -2343,7 +2347,7 @@ const take = (text) => {
       socket.on("close", done);
     });
     const looped = /http:\\/\\/127\\.0\\.0\\.1:\\d+\\/[0-9a-f]+/.exec(params.expression)[0];
-    Promise.all([ask("GET http://" + host + "/ HTTP/1.1\\r\\nHost: " + host + "\\r\\n\\r\\n"), ask("CONNECT " + host + ":443 HTTP/1.1\\r\\nHost: " + host + ":443\\r\\n\\r\\n"), ask("GET " + looped + " HTTP/1.1\\r\\nHost: " + new URL(looped).host + "\\r\\n\\r\\n")]).then(() => answer({ id, result: { result: { type: "object" } }, ...(sessionId ? { sessionId } : {}) }));
+    Promise.all([ask("GET http://" + host + "/ HTTP/1.1\\r\\nHost: " + host + "\\r\\n\\r\\n"), ask("CONNECT " + host + ":443 HTTP/1.1\\r\\nHost: " + host + ":443\\r\\n\\r\\n"), ask("GET " + looped + " HTTP/1.1\\r\\nHost: " + new URL(looped).host + "\\r\\n\\r\\n")]).then(() => answer({ id, result: { result: { type: "string", value: "done" } }, ...(sessionId ? { sessionId } : {}) }));
     return;
   }
   const result = method === "Browser.getVersion" ? { product: "Stand-in/1", userAgent: "Stand-in" } : method === "Target.createTarget" ? { targetId: "t1" } : method === "Target.attachToTarget" ? { sessionId: "s1" } : {};
@@ -2427,8 +2431,13 @@ function endStandIns(root, modes) {
 // Chrome 157 turns HTTPS-First on by itself and then refuses a plain http
 // address of a site on the public internet that answers on no https: the
 // run, or a hosted job, failed with "net::ERR_BLOCKED_BY_CLIENT". The browser
-// is started with that turn-on left off, as Chrome 155 has it.
-test("the browser is started with HTTPS-First's own turn-on left off", { skip: (process.platform === "win32" && "the stand-in browser is a shell script") || noTemp, timeout: 60_000 }, async () => {
+// is started with that turn-on left off, as Chrome 155 has it, with no
+// Media Router, which searched the machine's networks for screens to cast
+// to and connected to what answered, past the run's proxy, and with no
+// names of WebRTC's for the machine's own addresses, for which it joined
+// mDNS's group on the network (proxy.test.js holds what each sent). Chrome
+// reads one value of --disable-features, so all three are in it.
+test("the browser is started with HTTPS-First's own turn-on, the Media Router and WebRTC's names for its addresses left off, in one --disable-features", { skip: (process.platform === "win32" && "the stand-in browser is a shell script") || noTemp, timeout: 60_000 }, async () => {
   const root = tempDir();
   const saved = process.env.CHROME_PATH;
   process.env.CHROME_PATH = standIns(root)("plain");
@@ -2437,7 +2446,7 @@ test("the browser is started with HTTPS-First's own turn-on left off", { skip: (
     setTimeLimit(60_000);
     chrome = await launch();
     const { args } = JSON.parse(fs.readFileSync(path.join(root, "plain.json"), "utf8"));
-    assert.deepEqual(args.filter((arg) => arg.startsWith("--disable-features=")), ["--disable-features=HttpsFirstBalancedModeAutoEnable"]);
+    assert.deepEqual(args.filter((arg) => arg.startsWith("--disable-features=")), ["--disable-features=HttpsFirstBalancedModeAutoEnable,MediaRouter,WebRtcHideLocalIpsWithMdns"]);
   } finally {
     if (chrome) await chrome.close();
     endStandIns(root, ["plain"]);
@@ -2448,11 +2457,15 @@ test("the browser is started with HTTPS-First's own turn-on left off", { skip: (
 });
 
 // Every request of the browser goes through the run's proxy on 127.0.0.1,
-// those for this machine's own addresses too, and WebRTC sends no UDP past
-// it (see start() in chrome.js; proxy.test.js holds what each keeps out).
-// --force-webrtc-ip-handling-policy did not hold WebRTC in Chrome 155 or
-// 157: a page's STUN requests reached a server on 127.0.0.1.
-test("the browser is started with the run's proxy, this machine's own addresses sent through it too, and WebRTC held to it", { skip: (process.platform === "win32" && "the stand-in browser is a shell script") || noTemp, timeout: 60_000 }, async () => {
+// those for this machine's own addresses too, WebRTC sends no UDP past it,
+// and the browser's own lookup fails for every name but the proxy's
+// address (see start() in chrome.js; proxy.test.js holds what each keeps
+// out). --force-webrtc-ip-handling-policy did not hold WebRTC in Chrome 155
+// or 157: a page's STUN requests reached a server on 127.0.0.1. And
+// ^NOTFOUND is the word that fails a name: ~NOTFOUND only changes it, and
+// with WebRTC's mDNS names on, a name a page gave WebRTC was asked of the
+// local network as "~NOTFOUND".
+test("the browser is started with the run's proxy, this machine's own addresses sent through it too, WebRTC held to it and no name looked up by itself", { skip: (process.platform === "win32" && "the stand-in browser is a shell script") || noTemp, timeout: 60_000 }, async () => {
   const root = tempDir();
   const saved = process.env.CHROME_PATH;
   process.env.CHROME_PATH = standIns(root)("plain");
@@ -2461,7 +2474,7 @@ test("the browser is started with the run's proxy, this machine's own addresses 
     setTimeLimit(60_000);
     chrome = await launch();
     const { args } = JSON.parse(fs.readFileSync(path.join(root, "plain.json"), "utf8"));
-    assert.deepEqual(args.filter((arg) => /^--(proxy-|webrtc-|force-webrtc-)/.test(arg)), [`--proxy-server=http://127.0.0.1:${chrome.proxy.port}`, "--proxy-bypass-list=<-loopback>", "--webrtc-ip-handling-policy=disable_non_proxied_udp"]);
+    assert.deepEqual(args.filter((arg) => /^--(proxy-|webrtc-|force-webrtc-|host-resolver-)/.test(arg)), ["--host-resolver-rules=MAP * ^NOTFOUND, EXCLUDE 127.0.0.1", `--proxy-server=http://127.0.0.1:${chrome.proxy.port}`, "--proxy-bypass-list=<-loopback>", "--webrtc-ip-handling-policy=disable_non_proxied_udp"]);
   } finally {
     if (chrome) await chrome.close();
     endStandIns(root, ["plain"]);
@@ -5351,4 +5364,27 @@ test("--pwa says which screenshots of the site's manifest it did not read, and c
     other.server.close();
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+// A page of the kit's own whose tab's process ends as it loads, as the
+// demo's frames page can when the system kills that process for its memory,
+// is a tab that crashed, which the demo names as such: the browser's word
+// for the navigation, net::ERR_ABORTED, comes a moment before the one for
+// the crash, and the demo stopped in the first, naming the kit's own file.
+// Here a tab stands in for the browser's, its crash told 150 ms after.
+test("a page of the kit's own whose tab crashes as it loads is said to have crashed", async () => {
+  const { EventEmitter } = require("node:events");
+  const tab = new EventEmitter();
+  tab.own = true;
+  tab.send = async (method) => {
+    if (method !== "Page.navigate") return {};
+    setTimeout(() => (tab.crashed = true), 150);
+    return { errorText: "net::ERR_ABORTED" };
+  };
+  await assert.rejects(navigate(tab, "file:///kit/frames/compose.html"), { message: CRASHED });
+  // One that failed with no crash keeps the browser's words.
+  const still = new EventEmitter();
+  still.own = true;
+  still.send = async (method) => (method === "Page.navigate" ? { errorText: "net::ERR_FILE_NOT_FOUND" } : {});
+  await assert.rejects(navigate(still, "file:///kit/frames/compose.html"), { message: "Could not open file:///kit/frames/compose.html: net::ERR_FILE_NOT_FOUND" });
 });

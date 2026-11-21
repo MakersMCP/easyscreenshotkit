@@ -1621,9 +1621,13 @@ test("a demo whose browser ends or whose tab crashes in the middle of it fails, 
     // The tab that reads the home page for the tour, its page killed: the
     // browser's first page and this tab's.
     { args: ["--pages", "2"], line: /^Opening http/m, ready: (all) => homeServed() && renderers(all).length >= 2, delay: 300, kill: renderers, told: tab },
-    // The tabs that draw the frames, their pages killed once a second one
-    // is there, so the first has its page.
-    { args: ["--steps", steps], line: /^Drawing \d+ frames/m, ready: (all) => renderers(all).length >= 3, delay: 100, kill: renderers, told: tab },
+    // The tabs that draw the frames, their pages killed once the first of
+    // them has a process of its own, which comes after the line: a browser
+    // has renderers before it opens a tab, so a count of them alone had the
+    // kill land whatever the frames page did. A page of the kit's own whose
+    // process ends as it loads is a tab that crashed too (see navigate() in
+    // chrome.js), so the case holds wherever the kill lands.
+    { args: ["--steps", steps], line: /^Drawing \d+ frames/m, ready: (all, before) => renderers(all).length > before, delay: 300, kill: renderers, told: tab },
   ];
   try {
     await makeDemo(origin, { dir, steps, gif: false, timeLimit: 200_000 });
@@ -1645,9 +1649,11 @@ test("a demo whose browser ends or whose tab crashes in the middle of it fails, 
             killed = kill(all);
             for (const { pid } of killed) process.kill(pid, "SIGKILL");
           };
+          // The renderers there as the line came.
+          const before = renderers(descendants(child.pid)).length;
           const whenReady = () => {
             if (child.exitCode !== null) return;
-            if (!ready || ready(descendants(child.pid))) setTimeout(act, delay);
+            if (!ready || ready(descendants(child.pid), before)) setTimeout(act, delay);
             else setTimeout(whenReady, 30);
           };
           whenReady();
@@ -2395,32 +2401,49 @@ async function withNames(answers, body) {
   }
 }
 
-// What the run's proxy did not pass on of a page's own requests, as a
-// picture of another program of this machine on a site given there, is in
-// steps.json's notes, once for that address, with the reason (see
-// proxy.js): the browser reaches the network only through it.
-test("a demo names in steps.json what the proxy did not pass on of its pages' requests", { skip: missing, timeout: 200_000 }, async () => {
+// What the run's proxy did not pass on of a page's own requests is in
+// steps.json's notes, once for each address, with the reason (see
+// proxy.js), for each way a page asks another program of this machine for
+// something, on a site given there: a module script, a fetch(), an
+// XMLHttpRequest, a picture with crossorigin and a WebSocket, which the
+// browser fails in its own words and which went without a note; past five
+// addresses, how many more the pages asked for.
+test("a demo names in steps.json what the proxy did not pass on of its pages' requests, in each way a page asks", { skip: missing, timeout: 200_000 }, async () => {
   const seen = [];
-  const other = await serve((req, res) => {
-    seen.push(req.url);
-    res.end("inside");
-  });
-  const elsewhere = other.origin;
+  const others = [];
+  for (let i = 0; i < 6; i++) {
+    others.push(
+      await serve((req, res) => {
+        seen.push(req.url);
+        res.end("inside");
+      }),
+    );
+  }
+  const at = (i) => others[i].origin.replace("http://", "");
   const { server, origin } = await serve((req, res) => {
+    if (req.url === "/more") return res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Acme | More", `<h1>More</h1><p>More tools for teams.</p><img src="http://${at(5)}/more.png">`));
     if (req.url !== "/") return res.writeHead(404).end("not found");
-    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Acme | Tools", `<h1>Acme</h1><p>Tools for teams.</p><img src="${elsewhere}/one.png"><img src="${elsewhere}/two.png">`));
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(
+      page(
+        "Acme | Tools",
+        `<h1>Acme</h1><p>Tools for teams.</p><script type="module" src="http://${at(0)}/app.js"></script><img crossorigin="anonymous" src="http://${at(3)}/logo.png"><script>fetch("http://${at(1)}/api/data").catch(() => {}); const xhr = new XMLHttpRequest(); xhr.open("GET", "http://${at(2)}/api/data"); xhr.send(); try { new WebSocket("ws://${at(4)}/live"); } catch (e) {}</script>`,
+      ),
+    );
   });
   const root = tempDir();
   try {
     const steps = path.join(root, "steps.yaml");
-    fs.writeFileSync(steps, "steps:\n  - visit: /\n  - wait: 1\n");
+    fs.writeFileSync(steps, "steps:\n  - visit: /\n  - wait: 2\n  - visit: /more\n  - wait: 1\n");
     await makeDemo(origin, { dir: path.join(root, "demo"), steps, gif: false, timeLimit: 150_000 });
     const { notes } = JSON.parse(fs.readFileSync(path.join(root, "demo", "steps.json"), "utf8"));
-    assert.deepEqual(notes.filter((note) => /nothing was sent there/.test(note)), [`A page asked for ${elsewhere}, which is not on the public internet, and not on the host and port given: nothing was sent there.`]);
+    const asked = (i) => `A page asked for ${i === 4 ? "ws" : "http"}://${at(i)}, which is not on the public internet, and not on the host and port given: nothing was sent there.`;
+    const named = notes.filter((note) => /nothing was sent there/.test(note));
+    assert.deepEqual(named.slice(0, 5).sort(), [0, 1, 2, 3, 4].map(asked).sort(), named.join("\n"));
+    assert.deepEqual(named.slice(5), ["The pages asked for 1 more address the run does not open: nothing was sent there."]);
     assert.deepEqual(seen, []);
   } finally {
     server.close();
-    other.server.close();
+    for (const one of others) one.server.close();
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

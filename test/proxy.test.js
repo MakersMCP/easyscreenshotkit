@@ -18,7 +18,7 @@ const crypto = require("node:crypto");
 const { spawn, spawnSync } = require("node:child_process");
 const test = require("node:test");
 const { startProxy, dialer, NO_RULE } = require("../skills/easyscreenshotkit/scripts/lib/proxy");
-const { findChrome, launch, openTab, closeTab, navigate, roomIn, BARRED, UNREACHED } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
+const { findChrome, launch, openTab, closeTab, navigate, roomIn, proxySaid, BARRED, UNREACHED } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
 const { guardFor, NOT_GIVEN, NOT_PUBLIC } = require("../skills/easyscreenshotkit/scripts/lib/address");
 const { takeShots } = require("../skills/easyscreenshotkit/scripts/lib/shots");
 const { setTimeLimit, sleep } = require("../skills/easyscreenshotkit/scripts/lib/time");
@@ -220,8 +220,13 @@ test("the proxy answers its probe itself, refuses all with no rule, and keeps wh
 
 // The proxy keeps what came of each host and port the last time it was
 // asked for, so a run that gives its browser another rule, as a test does,
-// finds no refusal of the earlier rule where the new one connects.
-test("the proxy keeps the last outcome for each host and port", async () => {
+// finds no refusal of the earlier rule where the new one connects; and it
+// keeps it by the way it was asked, a plain request or a tunnel, as the
+// rule can refuse a host and port over http and open it over https: from
+// https://localhost:<port>/ given, its http on that port is refused and its
+// https opened, and a request of the page's that failed over https was not
+// to be named as refused because the same host and port had been over http.
+test("the proxy keeps the last outcome for each host and port, by the way it was asked", { timeout: 30_000 }, async () => {
   const site = await serve((req, res) => res.end("site"));
   const other = await serve((req, res) => res.end("other"));
   let rule = await guardFor(`${site.origin}/`);
@@ -230,13 +235,287 @@ test("the proxy keeps the last outcome for each host and port", async () => {
     const at = new URL(other.origin).host;
     assert.equal((await askProxy(proxy.port, `${other.origin}/`)).status, 403);
     assert.equal(proxy.refused.get(at), NOT_GIVEN);
+    assert.equal(proxy.refusalOf(`${other.origin}/x`), NOT_GIVEN);
     rule = await guardFor(`${other.origin}/`);
     assert.equal((await askProxy(proxy.port, `${other.origin}/`)).body, "other");
     assert.equal(proxy.refused.has(at), false);
+    assert.equal(proxy.refusalOf(`${other.origin}/x`), "");
+    // https given on the site's port: a tunnel there, then a plain request
+    // there, which the rule refuses as http below https on that port.
+    const port = new URL(site.origin).port;
+    rule = await guardFor(`https://localhost:${port}/`);
+    const { status, socket } = await tunnel(proxy.port, `localhost:${port}`);
+    socket.destroy();
+    assert.equal(status, "HTTP/1.1 200 Connection Established");
+    assert.equal((await askProxy(proxy.port, `http://localhost:${port}/`)).status, 403);
+    assert.equal(proxy.refusalOf(`http://localhost:${port}/x`), `on port ${port}, not 80 or 443, and not on the scheme, host and port given`);
+    assert.equal(proxy.refusalOf(`https://localhost:${port}/y`), "");
+    assert.equal(proxy.refusalOf(`wss://localhost:${port}/z`), "");
   } finally {
     proxy.close();
     site.server.close();
     other.server.close();
+  }
+});
+
+// A host's addresses are tried in their order, the next beside one that has
+// not connected in a quarter of a second, each once though the lookup gives
+// it twice, and the first to connect is taken, the others ended; the
+// proxy's close() ends a connection under way, and no other address is
+// tried after it. Tried one after another, 30 s each, a host whose
+// addresses did not answer held a request two minutes, and the run's
+// process lived on that long after its end. Here 93.184.215.40 does not
+// answer, and 93.184.215.41 is the site's server.
+test("the proxy tries each address of a host once, the next beside one that has not connected, and its close() ends what is under way", { timeout: 60_000 }, async () => {
+  const site = await serve((req, res) => res.end(`site ${req.url}`));
+  const made = [];
+  const silent = [];
+  const before = dialer.connect;
+  dialer.connect = (options) => {
+    made.push(`${options.host}:${options.port}`);
+    if (options.host === "93.184.215.41") return before({ ...options, host: "127.0.0.1", port: Number(new URL(site.origin).port), family: 4 });
+    const socket = new net.Socket();
+    silent.push(socket);
+    return socket;
+  };
+  const lookup = dns.lookup;
+  const answers = { "both.example": ["93.184.215.40", "93.184.215.40", "93.184.215.41"], "silent.example": ["93.184.215.40", "93.184.215.40", "93.184.215.40"] };
+  dns.lookup = (host, options, callback) => {
+    if (typeof options === "function") [options, callback] = [{}, options];
+    const list = answers[String(host).replace(/\.$/, "")];
+    if (!list) return lookup(host, options, callback);
+    process.nextTick(callback, null, options && options.all ? list.map((address) => ({ address, family: 4 })) : list[0], 4);
+  };
+  let proxy = null;
+  try {
+    const guard = await guardFor("http://both.example/");
+    proxy = await startProxy(() => guard);
+    const started = Date.now();
+    assert.equal((await askProxy(proxy.port, "http://both.example/x")).body, "site /x");
+    assert.ok(Date.now() - started < 5_000, `the answer took ${Date.now() - started} ms`);
+    assert.deepEqual(made, ["93.184.215.40:80", "93.184.215.41:80"]);
+    assert.deepEqual(silent.map((socket) => socket.destroyed), [true]);
+    // A host none of whose addresses answers, its one address given three
+    // times: tried once, then ended with the proxy.
+    made.length = 0;
+    const asked = askProxy(proxy.port, "http://silent.example/y").then(() => "answered", (err) => err.code);
+    await sleep(1_200);
+    assert.deepEqual(made, ["93.184.215.40:80"]);
+    proxy.close();
+    assert.equal(await asked, "ECONNRESET");
+    await sleep(600);
+    assert.deepEqual(made, ["93.184.215.40:80"]);
+    assert.deepEqual(silent.map((socket) => socket.destroyed), [true, true]);
+  } finally {
+    dialer.connect = before;
+    dns.lookup = lookup;
+    if (proxy) proxy.close();
+    site.server.close();
+  }
+});
+
+// The run's process ends as soon as the run has saved, whatever the proxy
+// still waits on: here a page's picture is on a host whose four addresses
+// do not answer, each a connection the system is still making, which keeps
+// the process alive until it is ended. With each tried in turn for 30 s
+// and none ended with the proxy, the process lived on two minutes after
+// it had saved, where 0.1.3's ended with its browser.
+test("the run's process ends once the run has saved, with a picture on a host that does not answer", { skip: noBrowser, timeout: 150_000 }, async () => {
+  const root = tempDir();
+  const preload = path.join(root, "stuck.js");
+  fs.writeFileSync(
+    preload,
+    `const dns = require("dns");
+const net = require("net");
+const { dialer } = require(${JSON.stringify(require.resolve("../skills/easyscreenshotkit/scripts/lib/proxy"))});
+const stuck = ["93.184.215.30", "93.184.215.31", "93.184.215.32", "93.184.215.33"];
+const lookup = dns.lookup;
+dns.lookup = (host, options, callback) => {
+  if (typeof options === "function") [options, callback] = [{}, options];
+  if (String(host).replace(/\\.$/, "") !== "stuck.example") return lookup(host, options, callback);
+  process.nextTick(callback, null, options && options.all ? stuck.map((address) => ({ address, family: 4 })) : stuck[0], 4);
+};
+const connect = dialer.connect;
+dialer.connect = (options) => {
+  if (!stuck.includes(options.host)) return connect(options);
+  const socket = new net.Socket();
+  const held = setInterval(() => {}, 1000);
+  const destroy = socket.destroy;
+  socket.destroy = function (...args) {
+    clearInterval(held);
+    return destroy.apply(this, args);
+  };
+  return socket;
+};
+`,
+  );
+  const { server, origin } = await serve((req, res) => {
+    if (req.url !== "/") return res.writeHead(404).end();
+    res.writeHead(200, html).end(`<!doctype html><title>Acme | Tools</title><h1>Acme</h1><p>Tools for teams.</p><img src="http://stuck.example/ad.png"><div style="height:1400px"></div>`);
+  });
+  try {
+    const cli = require.resolve("../skills/easyscreenshotkit/scripts/easyscreenshotkit.js");
+    const child = spawn(process.execPath, ["--require", preload, cli, `${origin}/`, "--pages", "1", "--sizes", "desktop", "--out", path.join(root, "shots")], { stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    let err = "";
+    let saved = 0;
+    child.stdout.on("data", (d) => {
+      out += d;
+      if (!saved && /Saved 1 page of 127\.0\.0\.1/.test(out)) saved = Date.now();
+    });
+    child.stderr.on("data", (d) => (err += d));
+    const killer = setInterval(() => saved && Date.now() - saved > 20_000 && child.kill("SIGKILL"), 500);
+    const status = await new Promise((resolve) => child.on("close", resolve));
+    clearInterval(killer);
+    const ended = Date.now();
+    assert.equal(status, 0, `${out}\n${err}`);
+    assert.ok(saved, out);
+    assert.ok(ended - saved < 3_000, `the process ended ${ended - saved} ms after it saved`);
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A site's answer to a plain http request reaches the browser as the site
+// sent it, with Connection: close put in after the status line of the
+// request's own answer, past an informational one before it, so the
+// browser opens a new connection for its next request; a request on that
+// connection all the same is ended unanswered, as the browser sends it
+// again on a new one. A site that kept its connection open past its answer
+// could otherwise have had the browser read what it sent later as the
+// answer to another request.
+test("the proxy passes a site's answer on as it came, telling the browser to close that connection", { timeout: 30_000 }, async () => {
+  const site = net.createServer((socket) => {
+    socket.on("error", () => {});
+    socket.once("data", (data) => {
+      const target = data.toString("latin1").split(" ")[1];
+      if (target === "/hints") return socket.write("HTTP/1.1 103 Early Hints\r\nLink: </x.css>; rel=preload\r\n\r\nHTTP/1.1 200 OK\r\nConnection: keep-alive\r\nContent-Length: 5\r\n\r\nhints");
+      // Bare line feeds, a folded header and a space before a colon, which
+      // Node.js's parser refuses, and the connection kept open.
+      socket.write("HTTP/1.1 200 Fine\nX-Folded: a\n b\nX-Spaced : 1\nConnection: keep-alive\nContent-Length: 4\n\nbody");
+    });
+  });
+  await new Promise((resolve) => site.listen(0, "127.0.0.1", resolve));
+  const origin = `http://127.0.0.1:${site.address().port}`;
+  const guard = await guardFor(`${origin}/`);
+  const proxy = await startProxy(() => guard);
+  // What the proxy sends back on one connection for two requests written on
+  // it, the second once the first's answer is in.
+  const twice = (first, second, { raw = false } = {}) =>
+    new Promise((resolve) => {
+      const socket = net.connect(proxy.port, "127.0.0.1", () => socket.write(`GET ${first} HTTP/1.1\r\nHost: ${new URL(first).host}\r\n\r\n`));
+      let got = "";
+      let sent = false;
+      socket.on("data", (data) => {
+        got += data.toString("latin1");
+        if (!sent && /\r?\n\r?\n(body|hints)$/.test(got)) {
+          sent = true;
+          socket.write(raw ? second : `GET ${second} HTTP/1.1\r\nHost: ${new URL(second).host}\r\n\r\n`);
+        }
+      });
+      socket.on("error", () => {});
+      socket.on("close", () => resolve(got));
+      // A connection the proxy left open after that.
+      setTimeout(() => {
+        resolve(`${got} (the connection was left open)`);
+        socket.destroy();
+      }, 5_000);
+    });
+  try {
+    assert.equal(await twice(`${origin}/plain`, `${origin}/again`), "HTTP/1.1 200 Fine\nConnection: close\nProxy-Connection: close\nX-Folded: a\n b\nX-Spaced : 1\nConnection: keep-alive\nContent-Length: 4\n\nbody");
+    // What is no request at all on that connection ends it too, with no
+    // answer of the proxy's own put in the site's.
+    assert.equal(await twice(`${origin}/plain`, "no request\r\n\r\n", { raw: true }), "HTTP/1.1 200 Fine\nConnection: close\nProxy-Connection: close\nX-Folded: a\n b\nX-Spaced : 1\nConnection: keep-alive\nContent-Length: 4\n\nbody");
+    assert.equal(await twice(`${origin}/hints`, `${origin}/again`), "HTTP/1.1 103 Early Hints\r\nLink: </x.css>; rel=preload\r\n\r\nHTTP/1.1 200 OK\r\nConnection: close\r\nProxy-Connection: close\r\nConnection: keep-alive\r\nContent-Length: 5\r\n\r\nhints");
+  } finally {
+    proxy.close();
+    site.close();
+  }
+});
+
+// A page whose answers Node.js's parser refuses, and the browser reads, is
+// taken as the browser reads it, as 0.1.3 took each of these, and so is
+// its script that comes the same way: lines that end in a bare line feed,
+// Content-Length beside Transfer-Encoding: chunked, a folded header, a
+// control character in a value, a space before a header's colon or in its
+// name, a chunk's size followed by a space, a status line with no reason,
+// an answer whose end is the connection's, HTTP/1.0, an informational
+// answer before the page's, a connection kept open, a status under 100 or
+// a DEL in the reason, which crashed the run. Through Node.js's parser the
+// first six failed with "net::ERR_CONNECTION_FAILED" and the seventh with
+// "net::ERR_EMPTY_RESPONSE". An answer with nothing in it, and a connection
+// the site resets before it answers, are said so in the browser's own
+// words, as 0.1.3 said them.
+test("a page whose answers Node.js's parser refuses is taken as the browser reads them, its script with it", { skip: noBrowser, timeout: 150_000 }, async () => {
+  setTimeLimit(150_000);
+  const page = (shape, script) => (script ? `document.title += " ran";` : `<!doctype html><title>${shape}</title><h1>${shape}</h1><script src="/${shape}.js"></script>`);
+  const length = (body) => Buffer.byteLength(body);
+  const shapes = {
+    lf: (b, t) => `HTTP/1.1 200 OK\nContent-Type: ${t}\nContent-Length: ${length(b)}\n\n${b}`,
+    both: (b, t) => `HTTP/1.1 200 OK\r\nContent-Type: ${t}\r\nContent-Length: 999\r\nTransfer-Encoding: chunked\r\n\r\n${length(b).toString(16)}\r\n${b}\r\n0\r\n\r\n`,
+    folded: (b, t) => `HTTP/1.1 200 OK\r\nContent-Type: ${t}\r\nX-Folded: a\r\n b\r\nContent-Length: ${length(b)}\r\n\r\n${b}`,
+    control: (b, t) => `HTTP/1.1 200 OK\r\nContent-Type: ${t}\r\nX-Control: a\x01b\r\nContent-Length: ${length(b)}\r\n\r\n${b}`,
+    spacecolon: (b, t) => `HTTP/1.1 200 OK\r\nContent-Type: ${t}\r\nX-Thing : 1\r\nContent-Length: ${length(b)}\r\n\r\n${b}`,
+    spacename: (b, t) => `HTTP/1.1 200 OK\r\nContent-Type: ${t}\r\nX Thing: 1\r\nContent-Length: ${length(b)}\r\n\r\n${b}`,
+    chunkext: (b, t) => `HTTP/1.1 200 OK\r\nContent-Type: ${t}\r\nTransfer-Encoding: chunked\r\n\r\n${length(b).toString(16)} ;ext=1\r\n${b}\r\n0\r\n\r\n`,
+    noreason: (b, t) => `HTTP/1.1 200\r\nContent-Type: ${t}\r\nContent-Length: ${length(b)}\r\n\r\n${b}`,
+    closed: (b, t) => `HTTP/1.1 200 OK\r\nContent-Type: ${t}\r\n\r\n${b}`,
+    old: (b, t) => `HTTP/1.0 200 OK\r\nContent-Type: ${t}\r\n\r\n${b}`,
+    hints: (b, t) => `HTTP/1.1 103 Early Hints\r\nLink: </x.css>; rel=preload\r\n\r\nHTTP/1.1 200 OK\r\nContent-Type: ${t}\r\nContent-Length: ${length(b)}\r\n\r\n${b}`,
+    open: (b, t) => `HTTP/1.1 200 OK\r\nContent-Type: ${t}\r\nConnection: keep-alive\r\nContent-Length: ${length(b)}\r\n\r\n${b}`,
+    low: (b, t) => `HTTP/1.1 099 Low\r\nContent-Type: ${t}\r\nContent-Length: ${length(b)}\r\n\r\n${b}`,
+    zero: (b, t) => `HTTP/1.1 000 Zero\r\nContent-Type: ${t}\r\nContent-Length: ${length(b)}\r\n\r\n${b}`,
+    del: (b, t) => `HTTP/1.1 200 O\x7fK\r\nContent-Type: ${t}\r\nContent-Length: ${length(b)}\r\n\r\n${b}`,
+    empty: () => "",
+    reset: () => "",
+  };
+  const site = net.createServer((socket) => {
+    socket.on("error", () => {});
+    let got = "";
+    socket.on("data", (data) => {
+      got += data.toString("latin1");
+      if (!got.includes("\r\n\r\n")) return;
+      const target = got.split(" ")[1];
+      const script = target.endsWith(".js");
+      const shape = target.slice(1).replace(/\.js$/, "");
+      if (!shapes[shape]) return socket.end("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
+      // A connection the site resets before it answers.
+      if (shape === "reset") return void socket.resetAndDestroy();
+      // The connection kept open is the site's to close, a moment later.
+      const answer = Buffer.from(shapes[shape](page(shape, script), script ? "text/javascript" : "text/html"), "latin1");
+      if (shape === "open") return void socket.write(answer, () => setTimeout(() => socket.destroy(), 3_000));
+      socket.end(answer);
+    });
+  });
+  await new Promise((resolve) => site.listen(0, "127.0.0.1", resolve));
+  const origin = `http://127.0.0.1:${site.address().port}`;
+  let chrome = null;
+  try {
+    chrome = await launch({ guard: await guardFor(`${origin}/`) });
+    const took = {};
+    for (const shape of Object.keys(shapes)) {
+      const tab = await openTab(chrome, DESKTOP);
+      try {
+        const { status } = await navigate(tab, `${origin}/${shape}`);
+        let title = "";
+        for (let i = 0; i < 40 && !/ ran$/.test(title); i++) {
+          ({ result: { value: title } } = await tab.send("Runtime.evaluate", { expression: "document.title", returnByValue: true }));
+          if (!/ ran$/.test(title)) await sleep(100);
+        }
+        took[shape] = `${status} ${title}`;
+      } catch (err) {
+        took[shape] = err.message.replace(origin, "<site>");
+      } finally {
+        await closeTab(chrome, tab);
+      }
+    }
+    const expected = Object.fromEntries(Object.keys(shapes).map((shape) => [shape, `200 ${shape} ran`]));
+    Object.assign(expected, { low: "99 low ran", zero: "0 zero ran", empty: "Could not open <site>/empty: net::ERR_EMPTY_RESPONSE", reset: "Could not open <site>/reset: net::ERR_CONNECTION_RESET" });
+    assert.deepEqual(took, expected);
+  } finally {
+    if (chrome) await chrome.close();
+    site.close();
   }
 });
 
@@ -345,7 +624,12 @@ navigator.credentials.get({ publicKey: { challenge: new Uint8Array(32), rpId: "r
         await closeTab(chrome, tab);
       }
       assert.deepEqual(barred, [[`http://${away}/frame`, NOT_GIVEN]]);
-      assert.deepEqual(unreached, [[`http://${away}`, NOT_GIVEN]]);
+      // One note for the other program, from the picture or the WebSocket,
+      // whichever the browser tells of first: Chrome 155 the picture, 157
+      // the WebSocket.
+      assert.equal(unreached.length, 1, JSON.stringify(unreached));
+      assert.ok([`http://${away}`, `ws://${away}`].includes(unreached[0][0]), unreached[0][0]);
+      assert.equal(unreached[0][1], NOT_GIVEN);
       assert.equal(chrome.proxy.refused.get(away), NOT_GIVEN);
       assert.equal(chrome.proxy.refused.get("rp-elsewhere.example:443"), NOT_GIVEN);
       // An https site given whose certificate names its issuer at the other
@@ -494,6 +778,49 @@ test("WebRTC sends no UDP past the proxy", { skip: noBrowser, timeout: 60_000 },
     server.close();
     udp.close();
   }
+});
+
+// What the browser sends on the networks of the machine past its proxy:
+// nothing. In a network namespace of the test's own, with a dummy network
+// where stand-ins for screens to cast to answer, and stand-ins for the DNS
+// servers the machine names (see network.js), a page asks
+// whether a screen to cast to is there, with no click and no permission,
+// and gives WebRTC two candidates of the other side by name. With the Media
+// Router on, the browser searched every network of the machine (SSDP and
+// mDNS) and connected to both devices, the DIAL one with a GET of its
+// description and the Cast one over TLS; with its own lookup, it asked the
+// network for the .local name and the DNS for the other one, which no rule
+// of the run judged; and with WebRTC's names for its own addresses, any
+// RTCPeerConnection, the start's own probe of WebRTC too, had it join mDNS's
+// group on the network to answer for them, though it gathers no address of
+// its own to name.
+const noNamespace = (() => {
+  if (process.platform !== "linux") return "network namespaces are Linux's";
+  const probe = spawnSync("unshare", ["-rn", "sh", "-c", `ip link add d0 type dummy && unshare -U --map-user=${process.getuid()} --map-group=${process.getgid()} true`], { encoding: "utf8" });
+  if (probe.error || probe.status !== 0) return `no network namespace of the test's own here (unshare -rn with ip and unshare -U --map-user: ${String(probe.stderr || probe.error || probe.status).trim().slice(0, 200)})`;
+  return false;
+})();
+
+test("the browser sends nothing past its proxy on the machine's networks: no search for screens to cast to, and no lookup of a name a page gives WebRTC", { skip: noBrowser || noNamespace, timeout: 150_000 }, async () => {
+  const child = spawn("unshare", ["-rn", process.execPath, path.join(__dirname, "network.js"), "outer", String(process.getuid()), String(process.getgid())], { stdio: ["ignore", "pipe", "pipe"] });
+  let out = "";
+  let err = "";
+  child.stdout.on("data", (d) => (out += d));
+  child.stderr.on("data", (d) => (err += d));
+  const timer = setTimeout(() => child.kill("SIGKILL"), 140_000);
+  await new Promise((resolve) => child.on("close", resolve));
+  clearTimeout(timer);
+  const line = out.trim().split("\n").pop() || "";
+  let seen = null;
+  try {
+    seen = JSON.parse(line);
+  } catch {
+    assert.fail(`network.js printed no result: ${(out + err).trim().slice(-600)}`);
+  }
+  assert.equal(seen.failed, "");
+  // The page asked, and gave its candidates.
+  assert.deepEqual(seen.shown.split(" ").sort(), ["asked", "candidates"]);
+  assert.deepEqual({ ssdp: seen.ssdp, mdns: seen.mdns, dns: seen.dns, connections: seen.connections, joined: seen.joined }, { ssdp: 0, mdns: [], dns: [], connections: [], joined: [] });
 });
 
 // A site you run on your machine and give as the address works through the
@@ -680,25 +1007,54 @@ test("a site that is down is said so in the browser's own words through the prox
 });
 
 // What the proxy did not pass on of a page's own requests is in the page's
-// notes, with the reason: a picture of another program of this machine, on
-// a site given there.
-test("a run names in a page's notes what the proxy did not pass on of its requests", { skip: noBrowser, timeout: 120_000 }, async () => {
-  const other = await trap();
-  const away = `127.0.0.1:${other.port}`;
+// notes, with the reason, for each way a page asks another program of this
+// machine for something, on a site given there: a picture over http and
+// one over https, whose tunnel the proxy refused; a module script, a fetch()
+// and an XMLHttpRequest, a picture with crossorigin and a WebSocket, which
+// the browser fails in its own words and not with the proxy's answer, and
+// which went without a note; and past three addresses on one page, how many
+// more it asked for.
+test("a run names in a page's notes what the proxy did not pass on of its requests, in each way a page asks", { skip: noBrowser, timeout: 150_000 }, async () => {
+  const traps = [];
+  for (let i = 0; i < 11; i++) traps.push(await trap());
+  const at = (i) => `127.0.0.1:${traps[i].port}`;
+  const ways = {
+    "/module": `<script type="module" src="http://${at(5)}/app.js"></script>`,
+    "/fetch": `<script>fetch("http://${at(6)}/api/data").catch(() => {});</script>`,
+    "/xhr": `<script>const xhr = new XMLHttpRequest(); xhr.open("GET", "http://${at(7)}/api/data"); xhr.send();</script>`,
+    "/cors": `<img crossorigin="anonymous" src="http://${at(8)}/logo.png">`,
+    "/socket": `<script>try { new WebSocket("ws://${at(9)}/live"); } catch (e) {}</script>`,
+    "/secure": `<img src="https://${at(10)}/secure.png">`,
+  };
   const { server, origin } = await serve((req, res) => {
-    if (req.url !== "/") return res.writeHead(404).end();
-    res.writeHead(200, html).end(`<!doctype html><title>Acme | Tools</title><h1>Acme</h1><p>Tools for teams.</p><img src="http://${away}/one.png"><img src="http://${away}/two.png"><div style="height:1400px"></div>`);
+    const way = req.url === "/" ? [0, 1, 2, 3, 4].map((i) => `<img src="http://${at(i)}/${i}.png">`).join("") : ways[req.url];
+    if (way === undefined) return res.writeHead(404).end();
+    const name = req.url === "/" ? "Tools" : req.url.slice(1);
+    res.writeHead(200, html).end(`<!doctype html><title>Acme | ${name}</title><h1>Acme ${name}</h1><p>The ${name} page of Acme, which makes tools for teams.</p>${way}<div style="height:1400px"></div>`);
   });
   const root = tempDir();
+  const asked = (i) => `it asked for ${i === 9 ? "ws" : i === 10 ? "https" : "http"}://${at(i)}, which is ${NOT_GIVEN}: nothing was sent there`;
   try {
-    const { manifest } = await takeShots(`${origin}/`, { dir: path.join(root, "shots"), pages: 1, sizes: "desktop", timeLimit: 90_000 });
-    assert.deepEqual(manifest.pages[0].notes.filter((note) => /nothing was sent there/.test(note)), [`it asked for http://${away}, which is ${NOT_GIVEN}: nothing was sent there`]);
+    const { manifest } = await takeShots(`${origin}/`, { dir: path.join(root, "shots"), pages: 7, extra: Object.keys(ways), sizes: "desktop", timeLimit: 120_000 });
+    const notesOf = (where) => {
+      const one = manifest.pages.find((p) => new URL(p.url).pathname === where);
+      assert.ok(one, `${where} was not taken`);
+      return one.notes.filter((note) => /nothing was sent there/.test(note));
+    };
+    // The home page asked five, of which three are named, in any order.
+    const home = notesOf("/");
+    assert.equal(home.length, 4, home.join("\n"));
+    assert.equal(home.filter((note) => [0, 1, 2, 3, 4].some((i) => note === asked(i))).length, 3, home.join("\n"));
+    assert.equal(home[3], "it asked for 2 more addresses the run does not open: nothing was sent there");
     const md = fs.readFileSync(path.join(root, "shots", "SCREENSHOTS.md"), "utf8");
-    assert.ok(md.includes(`it asked for http://${away}, which is ${NOT_GIVEN}: nothing was sent there`), md);
-    assert.deepEqual(other.seen, []);
+    Object.keys(ways).forEach((where, n) => {
+      assert.deepEqual(notesOf(where), [asked(n + 5)], where);
+      assert.ok(md.includes(asked(n + 5)), `${where}: ${md}`);
+    });
+    assert.deepEqual(traps.flatMap((one) => one.seen), []);
   } finally {
     server.close();
-    other.close();
+    for (const one of traps) one.close();
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
@@ -732,6 +1088,83 @@ test("the run's proxy listens on 127.0.0.1 alone, and its port takes no connecti
     assert.equal(await reach("127.0.0.1", port), "ECONNREFUSED");
   } finally {
     if (!closed) await chrome.close();
+  }
+});
+
+// The probes of the proxy are judged only once they have all come back: a
+// browser that did not finish them in their time is said to be slow, with
+// the start's advice (see launch()), not held by a policy, which nothing
+// showed. Here a tab stands in for the browser's.
+test("a browser that does not finish the proxy's probes in their time is not said to send its requests past the proxy", { timeout: 30_000 }, async () => {
+  const proxy = { probe: "probe.easyscreenshotkit.invalid", loopback: "http://127.0.0.1:9/x", saw: () => false };
+  const tab = (answer) => ({ send: async (method) => (method === "Runtime.evaluate" ? answer() : {}) });
+  // The probes' own timer won the race.
+  assert.deepEqual(await proxySaid(tab(() => ({ result: { value: "late" } })), () => 5_000, proxy), { late: true });
+  // The call itself ran out of time.
+  assert.deepEqual(await proxySaid(tab(() => Promise.reject(Object.assign(new Error("Runtime.evaluate timed out"), { timedOut: true }))), () => 5_000, proxy), { late: true });
+  // Done, and the proxy saw none of them: the browser goes past it.
+  const { why } = await proxySaid(tab(() => ({ result: { value: "done" } })), () => 5_000, proxy);
+  assert.match(why, /^does not send its requests through the proxy the run starts for it/);
+  // Not done, but a request for this machine's own address came straight
+  // to the proxy's port, past it: that holds however slow the browser is.
+  const past = { ...proxy, saw: (kind) => kind === "direct" };
+  assert.match((await proxySaid(tab(() => ({ result: { value: "late" } })), () => 5_000, past)).why, /^sends its requests for this machine's own addresses past the proxy/);
+});
+
+// A browser too slow to finish the probes in the start's time is not used,
+// in the start's own words for a slow browser. Here the program CHROME_PATH
+// names relays the browser's pipe and holds back the answer to the probes'
+// call, as a browser that does not finish them would leave it unanswered.
+test("a browser that does not finish the proxy's probes in the start's time is said to be slow", { skip: noBrowser || (process.platform === "win32" && "the relay is started by a shell script"), timeout: 90_000 }, async () => {
+  setTimeLimit(60_000);
+  const root = tempDir();
+  const relay = path.join(root, "relay.js");
+  fs.writeFileSync(
+    relay,
+    `"use strict";
+const fs = require("fs");
+const { spawn } = require("child_process");
+const child = spawn(${JSON.stringify(findChrome())}, process.argv.slice(2), { stdio: ["ignore", "ignore", "inherit", "pipe", "pipe"] });
+const fromKit = fs.createReadStream(null, { fd: 3 });
+const toKit = fs.createWriteStream(null, { fd: 4 });
+for (const stream of [fromKit, toKit, child.stdio[3], child.stdio[4]]) stream.on("error", () => {});
+const held = new Set();
+const split = (stream, take) => {
+  let bytes = Buffer.alloc(0);
+  stream.on("data", (chunk) => {
+    bytes = Buffer.concat([bytes, chunk]);
+    let at;
+    while ((at = bytes.indexOf(0)) >= 0) {
+      const text = bytes.subarray(0, at).toString();
+      bytes = bytes.subarray(at + 1);
+      take(text);
+    }
+  });
+};
+split(fromKit, (text) => {
+  const msg = JSON.parse(text);
+  if (msg.method === "Runtime.evaluate" && /RTCPeerConnection/.test(msg.params.expression)) held.add(msg.id);
+  child.stdio[3].write(text + "\\0");
+});
+split(child.stdio[4], (text) => {
+  const msg = JSON.parse(text);
+  if (held.has(msg.id)) return;
+  toKit.write(text + "\\0");
+});
+fromKit.on("end", () => child.stdio[3].end());
+child.on("exit", (code) => process.exit(code === null ? 1 : code));
+`,
+  );
+  const browser = path.join(root, "slow-chrome");
+  fs.writeFileSync(browser, `#!/bin/sh\nexec ${sh(process.execPath)} ${sh(relay)} "$@"\n`, { mode: 0o755 });
+  const saved = process.env.CHROME_PATH;
+  process.env.CHROME_PATH = browser;
+  try {
+    await assert.rejects(launch(), { message: /^slow-chrome started but did not finish the run's checks of its proxy in \d+ s\. The machine may be too busy: try again/ });
+  } finally {
+    if (saved === undefined) delete process.env.CHROME_PATH;
+    else process.env.CHROME_PATH = saved;
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
