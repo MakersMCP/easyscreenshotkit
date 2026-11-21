@@ -289,24 +289,39 @@ function refusalsProblem(value = process.env[REFUSE_SETTING]) {
 }
 
 // A name every browser takes for this machine without asking the DNS, and
-// the addresses it takes it for.
+// the addresses it takes it for, in the order the browser tries them, ::1
+// first, as this machine's resolver gives them: with 127.0.0.1 first, a
+// site started on localhost that listens on ::1 alone was passed over for
+// another program that listens on 127.0.0.1 on the same port, whose pages
+// the run then saved with no word.
 const localName = (host) => /(^|\.)localhost\.?$/i.test(host);
 const LOOPBACK = [
-  { address: "127.0.0.1", family: 4 },
   { address: "::1", family: 6 },
+  { address: "127.0.0.1", family: 4 },
 ];
 
+// The addresses of this machine one of its own names stands for: a name
+// under localhost both of them, and 127.0.0.1 and ::1 themselves; null for
+// any other host, read as lookupKey() reads it.
+function machineAddresses(host) {
+  if (localName(host)) return LOOPBACK.map((one) => one.address);
+  return host === "127.0.0.1" || host === "::1" ? [host] : null;
+}
+
 // A host as a URL gives it, as its addresses are asked for and kept (see
-// addressesOf()): without the brackets of an IPv6 address and the one dot
-// that can end a name. standing(), lookupWhy() and addressesFor() read it
-// so, and the lookup each request of the kit's connects with hands
-// addressesFor() the name as the request asks for it (see lookupFor()), so
-// a request goes to the answer its host was judged by. When that lookup
-// took a dot off before addressesFor() took another, a host written with
-// two dots at its end, as cdn.evil.example.., was judged by the answer for
-// cdn.evil.example., and its request went to a second answer of the DNS,
-// for cdn.evil.example, which a site's DNS server gave as 127.0.0.1.
-const lookupKey = (hostname) => String(hostname || "").replace(/^\[|\]$/g, "").replace(/\.$/, "");
+// addressesOf()): without the brackets of an IPv6 address and the dots that
+// can end a name, every one of them, as the DNS takes rebind.example.. and
+// rebind.example. for rebind.example. standing(), lookupWhy() and
+// addressesFor() read it so, and the lookup each request of the kit's
+// connects with hands addressesFor() the name as the request asks for it
+// (see lookupFor()), so a request goes to the answer its host was judged
+// by. When that lookup took a dot off before addressesFor() took another, a
+// host written with two dots at its end, as cdn.evil.example.., was judged
+// by the answer for cdn.evil.example., and its request went to a second
+// answer of the DNS, for cdn.evil.example, which a site's DNS server gave
+// as 127.0.0.1. With one dot taken off, such a host was a name of its own
+// in the run's answers, asked of the DNS a second time.
+const lookupKey = (hostname) => String(hostname || "").replace(/^\[|\]$/g, "").replace(/\.+$/, "");
 
 // What a host name resolves to here: {list} of {address, family}, or
 // {error}. Each name is asked once in a run, for 10 s at most.
@@ -344,6 +359,38 @@ async function standing(hostname) {
 
 async function hostNotPublic(hostname) {
   return (await standing(hostname)) === "inside";
+}
+
+// Behind a proxy in fake-ip mode, as Clash, Surge or sing-box run with a
+// TUN device, every name the run looks up answers in 198.18.0.0/15, and the
+// proxy takes a connection there to the host the name is for. Such an
+// address is not on the public internet, so behind such a proxy no host but
+// the one given is opened: its reason names the address and the range,
+// where it said only that the host, as github.githubassets.com, was not on
+// the public internet. Taken for public, such an address would be judged
+// for nothing: the proxy looks the name up again for itself and connects
+// where that answers, to this machine too.
+const FAKE_IP = new net.BlockList();
+FAKE_IP.addSubnet("198.18.0.0", 15, "ipv4");
+
+function inFakeRange(address) {
+  const ip = bareIp(address);
+  if (net.isIP(ip) === 4) return FAKE_IP.check(ip, "ipv4");
+  const groups = net.isIP(ip) === 6 ? groupsOf(ip) : null;
+  const held = groups ? heldIpv4(groups) : "";
+  return Boolean(held) && FAKE_IP.check(held, "ipv4");
+}
+
+// Why a host refuses() or a lookup finds not on the public internet is
+// refused, as said after "it is": for a name whose first such answer in
+// `list` is in fake-ip's range, that address and the range; else not on the
+// public internet, and with the address given on this machine or its
+// network (local), not on the host and port given either.
+function insideWhy(hostname, list, local) {
+  const host = lookupKey(hostname);
+  const hit = net.isIP(bareIp(host)) || localName(host) ? null : (list || []).find((answer) => notPublicIp(answer.address));
+  if (hit && inFakeRange(hit.address)) return `at ${bareIp(hit.address)}, in the range a proxy in fake-ip mode gives every name, 198.18.0.0/15, which is not on the public internet${local ? ", and not on the host and port given" : ""}`;
+  return local ? NOT_GIVEN : NOT_PUBLIC;
 }
 
 // Why a name could not be looked up, in a few words.
@@ -410,8 +457,24 @@ async function guardFor(start) {
   // http://myapp.dev:8080/ stopped the run on the address the browser
   // itself opened for it. A move from https down to http on that port is
   // not the address given.
-  const given = (url) => local && hostOf(url) === hostOf(from) && portOf(url) === portOf(from);
-  const own = (url) => web && hostOf(url) === hostOf(from) && portOf(url) === portOf(from) && (url.protocol === from.protocol || (from.protocol === "http:" && url.protocol === "https:"));
+  // On the port given, this machine's own names (localhost, a name under
+  // it, 127.0.0.1 and ::1) are the host given when it is one of them, where
+  // they reach an address of it, which is all they reach (see lookupFor()):
+  // a site given at http://127.0.0.1:4000/ whose pages name their styles,
+  // scripts and pictures at http://localhost:4000/, as Jekyll writes them,
+  // was taken without them, where 0.1.3, which judged documents alone, took
+  // them. 127.0.0.1 and ::1 reach no address of each other, and can be two
+  // programs on one port. shared(url): the addresses of this machine the
+  // host of url stands for that the host given does too, or null.
+  const mine = local ? machineAddresses(lookupKey(from.hostname)) : null;
+  const shared = (url) => {
+    const theirs = mine && machineAddresses(lookupKey(url.hostname));
+    const both = theirs ? theirs.filter((address) => mine.includes(address)) : [];
+    return both.length ? both : null;
+  };
+  const sameHost = (url) => hostOf(url) === hostOf(from) || Boolean(shared(url));
+  const given = (url) => local && sameHost(url) && portOf(url) === portOf(from);
+  const own = (url) => web && sameHost(url) && portOf(url) === portOf(from) && (url.protocol === from.protocol || (from.protocol === "http:" && url.protocol === "https:"));
   const parse = (raw) => {
     try {
       return new URL(String(raw));
@@ -443,7 +506,7 @@ async function guardFor(start) {
       if (given(url)) return anyPort ? "" : otherPort(port, web);
       const where = await standing(url.hostname);
       if (where === "unknown") return UNRESOLVED;
-      if (where === "inside") return local ? NOT_GIVEN : NOT_PUBLIC;
+      if (where === "inside") return insideWhy(url.hostname, (await addressesFor(url.hostname)).list, local);
       return anyPort ? "" : otherPort(port, web);
     },
     lookupWhy(raw) {
@@ -476,15 +539,18 @@ async function guardFor(start) {
       return (hostname, options, callback) => {
         const refuse = (why) => callback(Object.assign(new Error(`${hostname} is ${why}`), { code: "ENOTPUBLIC", hostname, refused: `it is ${why}`, why, at: url.href }));
         // The host and port given on this machine or its network, asked for
-        // by its own name: every address of it goes, as the run opens it.
+        // by its own name: every address of it goes, as the run opens it,
+        // and of another of this machine's names only those it shares with
+        // the host given (see shared()).
         const inside = given(url) && lookupKey(hostname) === lookupKey(url.hostname);
+        const only = inside ? shared(url) : null;
         addressesFor(hostname).then(({ list, error }) => {
           if (error) return callback(error);
           const hit = list.find((answer) => refusals.has(answer.address));
           if (hit) return refuse(refusedHere(hit.address));
-          if (!inside && list.some((answer) => notPublicIp(answer.address))) return refuse(local ? NOT_GIVEN : NOT_PUBLIC);
+          if (!inside && list.some((answer) => notPublicIp(answer.address))) return refuse(insideWhy(hostname, list, local));
           const family = options && options.family;
-          const fit = family ? list.filter((answer) => answer.family === family) : list;
+          const fit = list.filter((answer) => (!family || answer.family === family) && (!only || only.includes(bareIp(answer.address))));
           if (!fit.length) return callback(Object.assign(new Error(`${hostname} has no address`), { code: "ENOTFOUND", hostname }));
           if (options && options.all) callback(null, fit);
           else callback(null, fit[0].address, fit[0].family);

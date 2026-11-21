@@ -130,7 +130,7 @@ test("from a public address a run opens web addresses on the public internet onl
       ["http://localhost:3000/app/#/plants", ""],
       ["https://public.example/", ""],
       ["http://localhost:3001/", NOT_GIVEN],
-      ["http://127.0.0.1:3000/", NOT_GIVEN],
+      ["http://127.0.0.1:3001/", NOT_GIVEN],
       ["http://inside.example/", NOT_GIVEN],
       ["file://localhost/etc/passwd", "not a web address"],
     ]) {
@@ -367,6 +367,28 @@ test("the kit reads the files of a site on localhost that listens on ::1 alone, 
     if (String(host).replace(/\.$/, "").toLowerCase() !== "localhost") return lookup(host, options, callback);
     process.nextTick(callback, null, options && options.all ? [{ address: "127.0.0.1", family: 4 }] : "127.0.0.1", 4);
   };
+  // Each request of the kit's for the site asks the lookup the kit gave
+  // it, which has to hand back both of this machine's addresses, ::1
+  // first; it then goes to ::1 alone, so another program that listens on
+  // 127.0.0.1 on that port, as another job's server can, is not reached
+  // in its place.
+  const handed = [];
+  const get = http.get;
+  http.get = (url, options, ...rest) => {
+    const at = url instanceof URL ? url : new URL(String(url));
+    if (at.hostname !== "localhost") return get.call(http, url, options, ...rest);
+    const given = options && options.lookup;
+    const only = (host, opts, callback) => {
+      if (!given) return callback(Object.assign(new Error(`no lookup was given for ${host}`), { code: "ENOLOOKUP" }));
+      given(host, { ...opts, all: true }, (err, list) => {
+        handed.push(err ? err.code : list.map((one) => one.address).join(","));
+        if (err) return callback(err);
+        if (opts && opts.all) callback(null, [{ address: "::1", family: 6 }]);
+        else callback(null, "::1", 6);
+      });
+    };
+    return get.call(http, url, { ...options, lookup: only }, ...rest);
+  };
   try {
     await withSetting(undefined, async () => {
       const origin = `http://localhost:${port}`;
@@ -374,7 +396,10 @@ test("the kit reads the files of a site on localhost that listens on ::1 alone, 
       assert.deepEqual(index.urls, [`${origin}/integrations`]);
       await assert.rejects(checkManifest({ url: `${origin}/` }), { message: `${origin}/ links no web app manifest (no <link rel="manifest"> in its HTML). Give the manifest's own address or file.` });
     });
+    assert.ok(handed.length >= 3, handed.join(" "));
+    assert.deepEqual([...new Set(handed)], ["::1,127.0.0.1"]);
   } finally {
+    http.get = get;
     dns.lookup = lookup;
     site.close();
   }
@@ -438,10 +463,100 @@ test("the lookup a request of the kit's connects with hands back no address the 
       // back its addresses, and any other name that leads to this machine
       // is not on the host and port given.
       const own = (await guardFor("http://localhost:3000/")).lookupFor("http://localhost:3000/robots.txt");
-      assert.deepEqual(await ask(own, "localhost"), ["127.0.0.1", "::1"]);
+      assert.deepEqual(await ask(own, "localhost"), ["::1", "127.0.0.1"]);
       assert.deepEqual(await ask(own, "half-loopback.example"), ["ENOTPUBLIC", `it is ${NOT_GIVEN}`, "http://localhost:3000/robots.txt"]);
       assert.deepEqual(await ask(own, "refused.example"), ["ENOTPUBLIC", `it is ${here("93.184.215.99")}`, "http://localhost:3000/robots.txt"]);
     });
+  }));
+
+// A host written with dots at its end is one name to the run's lookup,
+// however many dots: the DNS is asked once for dots.example, dots.example.
+// and dots.example.., and a request for any of them goes to that first
+// answer. With one dot taken off, dots.example.. was a name of its own, the
+// DNS was asked again, and its spelling judged and reached by that second
+// answer, which a site's DNS server can give as 127.0.0.1.
+test("a host written with dots at its end is looked up once, however many", async () => {
+  const asked = [];
+  const lookup = dns.lookup;
+  dns.lookup = (host, options, callback) => {
+    if (typeof options === "function") [options, callback] = [{}, options];
+    if (!/^dots\.example\.*$/i.test(host)) return lookup(host, options, callback);
+    asked.push(host);
+    const address = asked.length === 1 ? "93.184.215.14" : "127.0.0.1";
+    process.nextTick(callback, null, options && options.all ? [{ address, family: 4 }] : address, 4);
+  };
+  const ask = (resolve, host) => new Promise((done) => resolve(host, { all: true }, (err, list) => done(err ? err.code : list.map((one) => one.address))));
+  try {
+    const guard = await guardFor("");
+    for (const url of ["http://dots.example/a", "http://dots.example./b", "http://DOTS.example../c", "https://dots.example.../d"]) assert.equal(await guard.refuses(url), "", url);
+    for (const host of ["dots.example..", "dots.example.", "dots.example"]) assert.deepEqual(await ask(guard.lookupFor(`http://${host}/x`), host), ["93.184.215.14"], host);
+    assert.deepEqual(asked, ["dots.example"]);
+  } finally {
+    dns.lookup = lookup;
+  }
+});
+
+// On the port given, this machine's own names, localhost, a name under it,
+// 127.0.0.1 and ::1, are the host given when it is one of them, where they
+// reach an address of it, and their requests go to those addresses alone:
+// a site given at http://127.0.0.1:4000/ whose pages name their styles,
+// scripts and pictures at http://localhost:4000/, as Jekyll writes them,
+// was taken without them. 127.0.0.1 and ::1 reach no address of each
+// other, and can be two programs on one port.
+test("on the port given, this machine's own names are the host given where they reach an address of it", () =>
+  withNames({ "inside.example": "127.0.0.1" }, async () => {
+    const ask = (resolve, host) => new Promise((done) => resolve(host, { all: true }, (err, list) => done(err ? err.code : list.map((one) => one.address))));
+    const fromFour = await guardFor("http://127.0.0.1:4000/");
+    for (const [url, why] of [
+      ["http://localhost:4000/site.css", ""],
+      ["http://app.localhost:4000/", ""],
+      ["https://localhost:4000/", ""],
+      ["http://[::1]:4000/", NOT_GIVEN],
+      ["http://localhost:4001/", NOT_GIVEN],
+      ["http://127.0.0.2:4000/", NOT_GIVEN],
+      ["http://inside.example:4000/", NOT_GIVEN],
+    ]) {
+      assert.equal(await fromFour.refuses(url), why, url);
+    }
+    assert.deepEqual(await ask(fromFour.lookupFor("http://localhost:4000/site.css"), "localhost"), ["127.0.0.1"]);
+    const fromName = await guardFor("http://localhost:4000/");
+    for (const [url, why] of [
+      ["http://127.0.0.1:4000/", ""],
+      ["http://[::1]:4000/", ""],
+      ["http://app.localhost:4000/", ""],
+      ["http://127.0.0.1:4001/", NOT_GIVEN],
+    ]) {
+      assert.equal(await fromName.refuses(url), why, url);
+    }
+    assert.deepEqual(await ask(fromName.lookupFor("http://app.localhost:4000/"), "app.localhost"), ["::1", "127.0.0.1"]);
+    const fromSix = await guardFor("http://[::1]:4000/");
+    assert.equal(await fromSix.refuses("http://localhost:4000/"), "");
+    assert.equal(await fromSix.refuses("http://127.0.0.1:4000/"), NOT_GIVEN);
+    assert.deepEqual(await ask(fromSix.lookupFor("http://localhost:4000/"), "localhost"), ["::1"]);
+  }));
+
+// Behind a proxy in fake-ip mode every name answers in 198.18.0.0/15, which
+// is not on the public internet: no host but the one given is opened, and
+// the reason names the address and that range, where it said only that a
+// host such as github.githubassets.com was not on the public internet. An
+// address written so in the address itself is that address, as before.
+test("a name that answers in the range a proxy in fake-ip mode gives is refused with that address and the range named", () =>
+  withNames({ "fake-site.example": "198.18.0.2", "fake-assets.example": "198.18.0.3", "fake-inside.example": "10.0.0.8" }, async () => {
+    const fake = (address, away) => `at ${address}, in the range a proxy in fake-ip mode gives every name, 198.18.0.0/15, which is not on the public internet${away ? ", and not on the host and port given" : ""}`;
+    const ask = (resolve, host) => new Promise((done) => resolve(host, { all: true }, (err, list) => done(err ? [err.code, err.refused] : list.map((one) => one.address))));
+    const guard = await guardFor("https://fake-site.example/");
+    assert.equal(guard.local, true);
+    for (const [url, why] of [
+      ["https://fake-site.example/pricing", ""],
+      ["https://fake-assets.example/app.css", fake("198.18.0.3", true)],
+      ["http://198.18.0.3/", NOT_GIVEN],
+      ["http://fake-inside.example/", NOT_GIVEN],
+    ]) {
+      assert.equal(await guard.refuses(url), why, url);
+    }
+    const none = await guardFor("");
+    assert.equal(await none.refuses("https://fake-assets.example/app.css"), fake("198.18.0.3", false));
+    assert.deepEqual(await ask(none.lookupFor("https://public.example/"), "fake-assets.example"), ["ENOTPUBLIC", `it is ${fake("198.18.0.3", false)}`]);
   }));
 
 // A name that cannot be looked up here, as the DNS fails or answers late,

@@ -290,11 +290,11 @@ test("the site index reads robots.txt and a gzipped sitemap index, and stops at 
 
 // A sitemap robots.txt names is read at the address its host was judged
 // by, a host written with two dots at its end too, which the rule reads
-// with one dot taken off: the request's lookup asks for that name too, and
-// the DNS is asked once. It took off a second dot, asked the DNS again, and
-// the request went to that later answer, 127.0.0.1 (see helpers.js
-// withRebinding). The site is a server of this machine, given as the
-// address.
+// with every dot at its end taken off: the request's lookup asks for that
+// name too, and the DNS is asked once. It took off a second dot, asked the
+// DNS again, and the request went to that later answer, 127.0.0.1 (see
+// helpers.js withRebinding). The site is a server of this machine, given
+// as the address.
 test("a sitemap robots.txt names on a host written with two dots at its end is read at the address its host was judged by", async () => {
   const { server, origin } = await serve((req, res) => {
     if (req.url === "/robots.txt") return res.end("User-agent: *\nSitemap: http://two-dots-map.example../sitemap.xml\n");
@@ -306,7 +306,7 @@ test("a sitemap robots.txt names on a host written with two dots at its end is r
       const index = await pick.readSiteIndex(origin);
       assert.deepEqual(index.urls, []);
       assert.deepEqual(await reached(), ["93.184.215.14"]);
-      assert.deepEqual(asked(), ["two-dots-map.example."]);
+      assert.deepEqual(asked(), ["two-dots-map.example"]);
     });
   } finally {
     server.close();

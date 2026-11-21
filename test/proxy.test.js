@@ -767,3 +767,43 @@ test("a document the proxy refuses past the browser's guard is not shown, and it
     server.close();
   }
 });
+
+// On the port given, this machine's own names are the host given where they
+// reach an address of it: a site given at http://127.0.0.1:<port>/ whose
+// page names its style, script and picture at http://localhost:<port>/, as
+// Jekyll writes them from its site.url, is taken with them, as 0.1.3 took
+// it, and they come from 127.0.0.1, the address given, where the page came
+// unstyled with a broken picture and notes that called them not on the
+// public internet.
+test("a site given at 127.0.0.1 whose page names its files at localhost on the same port is taken with them", { skip: noBrowser, timeout: 60_000 }, async () => {
+  setTimeLimit(60_000);
+  const asked = [];
+  const { server, origin } = await serve((req, res) => {
+    asked.push(`${req.url} ${req.headers.host}`);
+    const port = new URL(origin).port;
+    if (req.url === "/site.css") return res.writeHead(200, { "Content-Type": "text/css" }).end("h1 { color: rgb(200, 0, 0); }");
+    if (req.url === "/app.js") return res.writeHead(200, { "Content-Type": "text/javascript" }).end('document.title = "script ran";');
+    if (req.url === "/logo.svg") return res.writeHead(200, { "Content-Type": "image/svg+xml" }).end('<svg xmlns="http://www.w3.org/2000/svg" width="40" height="30"><rect width="40" height="30" fill="rgb(0,160,0)"/></svg>');
+    res.writeHead(200, html).end(`<!doctype html><title>Jekyll</title><link rel="stylesheet" href="http://localhost:${port}/site.css"><h1>Jekyll</h1><img id="logo" src="http://localhost:${port}/logo.svg"><script src="http://localhost:${port}/app.js"></script>`);
+  });
+  let chrome = null;
+  try {
+    chrome = await launch({ guard: await guardFor(`${origin}/`) });
+    const tab = await openTab(chrome, DESKTOP);
+    const unreached = [];
+    tab.on(UNREACHED, (u) => unreached.push(u.url));
+    try {
+      assert.equal((await navigate(tab, `${origin}/`)).status, 200);
+      const { result } = await tab.send("Runtime.evaluate", { expression: "({ title: document.title, color: getComputedStyle(document.querySelector('h1')).color, width: document.getElementById('logo').naturalWidth })", returnByValue: true });
+      assert.deepEqual(result.value, { title: "script ran", color: "rgb(200, 0, 0)", width: 40 });
+    } finally {
+      await closeTab(chrome, tab);
+    }
+    assert.deepEqual(unreached, []);
+    const port = new URL(origin).port;
+    assert.deepEqual(asked.filter((line) => /^\/(app\.js|logo\.svg|site\.css) /.test(line)).sort(), [`/app.js localhost:${port}`, `/logo.svg localhost:${port}`, `/site.css localhost:${port}`]);
+  } finally {
+    if (chrome) await chrome.close();
+    server.close();
+  }
+});
