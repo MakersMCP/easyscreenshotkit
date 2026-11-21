@@ -2798,7 +2798,13 @@ test("a tab that crashes fails the run on its first page and is named in the not
   const root = tempDir();
   const dir = path.join(root, "shots");
   // The CLI, its tab's page killed once it asks for what is held back and
-  // when says so. seconds: from the kill to the end of the run.
+  // when says so. seconds: from the kill to the end of the run. The kill
+  // ends every renderer of the browser, those it started ahead for the
+  // pages to come among them (five as it starts, here), so the run is held
+  // still meanwhile, until the browser has seen each of them end: a tab the
+  // run opened the moment it heard of the crash was given one of those
+  // before the browser had seen it end, and crashed in its turn, which
+  // failed the run where the case had the run go on.
   const run = (args, when = () => true) =>
     new Promise((resolve) => {
       const child = spawn(process.execPath, [CLI, ...args]);
@@ -2808,7 +2814,21 @@ test("a tab that crashes fails the run on its first page and is named in the not
       hold = (req) => {
         if (killedAt || !when(req)) return false;
         killedAt = Date.now();
-        for (const { pid, args: line } of descendants(child.pid)) if (/--type=renderer/.test(line)) process.kill(pid, "SIGKILL");
+        const killed = descendants(child.pid).filter(({ args: line }) => /--type=renderer/.test(line)).map(({ pid }) => pid);
+        process.kill(child.pid, "SIGSTOP");
+        for (const pid of killed) {
+          try {
+            process.kill(pid, "SIGKILL");
+          } catch {
+            // Gone already.
+          }
+        }
+        const until = Date.now() + 5_000;
+        const resume = () => {
+          if (killed.some((pid) => fs.existsSync(`/proc/${pid}`)) && Date.now() < until) return void setTimeout(resume, 20);
+          setTimeout(() => process.kill(child.pid, "SIGCONT"), 300);
+        };
+        resume();
         return true;
       };
       child.stdout.on("data", (d) => (stdout += d));
@@ -4002,12 +4022,27 @@ test("of a menu's link to a page on another port and the footer's on the site's 
   const port = new URL(origin).port;
   const http = require("node:http");
   const get = http.get;
-  // The kit's own requests for the site's name go to the site's server.
+  // The kit's own requests for the site's name go to the site's server,
+  // each once the lookup the kit gave it has handed back the name's one
+  // answer, 93.184.215.14, as Node.js asks that lookup: a request with no
+  // lookup of the kit's fails here. read: what they read.
+  const read = [];
   http.get = (url, options, done) => {
     const where = new URL(String(url));
     if (where.hostname !== "dup.example") return get(url, options, done);
     const { lookup, ...rest } = options || {};
-    return get(`http://127.0.0.1:${port}${where.pathname}${where.search}`, { ...rest, headers: { ...((rest && rest.headers) || {}), Host: "dup.example" } }, done);
+    const judged = (host, opts, callback) => {
+      if (!lookup) return callback(Object.assign(new Error(`no lookup was given for ${host}`), { code: "ENOLOOKUP" }));
+      lookup(host, { ...opts, all: true }, (err, list) => {
+        if (err) return callback(err);
+        const addresses = list.map((one) => one.address).join(",");
+        if (addresses !== "93.184.215.14") return callback(Object.assign(new Error(`the kit's lookup handed back ${addresses}`), { code: "EWRONGANSWER" }));
+        read.push(where.pathname);
+        if (opts && opts.all) callback(null, [{ address: "127.0.0.1", family: 4 }]);
+        else callback(null, "127.0.0.1", 4);
+      });
+    };
+    return get({ protocol: "http:", hostname: "dup.example", port, path: `${where.pathname}${where.search}`, ...rest, lookup: judged, headers: { ...((rest && rest.headers) || {}), Host: "dup.example" } }, done);
   };
   const root = tempDir();
   const stand = reachAt({ "93.184.215.14:80": `127.0.0.1:${port}` });
@@ -4027,8 +4062,10 @@ test("of a menu's link to a page on another port and the footer's on the site's 
       setTimeLimit(120_000);
     }
     // The name was asked for once, in all: by the rule, the browser's proxy
-    // and the kit's own requests for robots.txt and the sitemap.
+    // and the kit's own requests for robots.txt and the sitemap, which went
+    // to its one answer through the kit's lookup.
     assert.equal(asked("dup.example"), 1);
+    assert.ok(read.includes("/robots.txt"), read.join(" "));
   } finally {
     http.get = get;
     stand.restore();

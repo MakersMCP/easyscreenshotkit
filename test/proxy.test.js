@@ -381,6 +381,7 @@ navigator.credentials.get({ publicKey: { challenge: new Uint8Array(32), rpId: "r
 // this machine, where the other program listens on that other port.
 test("from a site on the public internet, a picture and a frame on another port of its host reach nothing but the refusal", { skip: noBrowser, timeout: 60_000 }, () =>
   withNames({ "public-pic.example": "93.184.215.20" }, async () => {
+    setTimeLimit(60_000);
     const other = await trap();
     const { server, origin } = await serve((req, res) => {
       if (req.url !== "/") return res.writeHead(404).end();
@@ -437,12 +438,14 @@ test("a speculation rules prefetch of a browser with its preloading on reaches n
   const guard = await guardFor(`${origin}/`);
   const proxy = await startProxy(() => guard);
   // No display and no session bus, as the kit's own browser has (see
-  // browserEnv() in chrome.js).
-  const env = { ...process.env, TMPDIR: profile, WAYLAND_DISPLAY: path.join(profile, "no-display"), DBUS_SESSION_BUS_ADDRESS: `unix:path=${path.join(profile, "no-bus")}` };
+  // browserEnv() in chrome.js), and its crash reports and config in its
+  // profile, not in the user's own browser's (see configIn()).
+  const env = { ...process.env, TMPDIR: profile, WAYLAND_DISPLAY: path.join(profile, "no-display"), DBUS_SESSION_BUS_ADDRESS: `unix:path=${path.join(profile, "no-bus")}`, CHROME_CONFIG_HOME: profile, XDG_CONFIG_HOME: path.join(profile, "config") };
   delete env.DISPLAY;
   delete env.WAYLAND_SOCKET;
+  let browser = null;
   try {
-    const browser = spawn(findChrome(), ["--headless=new", `--user-data-dir=${profile}`, "--no-first-run", "--no-default-browser-check", "--disable-extensions", "--dump-dom", `--proxy-server=http://127.0.0.1:${proxy.port}`, "--proxy-bypass-list=<-loopback>", ...(process.getuid && process.getuid() === 0 ? ["--no-sandbox"] : []), `${origin}/`], { stdio: ["ignore", "pipe", "ignore"], env });
+    browser = spawn(findChrome(), ["--headless=new", `--user-data-dir=${profile}`, "--no-first-run", "--no-default-browser-check", "--disable-extensions", "--dump-dom", `--proxy-server=http://127.0.0.1:${proxy.port}`, "--proxy-bypass-list=<-loopback>", ...(process.getuid && process.getuid() === 0 ? ["--no-sandbox"] : []), `${origin}/`], { stdio: ["ignore", "pipe", "ignore"], env });
     let dom = "";
     browser.stdout.on("data", (d) => (dom += d));
     await new Promise((resolve) => browser.on("exit", resolve));
@@ -450,6 +453,11 @@ test("a speculation rules prefetch of a browser with its preloading on reaches n
     assert.equal(proxy.refused.get(away), NOT_GIVEN);
     assert.deepEqual(other.seen, []);
   } finally {
+    // A browser left running when the test fails or runs out of time.
+    if (browser && browser.exitCode === null && browser.signalCode === null) {
+      browser.kill("SIGKILL");
+      await new Promise((resolve) => browser.once("exit", resolve));
+    }
     proxy.close();
     server.close();
     other.close();
@@ -461,6 +469,7 @@ test("a speculation rules prefetch of a browser with its preloading on reaches n
 // requests reached a server on this machine. The browser runs with the
 // policy that sends none past it.
 test("WebRTC sends no UDP past the proxy", { skip: noBrowser, timeout: 60_000 }, async () => {
+  setTimeLimit(60_000);
   const udp = dgram.createSocket("udp4");
   let packets = 0;
   udp.on("message", () => packets++);
@@ -497,6 +506,7 @@ const noLoopback6 = (() => {
 })();
 
 test("a site on localhost given as the address is taken through the proxy, a WebSocket and a picture on its own port with it", { skip: noBrowser || noLoopback6, timeout: 60_000 }, async () => {
+  setTimeLimit(60_000);
   const seen = [];
   const site = http.createServer((req, res) => {
     seen.push(req.url);
@@ -512,7 +522,18 @@ test("a site on localhost given as the address is taken through the proxy, a Web
     socket.on("error", () => {});
   });
   await new Promise((resolve) => site.listen(0, "::1", resolve));
-  const given = `http://localhost:${site.address().port}/`;
+  const port = site.address().port;
+  const given = `http://localhost:${port}/`;
+  // Nothing is reached at 127.0.0.1 on that port, whatever listens there,
+  // as another job's server can: such a connection is refused, as the
+  // system refuses one where nothing listens.
+  const before = dialer.connect;
+  dialer.connect = (options) => {
+    if (options.host !== "127.0.0.1" || Number(options.port) !== port) return before(options);
+    const socket = new net.Socket();
+    process.nextTick(() => socket.destroy(Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" })));
+    return socket;
+  };
   let chrome = null;
   try {
     chrome = await launch({ guard: await guardFor(given) });
@@ -522,17 +543,20 @@ test("a site on localhost given as the address is taken through the proxy, a Web
       const until = Date.now() + 5_000;
       let shown = {};
       while (Date.now() < until) {
-        ({ result: { value: shown } } = await tab.send("Runtime.evaluate", { expression: "({ title: document.title, width: document.getElementById('pic').naturalWidth })", returnByValue: true }));
+        const { result = {}, exceptionDetails } = await tab.send("Runtime.evaluate", { expression: "({ title: document.title, width: (document.getElementById('pic') || {}).naturalWidth, text: document.body ? document.body.innerText.slice(0, 200) : '' })", returnByValue: true });
+        if (exceptionDetails) assert.fail(`the page could not be read: ${JSON.stringify(exceptionDetails).slice(0, 300)}`);
+        shown = result.value || {};
         if (shown.title === "live" && shown.width) break;
         await sleep(100);
       }
-      assert.deepEqual(shown, { title: "live", width: 40 });
+      assert.deepEqual({ title: shown.title, width: shown.width }, { title: "live", width: 40 }, `the page held: ${JSON.stringify(shown)}`);
     } finally {
       await closeTab(chrome, tab);
     }
     assert.deepEqual([...chrome.proxy.refused].filter(([at]) => /localhost|::1|127\.0\.0\.1/.test(at)), []);
     assert.ok(seen.includes("/") && seen.includes("/pic.svg") && seen.includes("upgrade /live"), seen.join(" "));
   } finally {
+    dialer.connect = before;
     if (chrome) await chrome.close();
     site.close();
   }
@@ -544,6 +568,7 @@ test("a site on localhost given as the address is taken through the proxy, a Web
 // it is not used. Here the program CHROME_PATH names starts the browser
 // with the proxy's switches taken out.
 test("a browser that sends its requests past the proxy is not used", { skip: noBrowser || (process.platform === "win32" && "the wrapper is a shell script"), timeout: 60_000 }, async () => {
+  setTimeLimit(60_000);
   const root = tempDir();
   const browser = path.join(root, "unproxied");
   const told = path.join(root, "args");
@@ -576,6 +601,7 @@ test("a browser that sends its requests past the proxy is not used", { skip: noB
 // Here the program CHROME_PATH names starts the browser with that switch
 // taken out.
 test("a browser that sends this machine's addresses or WebRTC's UDP past the proxy is not used", { skip: noBrowser || (process.platform === "win32" && "the wrapper is a shell script"), timeout: 90_000 }, async () => {
+  setTimeLimit(90_000);
   const root = tempDir();
   const saved = process.env.CHROME_PATH;
   // The browser itself, found before CHROME_PATH names a wrapper.
@@ -602,6 +628,7 @@ test("a browser that sends this machine's addresses or WebRTC's UDP past the pro
 // would fail in the browser's bare words: the run says so before it starts
 // the browser. Here the proxy's own connection to itself is refused.
 test("a proxy this user cannot reach stops the run before the browser starts, saying why", { skip: noBrowser || (process.platform === "win32" && "the wrapper is a shell script"), timeout: 30_000 }, async () => {
+  setTimeLimit(30_000);
   // The browser, behind a program that notes whether it was started.
   const root = tempDir();
   const browser = path.join(root, "noted");
@@ -631,6 +658,7 @@ test("a proxy this user cannot reach stops the run before the browser starts, sa
 // the proxy: over http and over https, where the browser hears only that
 // its tunnel failed.
 test("a site that is down is said so in the browser's own words through the proxy", { skip: noBrowser, timeout: 60_000 }, async () => {
+  setTimeLimit(60_000);
   const gone = await serve((req, res) => res.end("gone"));
   const port = new URL(gone.origin).port;
   await new Promise((resolve) => gone.server.close(resolve));
@@ -672,5 +700,70 @@ test("a run names in a page's notes what the proxy did not pass on of its reques
     server.close();
     other.close();
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// The proxy listens on 127.0.0.1 alone, and only while its browser runs:
+// its port takes no connection at another address of this machine, as
+// 127.0.0.2 or ::1 are, and none once the browser has closed.
+test("the run's proxy listens on 127.0.0.1 alone, and its port takes no connection once its browser has closed", { skip: noBrowser, timeout: 60_000 }, async () => {
+  setTimeLimit(60_000);
+  const reach = (host, port) =>
+    new Promise((resolve) => {
+      const socket = net.connect({ host, port }, () => {
+        socket.destroy();
+        resolve("connected");
+      });
+      socket.on("error", (err) => resolve(err.code));
+      socket.setTimeout(3_000, () => {
+        socket.destroy();
+        resolve("no answer");
+      });
+    });
+  const chrome = await launch();
+  let closed = false;
+  try {
+    const { port } = chrome.proxy;
+    assert.equal(await reach("127.0.0.1", port), "connected");
+    const others = [...(process.platform === "linux" ? ["127.0.0.2"] : []), ...(noLoopback6 ? [] : ["::1"])];
+    for (const host of others) assert.equal(await reach(host, port), "ECONNREFUSED", host);
+    await chrome.close();
+    closed = true;
+    assert.equal(await reach("127.0.0.1", port), "ECONNREFUSED");
+  } finally {
+    if (!closed) await chrome.close();
+  }
+});
+
+// Two checks of the documents the proxy refuses, for when it refuses one
+// that the browser's own guard let through, as a lookup refusal of the
+// run's that refuses() did not give: an http page answered with the
+// proxy's own refusal is not shown as a page, and an https one whose
+// tunnel it refused is named with its reason, not as a tunnel that failed.
+// Here the rule's lookup refuses every name its refuses() lets through.
+test("a document the proxy refuses past the browser's guard is not shown, and its reason is said", { skip: noBrowser, timeout: 60_000 }, async () => {
+  setTimeLimit(60_000);
+  const { server, origin } = await serve((req, res) => res.writeHead(200, html).end("<!doctype html><title>Site</title><h1>Site</h1>"));
+  const given = `${origin}/`;
+  const rule = await guardFor(given);
+  const walled = {
+    ...rule,
+    lookupFor: (raw) => (hostname, options, callback) => process.nextTick(callback, Object.assign(new Error(`${hostname} is ${NOT_GIVEN}`), { code: "ENOTPUBLIC", why: NOT_GIVEN, refused: `it is ${NOT_GIVEN}`, at: raw })),
+  };
+  let chrome = null;
+  try {
+    chrome = await launch();
+    chrome.guard = walled;
+    for (const url of [given, given.replace("http:", "https:")]) {
+      const tab = await openTab(chrome, DESKTOP);
+      try {
+        await assert.rejects(navigate(tab, url), { message: `Could not open ${url}: it is ${NOT_GIVEN}.` });
+      } finally {
+        await closeTab(chrome, tab);
+      }
+    }
+  } finally {
+    if (chrome) await chrome.close();
+    server.close();
   }
 });
