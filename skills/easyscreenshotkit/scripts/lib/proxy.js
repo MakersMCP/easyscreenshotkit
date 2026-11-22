@@ -137,10 +137,15 @@ function addressesBy(lookup, hostname) {
 // second: with one connection to each address, one the network lost, on a
 // lossy path, behind a NAT or a load balancer with a backend that does not
 // answer, cost a page CONNECT_MS and then the page, where the browser's
-// second connection got through. One that fails has the next address tried
-// at once; an address that refuses a connection is not tried again, and
-// once every address under way has refused one, the dial fails then: a
-// host that refuses fails at once. All of it is given up CONNECT_MS after
+// second connection got through. One that fails has the next connection
+// started at once; an address whose connection failed in a way that says
+// it would fail again (see DEAD) is not tried again, and once every address
+// under way has failed so, the dial fails then: a host that refuses fails
+// at once. Counted as one to try again, the IPv6 address of a host on a
+// machine with no IPv6, which fails at once with ENETUNREACH, had one of
+// the two more connections go there, and beside an IPv4 connection the
+// network lost, one more started, at half a second, where two were to
+// start from a quarter of a second. All of it is given up CONNECT_MS after
 // it began. Each dial is kept in `dials`
 // while it goes, so that the proxy's close() ends it: its connections under
 // way are ended, its timers cleared, and no other address is tried. Tried
@@ -150,12 +155,17 @@ function addressesBy(lookup, hostname) {
 // times. Fails with the last error.
 const EXTRA = 2;
 
+// The codes of a connection that failed before it was made that say the
+// address would fail again at once: it refused, or this machine has no way
+// to it or no address to send from.
+const DEAD = new Set(["ECONNREFUSED", "ENETUNREACH", "EHOSTUNREACH", "EADDRNOTAVAIL"]);
+
 function dial(list, port, dials) {
   const seen = new Set();
   const addresses = list.filter(({ address }) => !seen.has(address) && seen.add(address));
   return new Promise((resolve, reject) => {
     // The connections under way, each with its address, and the addresses
-    // that refused one.
+    // that are not tried again.
     const tries = new Map();
     const refusing = new Set();
     // The next address not tried yet, and the connections started beside
@@ -187,6 +197,7 @@ function dial(list, port, dials) {
       } catch (err) {
         // A port or an address the system will not connect to at all.
         last = err;
+        refusing.add(address);
         return false;
       }
       tries.set(socket, address);
@@ -197,15 +208,14 @@ function dial(list, port, dials) {
         socket.destroy();
         if (over || !tries.delete(socket)) return;
         last = err;
-        if (err && err.code === "ECONNREFUSED") refusing.add(address);
-        if (next < addresses.length) another();
-        else if ([...tries.values()].every((one) => refusing.has(one))) failed();
+        if (err && DEAD.has(err.code)) refusing.add(address);
+        another();
       });
       return true;
     };
     // The next connection: to the next address not tried yet, or, while
-    // one is still under way, another to them in turn, past those that
-    // refused one.
+    // one is still under way, another to them in turn, past those that are
+    // not tried again.
     const another = () => {
       clearTimeout(stagger);
       if (over) return;

@@ -264,8 +264,11 @@ test("the proxy keeps the last outcome for each host and port, by the way it was
 // is under way, two more connections to them are started a quarter of a
 // second apart while none has connected, as the browser starts a second
 // connection to a host that does not answer at once; a host that refuses
-// is tried once; the proxy's close() ends a connection under way, and no
-// other address is tried after it. Tried one after another, 30 s each, a
+// is tried once, and an address this machine has no way to, as a site's
+// IPv6 address on a machine with no IPv6, once, the two more going to the
+// address that can still connect, the first of them at once; the proxy's
+// close() ends a connection under way, and no other address is tried after
+// it. Tried one after another, 30 s each, a
 // host whose addresses did not answer held a request two minutes, and the
 // run's process lived on that long after its end. Here 93.184.215.40 does
 // not answer, and 93.184.215.41 is the site's server.
@@ -276,22 +279,33 @@ test("the proxy tries each address of a host, the next beside one that has not c
   await new Promise((resolve) => closed.server.close(resolve));
   const made = [];
   const silent = [];
+  let madeByFailure = 0;
   const before = dialer.connect;
   dialer.connect = (options) => {
     made.push(`${options.host}:${options.port}`);
     if (options.host === "93.184.215.41") return before({ ...options, host: "127.0.0.1", port: Number(new URL(site.origin).port), family: 4 });
     if (options.host === "93.184.215.42") return before({ ...options, host: "127.0.0.1", port: closedPort, family: 4 });
     const socket = new net.Socket();
+    // An address this machine has no way to fails at once; how many
+    // connections were made by the time that failure has been heard is
+    // noted, before any timer of the proxy's can run.
+    if (options.host === "2600:1f13:37c::1") {
+      process.nextTick(() => {
+        socket.destroy(Object.assign(new Error("connect ENETUNREACH 2600:1f13:37c::1:80"), { code: "ENETUNREACH" }));
+        setImmediate(() => (madeByFailure = made.length));
+      });
+      return socket;
+    }
     silent.push(socket);
     return socket;
   };
   const lookup = dns.lookup;
-  const answers = { "both.example": ["93.184.215.40", "93.184.215.40", "93.184.215.41"], "silent.example": ["93.184.215.40", "93.184.215.40", "93.184.215.40"], "refusing.example": ["93.184.215.42"] };
+  const answers = { "both.example": ["93.184.215.40", "93.184.215.40", "93.184.215.41"], "silent.example": ["93.184.215.40", "93.184.215.40", "93.184.215.40"], "refusing.example": ["93.184.215.42"], "nosix.example": ["93.184.215.43", "2600:1f13:37c::1"] };
   dns.lookup = (host, options, callback) => {
     if (typeof options === "function") [options, callback] = [{}, options];
     const list = answers[String(host).replace(/\.$/, "")];
     if (!list) return lookup(host, options, callback);
-    process.nextTick(callback, null, options && options.all ? list.map((address) => ({ address, family: 4 })) : list[0], 4);
+    process.nextTick(callback, null, options && options.all ? list.map((address) => ({ address, family: address.includes(":") ? 6 : 4 })) : list[0], 4);
   };
   let proxy = null;
   try {
@@ -322,6 +336,19 @@ test("the proxy tries each address of a host, the next beside one that has not c
     await sleep(600);
     assert.equal(made.length, 3);
     assert.deepEqual(silent.map((socket) => socket.destroyed), [true, true, true]);
+    // A host whose IPv6 address this machine has no way to, and whose IPv4
+    // address's connections the network loses: the IPv6 address is tried
+    // once, and the two more connections go to the IPv4 address, the first
+    // as soon as the IPv6 one has failed, a quarter of a second in.
+    proxy = await startProxy(() => guard);
+    made.length = 0;
+    silent.length = 0;
+    const lost = askProxy(proxy.port, "http://nosix.example/z").then(() => "answered", (err) => err.code);
+    await sleep(1_200);
+    assert.deepEqual(made, ["93.184.215.43:80", "2600:1f13:37c::1:80", "93.184.215.43:80", "93.184.215.43:80"]);
+    assert.equal(madeByFailure, 3, "the next connection started as soon as the IPv6 one failed");
+    proxy.close();
+    assert.equal(await lost, "ECONNRESET");
   } finally {
     dialer.connect = before;
     dns.lookup = lookup;
