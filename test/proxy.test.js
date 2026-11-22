@@ -279,14 +279,16 @@ test("the proxy keeps the last outcome for each host and port, by the way it was
 // is under way, two more connections to them are started a quarter of a
 // second apart while none has connected, as the browser starts a second
 // connection to a host that does not answer at once; a host that refuses
-// is tried once, and an address this machine has no way to, as a site's
-// IPv6 address on a machine with no IPv6, once, the two more going to the
-// address that can still connect, the first of them at once; the proxy's
-// close() ends a connection under way, and no other address is tried after
-// it. Tried one after another, 30 s each, a
-// host whose addresses did not answer held a request two minutes, and the
-// run's process lived on that long after its end. Here 93.184.215.40 does
-// not answer, and 93.184.215.41 is the site's server.
+// is tried once, and an address this machine has no way to or no address
+// to send from, as a site's IPv6 address on a machine with no IPv6
+// (ENETUNREACH, EHOSTUNREACH or EADDRNOTAVAIL), or that the system will not
+// connect to at all, once, the two more going to the address that can
+// still connect, the first of them at once; the proxy's close() ends a
+// connection under way, and no other address is tried after it. Tried one
+// after another, 30 s each, a host whose addresses did not answer held a
+// request two minutes, and the run's process lived on that long after its
+// end. Here 93.184.215.40 does not answer, and 93.184.215.41 is the site's
+// server.
 test("the proxy tries each address of a host, the next beside one that has not connected, then two more, and its close() ends what is under way", { timeout: 60_000 }, async () => {
   const site = await serve((req, res) => res.end(`site ${req.url}`));
   const closed = await serve((req, res) => res.end("gone"));
@@ -304,18 +306,22 @@ test("the proxy tries each address of a host, the next beside one that has not c
     // An address this machine has no way to fails at once; how many
     // connections were made by the time that failure has been heard is
     // noted, before any timer of the proxy's can run.
-    if (options.host === "2600:1f13:37c::1") {
+    const fails = { "2600:1f13:37c::1": "ENETUNREACH", "2600:1f13:37c::2": "EHOSTUNREACH", "2600:1f13:37c::3": "EADDRNOTAVAIL" }[options.host];
+    if (fails) {
       process.nextTick(() => {
-        socket.destroy(Object.assign(new Error("connect ENETUNREACH 2600:1f13:37c::1:80"), { code: "ENETUNREACH" }));
+        socket.destroy(Object.assign(new Error(`connect ${fails} ${options.host}:80`), { code: fails }));
         setImmediate(() => (madeByFailure = made.length));
       });
       return socket;
     }
+    // One the system will not connect to at all throws as it is asked, as
+    // a port out of range does.
+    if (options.host === "93.184.215.50") throw Object.assign(new RangeError(`Port should be >= 0 and < 65536. Received type number (${options.port}).`), { code: "ERR_SOCKET_BAD_PORT" });
     silent.push(socket);
     return socket;
   };
   const lookup = dns.lookup;
-  const answers = { "both.example": ["93.184.215.40", "93.184.215.40", "93.184.215.41"], "silent.example": ["93.184.215.40", "93.184.215.40", "93.184.215.40"], "refusing.example": ["93.184.215.42"], "nosix.example": ["93.184.215.43", "2600:1f13:37c::1"] };
+  const answers = { "both.example": ["93.184.215.40", "93.184.215.40", "93.184.215.41"], "silent.example": ["93.184.215.40", "93.184.215.40", "93.184.215.40"], "refusing.example": ["93.184.215.42"], "nosix.example": ["93.184.215.43", "2600:1f13:37c::1"], "nohost.example": ["93.184.215.44", "2600:1f13:37c::2"], "nosource.example": ["93.184.215.45", "2600:1f13:37c::3"], "thrown.example": ["93.184.215.50", "93.184.215.51"] };
   dns.lookup = (host, options, callback) => {
     if (typeof options === "function") [options, callback] = [{}, options];
     const list = answers[String(host).replace(/\.$/, "")];
@@ -364,6 +370,28 @@ test("the proxy tries each address of a host, the next beside one that has not c
     assert.equal(madeByFailure, 3, "the next connection started as soon as the IPv6 one failed");
     proxy.close();
     assert.equal(await lost, "ECONNRESET");
+    // The same for an IPv6 address this machine has no route to, and for
+    // one it has no address to send from.
+    for (const [host, six, ip] of [["nohost.example", "2600:1f13:37c::2", "93.184.215.44"], ["nosource.example", "2600:1f13:37c::3", "93.184.215.45"]]) {
+      proxy = await startProxy(() => guard);
+      made.length = 0;
+      madeByFailure = 0;
+      const gone = askProxy(proxy.port, `http://${host}/z`).then(() => "answered", (err) => err.code);
+      await sleep(1_200);
+      assert.deepEqual(made, [`${ip}:80`, `${six}:80`, `${ip}:80`, `${ip}:80`], host);
+      assert.equal(madeByFailure, 3, `${host}: the next connection started as soon as the IPv6 one failed`);
+      proxy.close();
+      assert.equal(await gone, "ECONNRESET");
+    }
+    // An address the system will not connect to at all is not asked again:
+    // the next is tried at once, and the two more go to it.
+    proxy = await startProxy(() => guard);
+    made.length = 0;
+    const thrown = askProxy(proxy.port, "http://thrown.example/z").then(() => "answered", (err) => err.code);
+    await sleep(1_200);
+    assert.deepEqual(made, ["93.184.215.50:80", "93.184.215.51:80", "93.184.215.51:80", "93.184.215.51:80"]);
+    proxy.close();
+    assert.equal(await thrown, "ECONNRESET");
   } finally {
     dialer.connect = before;
     dns.lookup = lookup;
