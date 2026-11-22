@@ -1548,11 +1548,15 @@ test("names whose DNS gives no answer do not hold up a picture on another name, 
     const [page] = told.manifest.pages;
     assert.equal(page.title, "Acme | Loaded", JSON.stringify(page.notes));
     assert.deepEqual(page.notes.filter((note) => /nothing was sent there/.test(note) && !/^it asked for (http:\/\/dead[1-6]\.example, which is on a host whose name could not be looked up|3 more addresses the run does not open): nothing was sent there$/.test(note)), []);
-    // The system gives up on each of the six names 10 s after it asked, all
-    // six at once, so the process ends within 10 s of the save, as a run can
-    // save while their pictures still load; it lived on until the system had
-    // asked each name in turn, two at a time.
-    assert.ok(told.after < 10_000, `the run's process lived ${told.after} ms after it printed its manifest`);
+    // The system is asked the six names at once and gives up on each 10 s
+    // after it was asked, so the process ends 10 s after it asked them, as a
+    // run can save while their pictures still load; it lived on until the
+    // system had been asked each name in turn, two at a time. Judged by what
+    // the test's DNS server was asked and when, as the next test says.
+    const six = told.asked.filter(([name]) => /^dead[1-6]\.example$/.test(name)).map(([, at]) => at);
+    assert.equal(six.length, 6, JSON.stringify(told.asked));
+    assert.ok(Math.max(...six) - Math.min(...six) < 5_000, `the system was asked the six names over ${Math.max(...six) - Math.min(...six)} ms`);
+    assert.ok(told.quiet < 20_000, `the run's process lived ${told.quiet} ms after the system was last asked a name`);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -1560,10 +1564,16 @@ test("names whose DNS gives no answer do not hold up a picture on another name, 
 
 // Once a run has saved, a name still waiting for its lookup is not asked,
 // and the run's process ends once the system has given up on the 16 it was
-// trying, 10 s at most here: a page that fetch()es from 40 names whose DNS
-// gives no answer as it has loaded has more names waiting than are tried
-// as it is taken, and asked in turn, 16 at a time, each round 10 s, they
-// held the process that much longer past its end. In the same namespaces.
+// trying, 10 s after it was asked the last of them here: a page that
+// fetch()es from 40 names whose DNS gives no answer as it has loaded has
+// more names waiting than are tried as it is taken, and asked in turn, 16
+// at a time, each round 10 s, they held the process that much longer past
+// its end. Judged by what the test's DNS server was asked and when: no name
+// of the page's is first asked after the run printed its manifest, and the
+// process ends within 20 s of the server's last question, the system's 10 s
+// and as much again for a busy machine, where the process was to end within
+// 13 s of the print, and a run in a container of 3 GB with the rest of the
+// suite beside it ended 13.4 s after it. In the same namespaces.
 test("once a run has saved, a name still waiting for its lookup is not asked, and the run's process ends", { skip: noBrowser || noMountNamespace, timeout: 150_000 }, async () => {
   const root = tempDir();
   try {
@@ -1588,7 +1598,10 @@ test("once a run has saved, a name still waiting for its lookup is not asked, an
       assert.fail(`network.js printed no result: ${(out + err).trim().slice(-600)}`);
     }
     assert.equal(told.status, 0, told.said || err);
-    assert.ok(told.after < 13_000, `the run's process lived ${told.after} ms after it printed its manifest`);
+    const page = told.asked.filter(([name]) => /^dead-b\d+\.example$/.test(name));
+    assert.ok(page.length > 0, `the system was asked none of the page's names: ${JSON.stringify(told.asked)}`);
+    assert.deepEqual(page.filter(([, at]) => at > 0).map(([name]) => name), [], "names of the page's first asked after the run printed its manifest");
+    assert.ok(told.quiet < 20_000, `the run's process lived ${told.quiet} ms after the system was last asked a name`);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -1641,8 +1654,9 @@ test("a site given by http on port 80 at a name of the user's network or an addr
 // it was trying. Here a page fetch()es from another name whose DNS gives
 // no answer every tenth of a second for as long as it is open, so names
 // wait at the end of any demo, and asked in turn, 16 at a time, each round
-// 10 s, they held the demo's process that much longer past its end. In the
-// same namespaces.
+// 10 s, they held the demo's process that much longer past its end. Judged
+// as above, by what the test's DNS server was asked and when. In the same
+// namespaces.
 const noFfmpeg = !require("../skills/easyscreenshotkit/scripts/lib/ffmpeg").findFfmpeg() && "no ffmpeg on this machine";
 
 test("once a demo has saved, a name still waiting for its lookup is not asked, and the demo's process ends", { skip: noBrowser || noMountNamespace || noFfmpeg, timeout: 200_000 }, async () => {
@@ -1669,7 +1683,10 @@ test("once a demo has saved, a name still waiting for its lookup is not asked, a
       assert.fail(`network.js printed no result: ${(out + err).trim().slice(-600)}`);
     }
     assert.equal(told.status, 0, told.said || err);
-    assert.ok(told.after < 13_000, `the demo's process lived ${told.after} ms after it printed its manifest`);
+    const page = told.asked.filter(([name]) => /^dead-e\d+\.example$/.test(name));
+    assert.ok(page.length > 0, `the system was asked none of the page's names: ${JSON.stringify(told.asked)}`);
+    assert.deepEqual(page.filter(([, at]) => at > 0).map(([name]) => name), [], "names of the page's first asked after the demo printed its manifest");
+    assert.ok(told.quiet < 20_000, `the demo's process lived ${told.quiet} ms after the system was last asked a name`);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

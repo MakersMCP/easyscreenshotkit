@@ -57,8 +57,11 @@
 // as long as it is open. The kit's command takes it as the user who ran the
 // test, with --json, saving in <folder>, or with <command> "demo" records a
 // demo of it, with no GIF. It prints one line of JSON: { status, said,
-// manifest, after }, the exit code, the last lines on stderr, the manifest
-// it printed and how long its process lived after it printed it, in ms.
+// manifest, after, asked, quiet }, the exit code, the last lines on stderr,
+// the manifest it printed and how long its process lived after it printed
+// it, in ms, each name the DNS server was asked, once, as [name, when it
+// was first asked, in ms after the manifest was printed, under 0 before],
+// and how long the process lived after the server's last question, in ms.
 
 const { spawn, spawnSync } = require("node:child_process");
 const dgram = require("node:dgram");
@@ -329,7 +332,16 @@ async function alone(uid, gid, cli, folder) {
 async function silent(uid, gid, cli, folder, names, command = "shots") {
   ip("link", "set", "lo", "up");
   const dns = dgram.createSocket("udp4");
-  dns.on("message", () => {});
+  // When each name was first asked, and when the last question came.
+  const asked = new Map();
+  let last = 0;
+  dns.on("message", (message) => {
+    last = Date.now();
+    const labels = [];
+    for (let at = 12; at < message.length && message[at] > 0 && message[at] < 64; at += message[at] + 1) labels.push(message.toString("latin1", at + 1, at + 1 + message[at]));
+    const name = labels.join(".").toLowerCase();
+    if (!asked.has(name)) asked.set(name, last);
+  });
   await new Promise((resolve) => dns.bind(53, "127.0.0.1", resolve));
   const dead = ["burst", "endless"].includes(names) ? [] : Array.from({ length: Number(names) }, (_, i) => `http://dead${i + 1}.example/x.png`);
   const burst = names === "burst" ? '<script>addEventListener("load", () => { for (let n = 1; n <= 40; n++) fetch("https://dead-b" + n + ".example/x", { mode: "no-cors" }).catch(() => {}); });</script>' : names === "endless" ? '<script>let n = 0; setInterval(() => fetch("https://dead-e" + ++n + ".example/x", { mode: "no-cors" }).catch(() => {}), 100);</script>' : "";
@@ -359,7 +371,8 @@ async function silent(uid, gid, cli, folder, names, command = "shots") {
       } catch {
         manifest = null;
       }
-      resolve({ status: code === null ? signal : code, said: err.trim().split("\n").slice(-3).join(" | "), manifest, after: printed ? Date.now() - printed : -1 });
+      const ended = Date.now();
+      resolve({ status: code === null ? signal : code, said: err.trim().split("\n").slice(-3).join(" | "), manifest, after: printed ? ended - printed : -1, asked: [...asked].map(([name, at]) => [name, printed ? at - printed : null]), quiet: last ? ended - last : -1 });
     });
   });
   page.close();
