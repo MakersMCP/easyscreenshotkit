@@ -563,7 +563,10 @@ function insideWhy(hostname, list, local) {
 
 // Why a name whose answers mix (see standing()) is refused, as said after
 // "it is": its first answer on the public internet and its first that is
-// not, or is this machine's, named as insideWhy() names it.
+// not, or is this machine's, named as insideWhy() names it. The same words
+// wherever the run meets such a name, the address given or a page's
+// request away from it: a page's note named it not on the public internet,
+// though it answers there too.
 function mixedWhy(list) {
   const outside = list.find((answer) => !insideIp(answer.address));
   const hit = list.find((answer) => insideIp(answer.address));
@@ -741,7 +744,8 @@ async function guardFor(start) {
       if (given(url)) return anyPort ? "" : otherPort(port, web);
       const where = await standing(url.hostname);
       if (where === "unknown") return UNRESOLVED;
-      if (where === "inside" || where === "mixed") return insideWhy(url.hostname, (await addressesFor(url.hostname)).list, local);
+      if (where === "mixed") return mixedWhy((await addressesFor(url.hostname)).list);
+      if (where === "inside") return insideWhy(url.hostname, (await addressesFor(url.hostname)).list, local);
       return anyPort ? "" : otherPort(port, web);
     },
     lookupWhy(raw) {
@@ -784,7 +788,7 @@ async function guardFor(start) {
           const hit = list.find((answer) => refusals.has(answer.address));
           if (hit) return refuse(refusedWhy(hit.address));
           if (ofMixed(url) && lookupKey(hostname) === lookupKey(url.hostname)) return refuse(mixed);
-          if (!inside && list.some((answer) => insideIp(answer.address))) return refuse(insideWhy(hostname, list, local));
+          if (!inside && list.some((answer) => insideIp(answer.address))) return refuse(list.every((answer) => insideIp(answer.address)) ? insideWhy(hostname, list, local) : mixedWhy(list));
           const family = options && options.family;
           const fit = list.filter((answer) => (!family || answer.family === family) && (!only || only.includes(bareIp(answer.address))));
           if (!fit.length) return callback(Object.assign(new Error(`${hostname} has no address`), { code: "ENOTFOUND", hostname }));

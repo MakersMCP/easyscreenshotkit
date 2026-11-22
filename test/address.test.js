@@ -155,7 +155,9 @@ test("an address this machine's network interfaces hold, a public one included, 
         ["http://[2a02:1205:5000::77]/api", "at 2a02:1205:5000::77, on a network of this machine"],
         ["http://own-machine.example/sitemap.xml", "at 81.2.69.160, an address of this machine"],
         ["http://own-machine6.example/", "at 2a02:1205:5000::1, an address of this machine"],
-        ["http://own-lan6.example/", "at 2a02:1205:5000::77, on a network of this machine"],
+        // A name that also answers on the public internet is named so, in
+        // the words of the address given.
+        ["http://own-lan6.example/", "on a host whose name answers with an address on the public internet, 93.184.215.14, and with one on a network of this machine, 2a02:1205:5000::77"],
         // Other people's servers in the public IPv4 range of the interface,
         // and another IPv6 network.
         ["http://81.2.69.161/", ""],
@@ -309,7 +311,7 @@ test("this machine's network interfaces are read once a second at most, whatever
       assert.equal(await guard.refuses("https://four.example/"), "");
       assert.equal(reads, 1);
       t.mock.timers.tick(1);
-      assert.equal(await guard.refuses("https://four.example/"), "at 93.184.216.2, an address of this machine");
+      assert.equal(await guard.refuses("https://four.example/"), "on a host whose name answers with an address on the public internet, 93.184.216.1, and with one of this machine's, 93.184.216.2");
       assert.equal(reads, 2);
       interfaces = {};
       t.mock.timers.setTime(4_000_000);
@@ -321,7 +323,7 @@ test("this machine's network interfaces are read once a second at most, whatever
         reads++;
         return { eth1: [{ address: "93.184.216.3", netmask: "255.255.255.0", family: "IPv4", internal: false, cidr: "93.184.216.3/24" }] };
       };
-      assert.equal(await guard.refuses("https://four.example/"), "at 93.184.216.3, an address of this machine");
+      assert.equal(await guard.refuses("https://four.example/"), "on a host whose name answers with an address on the public internet, 93.184.216.1, and with one of this machine's, 93.184.216.3");
       assert.equal(reads, 4);
     } finally {
       os.networkInterfaces = saved;
@@ -351,7 +353,7 @@ test("from a public address a run opens web addresses on the public internet onl
       ["http://app.localhost/", NOT_PUBLIC],
       ["http://169.254.169.254/latest/meta-data/", NOT_PUBLIC],
       ["http://inside.example/", NOT_PUBLIC],
-      ["http://both.example/", NOT_PUBLIC],
+      ["http://both.example/", "on a host whose name answers with an address on the public internet, 93.184.215.14, and with one that is not, 127.0.0.1"],
       ["file://localhost/etc/passwd", "not a web address"],
       ["file:///etc/passwd", "not a web address"],
       ["data:text/html,hi", "not a web address"],
@@ -443,12 +445,43 @@ test("a name given that answers both on the public internet and off it, or at th
         // --pwa-check of it reads nothing.
         await assert.rejects(checkManifest({ url: given }), { message: `Could not read ${given}: it is ${why}` });
       }
-      // Away from the address given, such a name is refused as any name
-      // with an answer off the public internet is.
+      // Away from the address given, such a name is refused in the same
+      // words, not as one off the public internet, which it is not alone,
+      // and so is a connection for it, from a site of this machine too.
       const site = await guardFor("https://mixsite.example/");
       assert.equal(site.refused, "");
-      assert.equal(await site.refuses("http://evil.example/secret"), NOT_PUBLIC);
-      assert.equal(await site.refuses("https://evil-own.example/"), "at 81.2.69.160, an address of this machine");
+      const dev4 = await guardFor("http://localhost:4000/");
+      for (const [url, why] of [
+        ["http://evil.example/secret", "on a host whose name answers with an address on the public internet, 2606:2800:220:1::99, and with one that is not, 127.0.0.1"],
+        ["https://evil-own.example/", "on a host whose name answers with an address on the public internet, 93.184.216.34, and with one of this machine's, 81.2.69.160"],
+        ["https://evil-lan.example/", "on a host whose name answers with an address on the public internet, 93.184.216.34, and with one on a network of this machine, 2a02:1205:5000::77"],
+        ["http://evil-fake.example/", "on a host whose name answers with an address on the public internet, 2606:2800:220:1::99, and with one in the range a proxy in fake-ip mode gives every name, 198.18.0.0/15, 198.18.0.5"],
+      ]) {
+        for (const guard of [site, dev4]) {
+          assert.equal(await guard.refuses(url), why, url);
+          const answer = await lookup(guard, url);
+          assert.deepEqual({ code: answer.code, refused: answer.refused }, { code: "ENOTPUBLIC", refused: `it is ${why}` }, url);
+        }
+        // The README's Limits, SKILL.md and the help of both commands quote
+        // the refusal in its general form, as the run words it.
+        assert.match(why, /^on a host whose name answers with an address on the public internet, [0-9a-f:.]+, and with one /, url);
+      }
+      const fs = require("node:fs");
+      const path = require("node:path");
+      const general = '"on a host whose name answers with an address on the public internet, <address>, and with one ..."';
+      const cli = path.join(__dirname, "..", "skills", "easyscreenshotkit", "scripts", "easyscreenshotkit.js");
+      const readme = fs.readFileSync(path.join(__dirname, "..", "README.md"), "utf8");
+      const limits = readme.slice(readme.indexOf("\n## Limits\n"));
+      for (const [where, text] of [
+        ["the README's Limits", limits.slice(0, limits.indexOf("\n## ", 2))],
+        ["SKILL.md", fs.readFileSync(path.join(__dirname, "..", "skills", "easyscreenshotkit", "SKILL.md"), "utf8")],
+        ["--help", spawnSync(process.execPath, [cli, "--help"], { encoding: "utf8" }).stdout],
+        ["demo --help", spawnSync(process.execPath, [cli, "demo", "--help"], { encoding: "utf8" }).stdout],
+      ]) {
+        const flat = text.replace(/\s+/g, " ");
+        assert.ok(flat.includes(general), where);
+        assert.match(flat.slice(flat.indexOf(general) + general.length), /^[^.]*answers? (?:its|that) name with the address (?:you|the user) means? alone, as a line in its hosts file does\./, where);
+      }
       // All its answers inside: the user's own, as before.
       const dev = await guardFor("http://mixdev.example:4000/");
       assert.deepEqual([dev.local, dev.refused], [true, ""]);
@@ -791,18 +824,19 @@ test("a request the kit makes itself goes through no proxy, not the one NODE_USE
 test("the lookup a request of the kit's connects with hands back no address the rule refuses", () =>
   withNames({ "site.example": "93.184.215.14", "half-loopback.example": ["93.184.215.15", "127.0.0.1"], "refused.example": "93.184.215.99" }, async () => {
     const ask = (resolve, host) => new Promise((done) => resolve(host, { all: true }, (err, list) => done(err ? [err.code, err.refused, err.at] : list.map((one) => one.address))));
+    const HALF = "on a host whose name answers with an address on the public internet, 93.184.215.15, and with one that is not, 127.0.0.1";
     await withSetting("93.184.215.99", async () => {
       const guard = await guardFor("https://site.example/");
       const resolve = guard.lookupFor("https://site.example/sitemap.xml");
       assert.deepEqual(await ask(resolve, "site.example"), ["93.184.215.14"]);
-      assert.deepEqual(await ask(resolve, "half-loopback.example"), ["ENOTPUBLIC", `it is ${NOT_PUBLIC}`, "https://site.example/sitemap.xml"]);
+      assert.deepEqual(await ask(resolve, "half-loopback.example"), ["ENOTPUBLIC", `it is ${HALF}`, "https://site.example/sitemap.xml"]);
       assert.deepEqual(await ask(resolve, "refused.example"), ["ENOTPUBLIC", `it is ${here("93.184.215.99")}`, "https://site.example/sitemap.xml"]);
       // From the host and port given on this machine: its own name hands
       // back its addresses, and any other name that leads to this machine
       // is not on the host and port given.
       const own = (await guardFor("http://localhost:3000/")).lookupFor("http://localhost:3000/robots.txt");
       assert.deepEqual(await ask(own, "localhost"), ["::1", "127.0.0.1"]);
-      assert.deepEqual(await ask(own, "half-loopback.example"), ["ENOTPUBLIC", `it is ${NOT_GIVEN}`, "http://localhost:3000/robots.txt"]);
+      assert.deepEqual(await ask(own, "half-loopback.example"), ["ENOTPUBLIC", `it is ${HALF}`, "http://localhost:3000/robots.txt"]);
       assert.deepEqual(await ask(own, "refused.example"), ["ENOTPUBLIC", `it is ${here("93.184.215.99")}`, "http://localhost:3000/robots.txt"]);
     });
   }));
