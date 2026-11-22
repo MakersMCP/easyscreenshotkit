@@ -80,6 +80,21 @@
 // line of JSON: { runs, seen, site }, for each run { url, status, said,
 // titles }, then the requests the machine's service got and those the
 // site got.
+//
+// Run as
+//
+//   unshare -rmn sh -c 'ip link set lo up && mount --bind <hosts> /etc/hosts
+//     && exec node network.js routed <uid> <gid> <cli> <folder>'
+//
+// with a hosts file that holds app1.test, app2.test and app3.test at
+// 127.0.0.1, it stands in for a machine that serves several sites at one
+// address and port, a program there picking each by its name, as Laravel
+// Valet or Herd, DDEV's router or a web server with virtual hosts does (see
+// routed()). The kit's command takes http://app1.test/ and then
+// http://app3.test/, as the user who ran the test, with --json, saving in
+// <folder>-0 and <folder>-1. It prints one line of JSON: { runs, seen }, for
+// each run { url, status, said, titles, notes }, then the requests the
+// server got, each as the name it was asked for and the path.
 
 const { spawn, spawnSync } = require("node:child_process");
 const dgram = require("node:dgram");
@@ -703,6 +718,60 @@ async function lossy(uid, gid, cli, folder) {
   process.stdout.write(`${JSON.stringify(told)}\n`);
 }
 
+// The sites of routed(), all on 127.0.0.1:80, each picked by its name:
+// app1.test's home page holds a frame of http://app2.test/private, a
+// picture of http://app2.test/pixel.svg and one of http://localhost/logo.svg,
+// and fetch()es http://app2.test/api/customers, whose answer any page may
+// read, showing what it read in its title; app3.test's home page sends its
+// visitors to http://app2.test/; app2.test is another site of the machine,
+// with private pages and data, and localhost the machine's own.
+async function routed(uid, gid, cli, folder) {
+  ip("link", "set", "lo", "up");
+  const seen = [];
+  const server = http.createServer((req, res) => {
+    const host = String(req.headers.host || "").replace(/:\d+$/, "");
+    seen.push(`${host} ${req.url}`);
+    const html = (body) => res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(body);
+    if (host === "app1.test" && req.url === "/") return html('<!doctype html><title>App one</title><h1>App one</h1><p>The first site of this machine.</p><iframe src="http://app2.test/private" width="300" height="100"></iframe><img src="http://app2.test/pixel.svg"><img src="http://localhost/logo.svg"><script>fetch("http://app2.test/api/customers").then((r) => r.text()).then((text) => { document.title = "App one READ " + text; }).catch(() => {});</script><div style="height:1400px"></div>');
+    if (host === "app3.test" && req.url === "/") return res.writeHead(302, { Location: "http://app2.test/" }).end();
+    if (host === "app2.test" && req.url === "/api/customers") return res.writeHead(200, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }).end('{"customers":["ACME GmbH"]}');
+    if ((host === "app2.test" && req.url === "/pixel.svg") || (host === "localhost" && req.url === "/logo.svg")) return res.writeHead(200, { "Content-Type": "image/svg+xml" }).end('<svg xmlns="http://www.w3.org/2000/svg" width="40" height="30"><rect width="40" height="30" fill="rgb(200,0,0)"/></svg>');
+    if (host === "app2.test") return html("<!doctype html><title>App two admin</title><h1>APP2 PRIVATE DATA of another site of this machine</h1>");
+    res.writeHead(404).end();
+  });
+  await new Promise((resolve) => server.listen(80, "127.0.0.1", resolve));
+  const runs = [];
+  try {
+    for (const [n, url] of ["http://app1.test/", "http://app3.test/"].entries()) {
+      runs.push(
+        await new Promise((resolve) => {
+          const child = spawn("unshare", ["-U", `--map-user=${uid}`, `--map-group=${gid}`, process.execPath, cli, url, "--pages", "2", "--sizes", "desktop", "--json", "--out", `${folder}-${n}`], { stdio: ["ignore", "pipe", "pipe"] });
+          let out = "";
+          let err = "";
+          child.stdout.on("data", (d) => (out += d));
+          child.stderr.on("data", (d) => (err += d));
+          const timer = setTimeout(() => child.kill("SIGKILL"), 100_000);
+          child.on("close", (code, signal) => {
+            clearTimeout(timer);
+            let manifest = null;
+            try {
+              manifest = JSON.parse(out);
+            } catch {
+              manifest = null;
+            }
+            resolve({ url, status: code === null ? signal : code, said: err.trim().split("\n").slice(-3).join(" | "), titles: manifest && manifest.pages ? manifest.pages.map((one) => one.title) : [], notes: manifest && manifest.pages && manifest.pages[0] ? manifest.pages[0].notes || [] : [] });
+          });
+        }),
+      );
+    }
+    // A moment for what is still on its way.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  } finally {
+    server.close();
+  }
+  process.stdout.write(`${JSON.stringify({ runs, seen })}\n`);
+}
+
 // As the preload of the kit's command (see silent()): the kit's proxy
 // reaches 93.184.216.34 on port 80 at DIAL_TO, the page's own server.
 if (require.main !== module && process.env.DIAL_TO) {
@@ -713,7 +782,7 @@ if (require.main !== module && process.env.DIAL_TO) {
 }
 
 const [mode, ...rest] = process.argv.slice(2);
-const modes = { outer, alone, silent, own, site6, upgraded, lossy, mixed, siteMixed };
+const modes = { outer, alone, silent, own, site6, upgraded, lossy, mixed, siteMixed, routed };
 if (require.main === module) (modes[mode] || inner)(...rest).catch((err) => {
   process.stdout.write(JSON.stringify({ failed: String((err && err.message) || err) }));
   process.exitCode = 1;

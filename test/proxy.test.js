@@ -1299,12 +1299,13 @@ test("from a site on the public internet, a picture and a frame on another port 
 
 // On a machine whose own address is on the public internet, as a server's,
 // a site it serves given by a name that moves on to its www name at that
-// address is taken there, its picture from another of its names at that
-// address too, the same program on the port given: the run stopped at that
-// move as an address of this machine, where 0.1.3 took the site. Here the
-// machine's network interfaces hold 81.2.69.160, and the run's proxy takes
-// that address to the site's server on this machine.
-test("a site a server serves at its own address, given by a name that moves on to its www name there, is taken with what its other names there serve", { skip: noBrowser, timeout: 90_000 }, () =>
+// address stops at that move, which names where it leads, as that name is
+// another host: a server can serve many sites at its address and port, each
+// picked by its name. Given its www name, the run takes the site, and what
+// it takes from another of its names there is not fetched, with a note.
+// Here the machine's network interfaces hold 81.2.69.160, and the run's
+// proxy takes that address to the site's server on this machine.
+test("a site a server serves at its own address, given by a name that moves on to its www name there, stops at that move, and given that name is taken without what its other names serve", { skip: noBrowser, timeout: 90_000 }, () =>
   withNames({ "own.example": "81.2.69.160", "www.own.example": "81.2.69.160", "static.own.example": "81.2.69.160" }, async () => {
     setTimeLimit(80_000);
     const saved = os.networkInterfaces;
@@ -1321,32 +1322,37 @@ test("a site a server serves at its own address, given by a name that moves on t
     });
     port = Number(new URL(origin).port);
     const stand = reachAt({ "81.2.69.160": "127.0.0.1" });
+    const why = "at 81.2.69.160, an address of this machine, and not on the host and port given";
     let chrome = null;
     try {
-      const given = `http://own.example:${port}/`;
-      chrome = await launch({ guard: await guardFor(given) });
-      const tab = await openTab(chrome, DESKTOP);
+      // Given its bare name: the move to www stops it.
+      const bare = `http://own.example:${port}/`;
+      chrome = await launch({ guard: await guardFor(bare) });
+      let tab = await openTab(chrome, DESKTOP);
+      try {
+        await assert.rejects(navigate(tab, bare), { message: `Could not open ${bare}: it leads to http://www.own.example:${port}/, which is ${why}.` });
+      } finally {
+        await closeTab(chrome, tab);
+      }
+      // Given its www name: taken, its picture from static.own.example not.
+      const www = `http://www.own.example:${port}/`;
+      chrome.guard = await guardFor(www);
+      tab = await openTab(chrome, DESKTOP);
       const barred = [];
       const unreached = [];
       tab.on(BARRED, (b) => barred.push([b.url, b.why]));
       tab.on(UNREACHED, (u) => unreached.push([u.url, u.why]));
       try {
-        assert.equal((await navigate(tab, given)).status, 200);
+        assert.equal((await navigate(tab, www)).status, 200);
         const until = Date.now() + 5_000;
-        let loaded = false;
-        while (!loaded && Date.now() < until) {
-          const { result } = await tab.send("Runtime.evaluate", { expression: "document.getElementById('logo').complete && document.getElementById('logo').naturalWidth", returnByValue: true });
-          loaded = result.value === 40;
-          if (!loaded) await sleep(100);
-        }
-        const { result } = await tab.send("Runtime.evaluate", { expression: "location.href", returnByValue: true });
-        assert.equal(result.value, `http://www.own.example:${port}/`);
-        assert.ok(loaded, "the picture from static.own.example was loaded");
+        while (!unreached.length && Date.now() < until) await sleep(100);
+        const { result } = await tab.send("Runtime.evaluate", { expression: "document.getElementById('logo').complete && document.getElementById('logo').naturalWidth", returnByValue: true });
+        assert.equal(result.value, 0, "the picture from static.own.example was not loaded");
       } finally {
         await closeTab(chrome, tab);
       }
-      assert.deepEqual([barred, unreached], [[], []]);
-      assert.deepEqual(seen.filter((line) => !line.endsWith("/favicon.ico")), ["own.example /", "www.own.example /", "static.own.example /logo.svg"]);
+      assert.deepEqual([barred, unreached], [[], [[`http://static.own.example:${port}`, why]]]);
+      assert.deepEqual(seen.filter((line) => !line.endsWith("/favicon.ico")), ["own.example /", "www.own.example /"]);
     } finally {
       os.networkInterfaces = saved;
       if (chrome) await chrome.close();
@@ -1816,6 +1822,50 @@ test("a site given by a name that answers with a public address and with 127.0.0
     assert.deepEqual(told.site, []);
     assert.deepEqual({ status: dev.status, titles: dev.titles }, { status: 0, titles: ["Machine service"] }, dev.said);
     assert.ok(told.seen.includes("127.0.0.1 GET mixdev.example /"), JSON.stringify(told.seen));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A machine that serves several sites at one address and port, a program
+// there picking each by its name, as Laravel Valet or Herd serve *.test,
+// DDEV's router *.ddev.site and a web server its virtual hosts: a site
+// given there by its name is that name alone, and the machine's own names
+// are other hosts. Taken for the host given, as every name whose addresses
+// were all the host given's was, another site of the machine came into the
+// screenshot as a frame, a picture of it was loaded, a fetch() read its
+// data, which it lets any page read, and a home page that moved on there
+// had the tour take that site's pages. In namespaces of the test's own
+// (see network.js).
+test("a site given by its name on a machine that serves several sites at one address and port opens no other of them", { skip: noBrowser || noMountNamespace, timeout: 240_000 }, async () => {
+  const root = tempDir();
+  try {
+    const hosts = path.join(root, "hosts");
+    fs.writeFileSync(hosts, "127.0.0.1 localhost\n::1 localhost\n127.0.0.1 app1.test\n127.0.0.1 app2.test\n127.0.0.1 app3.test\n");
+    const cli = require.resolve("../skills/easyscreenshotkit/scripts/easyscreenshotkit.js");
+    const script = 'ip link set lo up && mount --bind "$1" /etc/hosts && exec "$2" "$3" routed "$4" "$5" "$6" "$7"';
+    const child = spawn("unshare", ["-rmn", "sh", "-c", script, "sh", hosts, process.execPath, path.join(__dirname, "network.js"), String(process.getuid()), String(process.getgid()), cli, path.join(root, "shots")], { stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (d) => (out += d));
+    child.stderr.on("data", (d) => (err += d));
+    const timer = setTimeout(() => child.kill("SIGKILL"), 230_000);
+    await new Promise((resolve) => child.on("close", resolve));
+    clearTimeout(timer);
+    let told = null;
+    try {
+      told = JSON.parse(out.trim().split("\n").pop());
+    } catch {
+      assert.fail(`network.js printed no result: ${(out + err).trim().slice(-600)}`);
+    }
+    const [one, three] = told.runs;
+    const why = "not on the public internet, and not on the host and port given";
+    assert.deepEqual({ status: one.status, titles: one.titles }, { status: 0, titles: ["App one"] }, one.said);
+    assert.deepEqual([...one.notes].sort(), [`a frame of it tried to open http://app2.test/private, which is ${why}: it was not opened`, `it asked for http://app2.test, which is ${why}: nothing was sent there`, `it asked for http://localhost, which is ${why}: nothing was sent there`]);
+    assert.equal(three.status, 1, three.said);
+    assert.ok(three.said.endsWith(`easyscreenshotkit: Could not open http://app3.test/: it leads to http://app2.test/, which is ${why}.`), three.said);
+    // Nothing reached the other site or the machine's own name.
+    assert.deepEqual(told.seen.filter((line) => !line.startsWith("app1.test ") && !line.startsWith("app3.test ")), []);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
