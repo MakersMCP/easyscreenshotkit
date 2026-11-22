@@ -96,10 +96,12 @@ test("the shared table of addresses: every IPv6 form that holds an IPv4 address 
 // global address of its own, and a server can hold a public IPv4 address,
 // and a site that read one off the run's connection had the browser load a
 // service of this machine there. The rest of a public IPv4 range on an
-// interface is other people's servers. The interfaces are read at each
-// judgement, as their addresses change while a run goes; and an address of
-// this machine given is the user's own choice, as localhost is.
-test("an address this machine's network interfaces hold, a public one included, and the IPv6 network of one are not opened away from the address given", async () => {
+// interface is other people's servers. The interfaces are read as the run
+// goes, as their addresses change while it does, at most once a second;
+// and an address of this machine given is the user's own choice, as
+// localhost is.
+test("an address this machine's network interfaces hold, a public one included, and the IPv6 network of one are not opened away from the address given", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
   const os = require("node:os");
   const saved = os.networkInterfaces;
   const loopback = { lo: [{ address: "127.0.0.1", netmask: "255.0.0.0", family: "IPv4", internal: true, cidr: "127.0.0.1/8" }, { address: "::1", netmask: "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", family: "IPv6", internal: true, cidr: "::1/128", scopeid: 0 }] };
@@ -140,12 +142,14 @@ test("an address this machine's network interfaces hold, a public one included, 
       // one is refused before it is made.
       const answer = await new Promise((resolve) => guard.lookupFor("http://own-machine.example/")("own-machine.example", { all: true }, (err, list) => resolve(err || list)));
       assert.deepEqual({ code: answer.code, refused: answer.refused }, { code: "ENOTPUBLIC", refused: "it is at 81.2.69.160, an address of this machine" });
-      // Read at each judgement: an address the machine no longer holds is
-      // any other.
+      // Read as the run goes: once a second has passed, an address the
+      // machine no longer holds is any other.
       interfaces = loopback;
+      t.mock.timers.tick(1_000);
       assert.equal(await guard.refuses("http://81.2.69.160/"), "");
       assert.equal(await guard.refuses("http://[2a02:1205:5000::77]/"), "");
       interfaces = server;
+      t.mock.timers.tick(1_000);
       // Given as the address, it is the user's own choice, as localhost is:
       // that host and port are opened, and no other address of the machine;
       // given by http on port 80, its https on 443 too, where the browser
@@ -236,6 +240,55 @@ test("on the port given, a name every address of which is one of the host given'
     os.networkInterfaces = saved;
   }
 });
+
+// The machine's network interfaces are read once a second at most, however
+// many addresses the run judges meanwhile: read at each judgement, twice for
+// each address of each request the proxy judged, a page of many hosts loaded
+// 3 to 5 times more slowly on a machine of 200 interfaces than with 0.1.3,
+// the run's main thread busy reading them. A change in them is seen once the
+// second has passed, and at once where the clock went back.
+test("this machine's network interfaces are read once a second at most, whatever the run judges meanwhile", (t) =>
+  withNames({ "four.example": ["93.184.216.1", "93.184.216.2", "93.184.216.3", "93.184.216.4"] }, async () => {
+    const os = require("node:os");
+    const saved = os.networkInterfaces;
+    let reads = 0;
+    let interfaces = { lo: [{ address: "127.0.0.1", netmask: "255.0.0.0", family: "IPv4", internal: true, cidr: "127.0.0.1/8" }] };
+    os.networkInterfaces = () => {
+      reads++;
+      return interfaces;
+    };
+    t.mock.timers.enable({ apis: ["Date"], now: 5_000_000 });
+    const lookup = (guard, raw) => new Promise((resolve) => guard.lookupFor(raw)(new URL(raw).hostname, { all: true }, (err, list) => resolve(err || list)));
+    try {
+      const guard = await guardFor("");
+      for (let n = 0; n < 50; n++) {
+        assert.equal(await guard.refuses(`https://four.example/${n}`), "");
+        assert.equal((await lookup(guard, `https://four.example/${n}`)).length, 4);
+      }
+      assert.equal(reads, 1);
+      t.mock.timers.tick(999);
+      interfaces = { eth0: [{ address: "93.184.216.2", netmask: "255.255.255.0", family: "IPv4", internal: false, cidr: "93.184.216.2/24" }] };
+      assert.equal(await guard.refuses("https://four.example/"), "");
+      assert.equal(reads, 1);
+      t.mock.timers.tick(1);
+      assert.equal(await guard.refuses("https://four.example/"), "at 93.184.216.2, an address of this machine");
+      assert.equal(reads, 2);
+      interfaces = {};
+      t.mock.timers.setTime(4_000_000);
+      assert.equal(await guard.refuses("https://four.example/"), "");
+      assert.equal(reads, 3);
+      // And at once where the function that reads them is another, as a
+      // test puts one in its place.
+      os.networkInterfaces = () => {
+        reads++;
+        return { eth1: [{ address: "93.184.216.3", netmask: "255.255.255.0", family: "IPv4", internal: false, cidr: "93.184.216.3/24" }] };
+      };
+      assert.equal(await guard.refuses("https://four.example/"), "at 93.184.216.3, an address of this machine");
+      assert.equal(reads, 4);
+    } finally {
+      os.networkInterfaces = saved;
+    }
+  }));
 
 test("from a public address a run opens web addresses on the public internet only, and from one on this machine that host and port too", async () => {
   const lookup = dns.lookup;

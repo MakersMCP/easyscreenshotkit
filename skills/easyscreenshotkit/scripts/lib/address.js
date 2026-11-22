@@ -224,7 +224,8 @@ function notPublicIp(address) {
 // the rest of a public IPv4 range on an interface is other people's
 // servers, so in IPv4 the address alone. An IPv6 form of an IPv4 address of
 // the machine's is judged by that address (see heldIpv4()). The interfaces
-// are read at each judgement, as their addresses change while a run goes.
+// are read as the run goes, as their addresses change while it does, at
+// most once a second (see machineNow()).
 function ownIp(address) {
   const ip = bareIp(address);
   const family = net.isIP(ip);
@@ -232,16 +233,40 @@ function ownIp(address) {
   const groups = family === 6 ? groupsOf(ip) : null;
   if (family === 6 && !groups) return "";
   const held = groups ? heldIpv4(groups) : ip;
+  const { mine, networks, some } = machineNow();
+  if (!some) return "";
+  if (held) return mine.check(held, "ipv4") ? "machine" : "";
+  if (mine.check(ip, "ipv6")) return "machine";
+  return networks.check(ip, "ipv6") ? "network" : "";
+}
+
+// This machine's own addresses (mine) and the IPv6 networks of them
+// (networks), as its network interfaces hold them, and whether it holds any
+// (some), read again once INTERFACES_MS have passed since the last reading,
+// or the clock went back, or the function that reads them is another, as a
+// test puts one in its place. Read at each judgement, twice for each
+// address of each request the proxy judged, the interfaces were read 4001
+// times for one load of a news site's home page, each reading longer the
+// more interfaces the machine has, as a Docker host has one for each
+// container: with 200 of them a page of many hosts loaded 3 to 5 times more
+// slowly than with 0.1.3, the run's main thread busy reading them.
+const INTERFACES_MS = 1_000;
+let machine = null;
+
+function machineNow() {
+  const now = Date.now();
+  if (machine && machine.read === os.networkInterfaces && now >= machine.at && now - machine.at < INTERFACES_MS) return machine;
+  const read = os.networkInterfaces;
   let interfaces = {};
   try {
-    interfaces = os.networkInterfaces();
+    interfaces = read.call(os);
   } catch {
     // None to read.
   }
   const mine = new net.BlockList();
   const networks = new net.BlockList();
   let some = false;
-  for (const list of Object.values(interfaces)) {
+  for (const list of Object.values(interfaces || {})) {
     for (const one of list || []) {
       const at = bareIp(one && one.address);
       const kind = net.isIP(at);
@@ -252,10 +277,8 @@ function ownIp(address) {
       if (kind === 6 && bits >= 48 && bits < 128) networks.addSubnet(at, bits, "ipv6");
     }
   }
-  if (!some) return "";
-  if (held) return mine.check(held, "ipv4") ? "machine" : "";
-  if (mine.check(ip, "ipv6")) return "machine";
-  return networks.check(ip, "ipv6") ? "network" : "";
+  machine = { at: now, read, mine, networks, some };
+  return machine;
 }
 
 // Whether the run takes an IP address for one it does not open away from
