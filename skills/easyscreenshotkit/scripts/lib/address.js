@@ -51,6 +51,9 @@
 // redirect. A name that does not resolve here, or gives no answer in
 // LOOKUP_MS, is not opened: such a name has no address the rule could
 // judge. The address given on such a host stops the run before any work.
+// Away from the address given, a name the machine looks for on its own
+// networks, one under .local or of one label, is not looked up at all (see
+// networkName()).
 
 const dns = require("dns");
 const net = require("net");
@@ -407,6 +410,22 @@ const LOOPBACK = [
   { address: "127.0.0.1", family: 4 },
 ];
 
+// A name, as lookupKey() reads it, that the machine looks for on its own
+// networks or completes with names of its own, and that no DNS server of
+// the internet holds: one under .local, which the system asks every
+// network of the machine for (mDNS, RFC 6762), as Ubuntu's does through
+// nss-mdns and macOS and Windows do by themselves, and one of one label,
+// as nas or wpad, which it completes with its search domains or asks its
+// networks for (LLMNR, NetBIOS). Away from the address given such a name
+// is not on the public internet to the run, and nothing asks for it (see
+// guardFor()): looked up, as the browser's proxy looked up the name of
+// each request a page made, a TURN server's among them, a page that asked
+// for names it guessed, as homeassistant.local or octopi.local, could tell
+// by how long each refusal took which devices of the user's network answer
+// to them, a device that is there in a few milliseconds and a name no
+// device holds after the system's wait, and send that to its own server.
+const networkName = (host) => !net.isIP(host) && (/\.local$/i.test(host) || !host.includes("."));
+
 // The addresses of this machine one of its own names stands for: localhost
 // both of them, and 127.0.0.1 and ::1 themselves; null for any other host,
 // read as lookupKey() reads it, a name under localhost included, which a
@@ -736,6 +755,9 @@ async function guardFor(start) {
     async refuses(raw) {
       const url = parse(raw);
       if (!url || !/^https?:$/.test(url.protocol)) return NOT_WEB;
+      // Away from the host given, a name the machine looks for on its own
+      // networks is refused before anything asks for it (see networkName()).
+      if (!(web && sameHost(url)) && networkName(lookupKey(url.hostname))) return local ? NOT_GIVEN : NOT_PUBLIC;
       const hit = await refusedAt(url.hostname);
       if (hit) return hit;
       if (ofMixed(url)) return mixed;

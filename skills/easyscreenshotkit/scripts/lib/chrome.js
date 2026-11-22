@@ -693,11 +693,13 @@ async function start(binary, { lang, args, own, wait = START_MS, proxy }) {
         // proxy.js), those for this machine's own addresses too, which the
         // browser would otherwise send past any proxy (<-loopback>), and
         // WebRTC sends no UDP past it: with no proxy that takes UDP, its
-        // connections go through the proxy too, and the names a page gives
-        // it are looked up nowhere (see above). Chrome 155 and 157 take
-        // this policy as --webrtc-ip-handling-policy; with
-        // --force-webrtc-ip-handling-policy in its place a page's STUN
-        // requests still reached a server on 127.0.0.1.
+        // connections go through the proxy too, a TURN server's over TCP or
+        // TLS judged as any address a page asks for is, and the names a
+        // page gives it for the other side are looked up nowhere (see
+        // above). Chrome 155 and 157 take this policy as
+        // --webrtc-ip-handling-policy; with --force-webrtc-ip-handling-policy
+        // in its place a page's STUN requests still reached a server on
+        // 127.0.0.1.
         `--proxy-server=http://127.0.0.1:${proxy.port}`,
         "--proxy-bypass-list=<-loopback>",
         "--webrtc-ip-handling-policy=disable_non_proxied_udp",

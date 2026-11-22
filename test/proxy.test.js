@@ -1471,6 +1471,65 @@ test("WebRTC sends no UDP past the proxy", { skip: noBrowser, timeout: 60_000 },
   }
 });
 
+// A TURN server a page names over TCP or TLS is reached through the run's
+// proxy, as any address a page asks for is: the browser asks it for a
+// tunnel there, and the rule judges it. Away from the address given, a
+// TURN server's name under .local or of one label is not looked up, where
+// the proxy asked the system's lookup for it, which asks every network of
+// the machine for a name under .local; a name of the internet's DNS is
+// looked up once, as any host's name is. One over UDP and a STUN server
+// are not asked for, as WebRTC sends no UDP past the proxy.
+test("a TURN server a page names over TCP or TLS goes through the proxy, and its name under .local or of one label is not looked up", { skip: noBrowser, timeout: 60_000 }, async () => {
+  setTimeLimit(60_000);
+  const lookup = dns.lookup;
+  const asked = [];
+  dns.lookup = (host, options, callback) => {
+    if (typeof options === "function") [options, callback] = [{}, options];
+    // An address is no name to ask for, and nothing is asked of the
+    // machine's networks, whatever the run asks.
+    if (net.isIP(String(host))) return lookup(host, options, callback);
+    asked.push(String(host));
+    if (host !== "turn-dns.example") return process.nextTick(callback, Object.assign(new Error(`getaddrinfo ENOTFOUND ${host}`), { code: "ENOTFOUND", hostname: host }));
+    process.nextTick(callback, null, options && options.all ? [{ address: "93.184.215.14", family: 4 }] : "93.184.215.14", 4);
+  };
+  const servers = [
+    { urls: "turn:turn-tcp.local:3478?transport=tcp", username: "u", credential: "p" },
+    { urls: "turns:turn-tls.local:443?transport=tcp", username: "u", credential: "p" },
+    { urls: "turn:turnhost:443?transport=tcp", username: "u", credential: "p" },
+    { urls: "turn:turn-dns.example:3478?transport=tcp", username: "u", credential: "p" },
+    { urls: "turn:turn-udp.local:3478", username: "u", credential: "p" },
+    { urls: "stun:stun-name.local:3478" },
+  ];
+  const { server, origin } = await serve((req, res) => res.writeHead(200, html).end(`<!doctype html><title>Call</title><h1>Call</h1><script>const rtc = new RTCPeerConnection({ iceServers: ${JSON.stringify(servers)} }); rtc.createDataChannel("x"); rtc.createOffer().then((offer) => rtc.setLocalDescription(offer));</script>`));
+  let chrome = null;
+  try {
+    chrome = await launch({ guard: await guardFor(`${origin}/`) });
+    const tab = await openTab(chrome, DESKTOP);
+    const tunnels = { "turn-tcp.local:3478": NOT_GIVEN, "turn-tls.local:443": NOT_GIVEN, "turnhost:443": NOT_GIVEN, "turn-dns.example:3478": "on port 3478, not 80 or 443, and not on the scheme, host and port given" };
+    try {
+      assert.equal((await navigate(tab, `${origin}/`)).status, 200);
+      const until = Date.now() + 20_000;
+      while (Object.keys(tunnels).some((at) => !chrome.proxy.refused.has(at)) && Date.now() < until) await sleep(100);
+      // Past the moment the last of them was asked for.
+      await sleep(1_000);
+    } finally {
+      await closeTab(chrome, tab);
+    }
+    for (const [at, why] of Object.entries(tunnels)) assert.equal(chrome.proxy.refused.get(at), why, at);
+    assert.deepEqual([...chrome.proxy.refused.keys()].filter((at) => /turn|stun/.test(at)).sort(), Object.keys(tunnels).sort());
+    assert.deepEqual(asked.filter((host) => /turn|stun/.test(host)), ["turn-dns.example"]);
+    // The README says so, where it said that every name a page gives WebRTC
+    // is looked up nowhere.
+    const readme = fs.readFileSync(path.join(__dirname, "..", "README.md"), "utf8");
+    assert.match(readme, /A name a page gives WebRTC for the other side, as a remote candidate, is looked up nowhere, as the browser looks no name up itself, and a TURN server a page names over TCP or TLS goes through the proxy, as any address a page asks for does\./);
+    assert.match(readme, /Away from the address given, a name under `\.local` or of one label, as `nas` or `wpad`, is not on the public internet to the run, and nothing asks for it/);
+  } finally {
+    dns.lookup = lookup;
+    if (chrome) await chrome.close();
+    server.close();
+  }
+});
+
 // What the browser sends on the networks of the machine past its proxy:
 // nothing. In a network namespace of the test's own, with a dummy network
 // where stand-ins for screens to cast to answer, and stand-ins for the DNS

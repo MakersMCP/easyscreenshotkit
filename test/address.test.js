@@ -1016,6 +1016,62 @@ test("a name that cannot be looked up here is refused for the run, and the addre
   }
 });
 
+// Away from the address given, a name the machine looks for on its own
+// networks, one under .local or of one label, is not on the public internet
+// to the run, and nothing asks for it: the browser's proxy looked up the
+// name of each request a page made, a TURN server's included, and the
+// system asked every network of the machine for a name under .local (mDNS)
+// and completed one of one label with its search domains or asked its
+// networks for it (LLMNR), so a page that asked for names it guessed, as
+// homeassistant.local, could tell by how long each refusal took which
+// devices of the user's network answer to them: a device that is there in
+// a few milliseconds, a name no device holds after the system's wait.
+// Given as the address, such a name is looked up as any name is, and is
+// the host given.
+test("away from the address given, a name under .local or of one label is refused before anything asks for it, and given, it is looked up", async () => {
+  const lookup = dns.lookup;
+  const asked = [];
+  const names = { "lookups-site.example": "93.184.215.14", "printer.lan": "192.168.1.30", "octopi.local": "192.168.1.50", "nas-box": "192.168.1.20" };
+  dns.lookup = (host, options, callback) => {
+    if (typeof options === "function") [options, callback] = [{}, options];
+    asked.push(host);
+    if (!names[host]) return process.nextTick(callback, Object.assign(new Error(`getaddrinfo ENOTFOUND ${host}`), { code: "ENOTFOUND", hostname: host }));
+    process.nextTick(callback, null, [{ address: names[host], family: 4 }]);
+  };
+  try {
+    const away = ["http://homeassistant.local/", "https://octopi.local/api/version", "http://Printer-Office.LOCAL./", "https://turn-name.local:3478/", "http://nas-box/", "http://wpad/wpad.dat", "https://intranet:8443/"];
+    const fromPublic = await guardFor("https://lookups-site.example/");
+    for (const url of away) assert.equal(await fromPublic.refuses(url), NOT_PUBLIC, url);
+    await assert.rejects(getChecked("http://octopi.local/robots.txt", { guard: fromPublic }), { refused: `it is ${NOT_PUBLIC}` });
+    // A name of two labels under a domain of a network's own goes to the
+    // DNS, as before.
+    assert.equal(await fromPublic.refuses("http://printer.lan/"), NOT_PUBLIC);
+    // From a site on this machine, from a manifest file, and with
+    // MAKERSMCP_REFUSE_ADDRESSES set, which looks up every other host.
+    const fromLocal = await guardFor("http://localhost:3000/");
+    for (const url of away) assert.equal(await fromLocal.refuses(url), NOT_GIVEN, url);
+    const fromFile = await guardFor("");
+    for (const url of away) assert.equal(await fromFile.refuses(url), NOT_PUBLIC, url);
+    await withSetting("185.137.215.163", async () => {
+      const refusing = await guardFor("https://lookups-site.example/");
+      for (const url of away) assert.equal(await refusing.refuses(url), NOT_PUBLIC, url);
+    });
+    assert.deepEqual(asked, ["lookups-site.example", "printer.lan"]);
+    // Given as the address, such a name is the user's own, and its pages
+    // are its own: from it, another such name is still not asked for.
+    for (const given of ["http://octopi.local/", "http://nas-box:8080/"]) {
+      const guard = await guardFor(given);
+      assert.deepEqual([guard.local, guard.unresolved, guard.refused], [true, "", ""], given);
+      assert.equal(await guard.refuses(new URL("files/x", given).href), "", given);
+      assert.equal(await guard.refuses("http://homeassistant.local/"), NOT_GIVEN, given);
+      assert.equal(await guard.refuses("http://wpad/wpad.dat"), NOT_GIVEN, given);
+    }
+    assert.deepEqual(asked, ["lookups-site.example", "printer.lan", "octopi.local", "nas-box"]);
+  } finally {
+    dns.lookup = lookup;
+  }
+});
+
 test("a file the kit reads itself is not read from an address the run does not open, nor after a redirect to one", async () => {
   const seen = [];
   const other = http.createServer((req, res) => {
