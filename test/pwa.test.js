@@ -220,7 +220,7 @@ test("--pwa adds its captures to the windows a run opens anyway, else opens its 
 });
 
 test("a run's folder: an earlier run's screenshots for a manifest go once a new run has ended well, other files in pwa/ stay", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-pwa-dir-"));
+  const dir = fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "easyscreenshotkit-pwa-dir-"));
   try {
     const earlier = () => {
       fs.writeFileSync(path.join(dir, "manifest.json"), JSON.stringify({ version: 1, tool: "easyscreenshotkit 0.1.0" }));
@@ -260,7 +260,7 @@ test("a run's folder: an earlier run's screenshots for a manifest go once a new 
 });
 
 test("--pwa-check: a manifest file and its screenshots next to it, on the command line", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-pwa-check-"));
+  const dir = fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "easyscreenshotkit-pwa-check-"));
   try {
     fs.mkdirSync(path.join(dir, "screenshots"));
     fs.writeFileSync(path.join(dir, "screenshots", "wide-01.png"), pngHead(1920, 1080));
@@ -343,7 +343,7 @@ test("--pwa-check: a value that is no address is one line, and a false ok with -
 // check does not pass, saying which address reads it: the command line's
 // words and exit code.
 test("--pwa-check of a manifest file with a screenshot it does not read says so, and exits with 1", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-pwa-"));
+  const dir = fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "easyscreenshotkit-pwa-"));
   try {
     fs.mkdirSync(path.join(dir, "s"));
     fs.writeFileSync(path.join(dir, "s", "narrow.png"), pngHead(1080, 1920));
@@ -424,7 +424,7 @@ test("the screenshots of a manifest are read at the address their host was judge
     reached.push(new Promise((done) => resolve(host, { all: true }, (err, list) => done(err ? err.code : list.map((one) => one.address).join(",")))));
     throw new Error(`no request leaves this machine in a test: ${url}`);
   };
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-pwa-"));
+  const dir = fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "easyscreenshotkit-pwa-"));
   try {
     const file = path.join(dir, "manifest.json");
     const screenshots = [
@@ -451,7 +451,7 @@ test("the screenshots of a manifest are read at the address their host was judge
 // and from a manifest on the web, here on a server of this machine given to
 // the check.
 test("a screenshot on a host written with two dots at its end is read at the address its host was judged by", async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-pwa-"));
+  const dir = fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "easyscreenshotkit-pwa-"));
   const shot = (host) => ({ src: `http://${host}../s/wide.png`, sizes: "1920x1080", type: "image/png", form_factor: "wide" });
   const { server, origin } = await serve((req, res) => res.writeHead(200, { "Content-Type": "application/manifest+json" }).end(JSON.stringify({ name: "Acme", screenshots: [shot("two-dots-web.example")] })));
   try {
@@ -512,7 +512,7 @@ test("--pwa-check counts a screenshot on a host that does not exist, or on this 
     if (at.hostname !== "public-site.example") return saved(url, options, done);
     return saved(`${origin}${at.pathname}`, { ...options, lookup: undefined }, done);
   };
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-pwa-"));
+  const dir = fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "easyscreenshotkit-pwa-"));
   const HOST = "on a host whose name could not be looked up";
   try {
     const report = await checkManifest({ url: "http://public-site.example/app.webmanifest" });
@@ -561,6 +561,39 @@ test("--pwa-check counts a screenshot on a host that does not exist, or on this 
     dns.lookup = lookup;
     http.get = saved;
     server.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// From a manifest file a screenshot at an address of this machine's own, a
+// public one included, or on the IPv6 network of one, is not read, and the
+// report names the address that reads it, the manifest's own on that host,
+// as a site this machine serves there could hold it. No test put a
+// screenshot there, so that line could go with nothing failing.
+test("--pwa-check of a manifest file names the address that reads a screenshot at an address of this machine or on its network", async () => {
+  const saved = os.networkInterfaces;
+  os.networkInterfaces = () => ({
+    lo: [{ address: "127.0.0.1", netmask: "255.0.0.0", family: "IPv4", internal: true, cidr: "127.0.0.1/8" }],
+    eth0: [
+      { address: "81.2.69.160", netmask: "255.255.255.0", family: "IPv4", internal: false, cidr: "81.2.69.160/24" },
+      { address: "2a02:1205:5000::1", netmask: "ffff:ffff:ffff:ffff::", family: "IPv6", internal: false, cidr: "2a02:1205:5000::1/64", scopeid: 0 },
+    ],
+  });
+  const dir = fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "easyscreenshotkit-pwa-"));
+  try {
+    const file = path.join(dir, "manifest.json");
+    fs.writeFileSync(file, JSON.stringify({ name: "Acme", screenshots: [
+      { src: "http://81.2.69.160/s.png", sizes: "1920x1080", type: "image/png", form_factor: "wide" },
+      { src: "http://[2a02:1205:5000::77]/s.png", sizes: "1080x1920", type: "image/png", form_factor: "narrow" },
+    ] }));
+    const report = await checkManifest({ file });
+    assert.deepEqual(report.screenshots.map((shot) => [shot.n, shot.unread, shot.error]), [
+      [1, "it is at 81.2.69.160, an address of this machine", ""],
+      [2, "it is at 2a02:1205:5000::77, on a network of this machine", ""],
+    ]);
+    assert.equal(report.unchecked.at(-1), "To have a screenshot on http://81.2.69.160 or http://[2a02:1205:5000::77] read, give the check the manifest's own address on its host and port: the host and port of the address it is given are the check's own.");
+  } finally {
+    os.networkInterfaces = saved;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -615,7 +648,7 @@ test("--pwa-check reads no manifest or screenshot on another port than 80 and 44
     if (req.url === "/redirecting.webmanifest") return res.writeHead(302, { Location: `http://cdn.example:${new URL(origin).port}/app.webmanifest` }).end();
     res.writeHead(404).end();
   });
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-pwa-"));
+  const dir = fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "easyscreenshotkit-pwa-"));
   try {
     process.env.MAKERSMCP_REFUSE_ADDRESSES = "93.184.215.99";
     // The manifest a page links there is read when the check is given its
@@ -719,7 +752,7 @@ test("--pwa-check reads nothing from an address on this machine other than the o
     if (req.url === "/here.png") return res.writeHead(200, { "Content-Type": "image/png" }).end(pngHead(1920, 1080));
     res.writeHead(404).end();
   });
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-pwa-"));
+  const dir = fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "easyscreenshotkit-pwa-"));
   try {
     await assert.rejects(checkManifest({ url: `${origin}/` }), { message: `Could not read ${elsewhere}/app.webmanifest, the manifest ${origin}/ links: it is ${NOT_GIVEN}` });
     const report = await checkManifest({ url: `${origin}/app.webmanifest` });

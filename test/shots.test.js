@@ -197,7 +197,7 @@ function runCli(args, { env = process.env, preload = "" } = {}) {
   });
 }
 
-const tempDir = () => fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-run-"));
+const tempDir = () => fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "easyscreenshotkit-run-"));
 const css = (png, scale, x, y) => png.pixel(Math.round(x * scale), Math.round(y * scale));
 
 test("picks the pages worth showing and leaves the rest out with reasons", { skip: noBrowser, timeout: 280_000 }, async () => {
@@ -3074,7 +3074,7 @@ test("a browser keeps its crash reports in its profile, not in the home", { skip
 test("a run that ends in its first seconds leaves nothing in the temp folder", { skip: noBrowser || (process.platform !== "linux" && "the profile is the browser's temp folder on Linux only"), timeout: 120_000 }, async (t) => {
   const { server, origin } = await fixture();
   const root = tempDir();
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "t-"));
+  const tmp = fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "t-"));
   const env = { ...process.env, TMPDIR: tmp };
   try {
     if (!roomIn(path.join(tmp, "easyscreenshotkit-chrome-XXXXXX"))) return t.skip(`${tmp} leaves no room for the browser's lock in its profile`);
@@ -3108,7 +3108,7 @@ test("a run that ends in its first seconds leaves nothing in a temp folder with 
   const { server, origin } = await fixture();
   const late = await serve((req, res) => setTimeout(() => res.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Disposition": 'attachment; filename="file.bin"' }).end("written by the site\n"), 1_000));
   const root = tempDir();
-  const tmp = path.join(os.tmpdir(), `t-${"x".repeat(Math.max(1, 34 - os.tmpdir().length))}`);
+  const tmp = path.join(path.resolve(os.tmpdir()), `t-${"x".repeat(Math.max(1, 34 - path.resolve(os.tmpdir()).length))}`);
   fs.mkdirSync(tmp, { recursive: true });
   const env = { ...process.env, TMPDIR: tmp, TMP: tmp, TEMP: tmp };
   try {

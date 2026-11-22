@@ -47,7 +47,7 @@ const TEAL = [0, 200, 200];
 // address is on the public internet, and no connection to it leaves this
 // machine (see helpers.js reachAt()).
 test("a demo whose first page cannot be reached with a proxy setting set says the kit does not use it, after the step's words", { skip: missing, timeout: 240_000 }, async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-proxied-demo-"));
+  const root = fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "easyscreenshotkit-proxied-demo-"));
   const { server, origin } = await serve((req, res) => res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end('<!doctype html><title>Site</title><body style="margin:0;background:rgb(0,160,0)"><h1>Site</h1><div style="height:1400px"></div></body>'));
   const stand = reachAt({});
   const saved = process.env.HTTPS_PROXY;
@@ -598,7 +598,7 @@ test("a --steps file that is a named pipe waits for its writer, and a stop ends 
 // folder, as it may be the file it follows: that is not one of its files.
 test("the summary lists demo.yaml after a tour, which wrote it, not after a steps run that left an earlier tour's there", () => {
   const { summary } = require("../skills/easyscreenshotkit/scripts/lib/demo");
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-demo-summary-"));
+  const dir = fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "easyscreenshotkit-demo-summary-"));
   try {
     fs.writeFileSync(path.join(dir, "demo.yaml"), "steps:\n  - wait: 1\n");
     fs.writeFileSync(path.join(dir, "demo.mp4"), "video");
@@ -624,7 +624,7 @@ test("the CLI hands demo to its own command, with its own help", () => {
 test("a demo never writes into a folder that holds someone else's files, and its files take an earlier demo's place once it has ended well", () => {
   // Absolute, so a link made to a folder in it leads there under a TMPDIR
   // given as a relative path too.
-  const dir = path.resolve(fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-demo-dir-")));
+  const dir = path.resolve(fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "easyscreenshotkit-demo-dir-")));
   const earlier = () => fs.writeFileSync(path.join(dir, "steps.json"), JSON.stringify({ version: 1, kind: "demo", tool: "easyscreenshotkit 0.1.0" }));
   const record = (options, files) => {
     const run = openDemo(dir, options);
@@ -822,7 +822,7 @@ function probe(video) {
   return JSON.parse(out.stdout).streams[0];
 }
 
-const tempDir = () => fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-demo-run-"));
+const tempDir = () => fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "easyscreenshotkit-demo-run-"));
 // The page's CSS pixel (x, y) in the video when it is not zoomed: the
 // window's content starts at (160, 112), one video pixel per CSS pixel.
 const unzoomed = (png, x, y) => png.pixel(160 + x, 112 + y);

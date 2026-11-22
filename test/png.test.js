@@ -103,7 +103,7 @@ test("a whole page whose tab crashed partway is lost, and one too busy to answer
 });
 
 test("a PNG file is whole only when it starts and ends as a PNG does", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-png-"));
+  const dir = fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "easyscreenshotkit-png-"));
   try {
     const file = path.join(dir, "a.png");
     const png = pngOf(10, 10, (x, y) => PAGE_COLOR(x, y));

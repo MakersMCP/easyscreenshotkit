@@ -30,7 +30,7 @@ const noBrowser = (!findChrome() && "no Chrome, Chromium, Edge or Brave installe
 const openssl = spawnSync("openssl", ["version"], { encoding: "utf8" });
 const noOpenssl = (openssl.error || openssl.status !== 0) && "no openssl to make the test's certificates";
 const DESKTOP = { width: 1200, height: 800, scale: 1, mobile: false, touch: false, agent: "desktop" };
-const tempDir = () => fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-proxy-"));
+const tempDir = () => fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "easyscreenshotkit-proxy-"));
 const html = { "Content-Type": "text/html; charset=utf-8" };
 
 // A server that counts every connection made to it and what came first on
@@ -204,6 +204,21 @@ test("the proxy answers its probe itself, refuses all with no rule, and keeps wh
     assert.deepEqual([proxy.saw("loopback"), proxy.saw("direct")], [true, false]);
     const straight = await new Promise((resolve) => http.get(proxy.loopback, (res) => res.resume().on("end", () => resolve(res.statusCode))));
     assert.deepEqual([straight, proxy.saw("direct")], [204, true]);
+    // Its own answers, a probe's 204 and a 403 or a 400, end their
+    // connection: a second request written on it gets none, so the browser
+    // sends no request again on one.
+    const looped = new URL(proxy.loopback).pathname;
+    for (const [first, status] of [
+      [`GET http://${proxy.probe}/ HTTP/1.1\r\nHost: ${proxy.probe}\r\n\r\n`, 204],
+      [`GET ${looped} HTTP/1.1\r\nHost: 127.0.0.1:${proxy.port}\r\n\r\n`, 204],
+      ["GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n", 403],
+      [`GET http://${proxy.probe}/ HTTP/1.1\r\nHost: ${proxy.probe}\r\nX-Nul: a\x00b\r\n\r\n`, 400],
+    ]) {
+      const { got, closed } = await rawFor(proxy.port, `${first}${first}`, 3_000);
+      const text = got.toString("latin1");
+      assert.deepEqual([text.match(/HTTP\/1\.1 \d{3}/g), closed], [[`HTTP/1.1 ${status}`], true], text);
+      assert.match(text, /\r\nconnection: close\r\n/i);
+    }
     assert.deepEqual([...proxy.refused], []);
     assert.equal(await unanswered(proxy.port, `${closedOrigin}/`), "ECONNRESET");
     assert.equal(proxy.unreached.get(new URL(closedOrigin).host), "ECONNREFUSED");
@@ -613,6 +628,29 @@ test("the proxy passes a site's answer on as it came, telling the browser to clo
     site.close();
   }
 });
+
+// What the proxy sends back for requests written on a connection of its own,
+// as raw bytes, given up on after ms: what came by then, and whether the
+// proxy had closed the connection.
+function rawFor(port, request, ms) {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect(port, "127.0.0.1", () => socket.write(Buffer.from(request, "latin1")));
+    const parts = [];
+    const timer = setTimeout(() => {
+      socket.destroy();
+      resolve({ got: Buffer.concat(parts), closed: false });
+    }, ms);
+    socket.on("data", (data) => parts.push(data));
+    socket.on("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    socket.on("close", () => {
+      clearTimeout(timer);
+      resolve({ got: Buffer.concat(parts), closed: true });
+    });
+  });
+}
 
 // What the proxy sends back for one request written on a connection of its
 // own, as raw bytes, the connection closed by the proxy.
@@ -2111,6 +2149,7 @@ child.on("exit", (code) => process.exit(code === null ? 1 : code));
       ["policy", `exec ${sh(real)} "$@" --webrtc-ip-handling-policy=default_public_interface_only\n`, proxied("policy", "webrtc-ip-handling-policy")],
       ["direct", `exec ${sh(real)} --no-proxy-server "$@"\n`, overridden("direct", "no-proxy-server")],
       ["scripted", `exec ${sh(real)} "$@" --proxy-pac-url=http://127.0.0.1:1/proxy.pac\n`, overridden("scripted", "proxy-pac-url")],
+      ["autodetected", `exec ${sh(real)} "$@" --proxy-auto-detect\n`, overridden("autodetected", "proxy-auto-detect")],
       ["unnamed", `exec ${sh(process.execPath)} ${sh(relay)} error "$@"\n`, cannot("unnamed", "SystemInfo.getProcessInfo wasn't found")],
       ["nameless", `exec ${sh(process.execPath)} ${sh(relay)} none "$@"\n`, cannot("nameless", "it names no process of its own")],
       ["elsewhere", `exec ${sh(process.execPath)} ${sh(relay)} other "$@"\n`, cannot("elsewhere", "its process, 1, is not one the run started")],

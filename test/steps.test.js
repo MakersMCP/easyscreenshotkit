@@ -212,7 +212,7 @@ test("a steps file's hide takes CSS selectors that end where they end, and refus
 });
 
 test("a steps file is read from YAML or JSON, and a tour written back reads the same", async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-steps-"));
+  const dir = fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "easyscreenshotkit-steps-"));
   try {
     const yaml = path.join(dir, "demo.yaml");
     fs.writeFileSync(yaml, "url: https://acme.com\nsteps:\n  - visit: /\n  - click: '#go'\n");

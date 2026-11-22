@@ -47,7 +47,7 @@ test("the sentence for a demo with no ffmpeg is written out whole in the code", 
 // the same refusals as before, on a host that does not resolve too. A demo
 // looks at ffmpeg before its folder, as 0.1.1 did.
 test("a run looks at its folder before the browser, and at the browser before the name of the address's host", { skip: process.platform === "win32" && "the stand-in ffmpeg is a shell script", timeout: 60_000 }, () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-order-"));
+  const root = fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "easyscreenshotkit-order-"));
   const { CHROME_PATH, FFMPEG_PATH, ...base } = process.env;
   try {
     const ffmpeg = path.join(root, "ffmpeg");
@@ -79,7 +79,7 @@ test("a run looks at its folder before the browser, and at the browser before th
 // here an address on a host that cannot be looked up, which stops a run
 // before the browser starts, and the stand-in browser is never started.
 test("a run that cannot reach the address given with a proxy setting set says the kit does not use it, in each command", { skip: process.platform === "win32" && "the stand-ins are shell scripts", timeout: 60_000 }, () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-proxied-"));
+  const root = fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "easyscreenshotkit-proxied-"));
   const { CHROME_PATH, FFMPEG_PATH, MAKERSMCP_REFUSE_ADDRESSES, https_proxy, HTTPS_PROXY, http_proxy, HTTP_PROXY, all_proxy, ALL_PROXY, ...base } = process.env;
   try {
     const ffmpeg = path.join(root, "ffmpeg");
@@ -109,7 +109,7 @@ test("a run that cannot reach the address given with a proxy setting set says th
 // two names whose DNS gave no answer held every name a page asked after
 // them. Read as the command's process ends.
 test("the command sets UV_THREADPOOL_SIZE to 32 where it is unset, and keeps one that is set", () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-threads-"));
+  const root = fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "easyscreenshotkit-threads-"));
   try {
     const preload = path.join(root, "threads.js");
     fs.writeFileSync(preload, 'process.on("exit", () => require("fs").writeSync(2, `threads=${process.env.UV_THREADPOOL_SIZE}\\n`));\n');
@@ -131,7 +131,7 @@ test("the command sets UV_THREADPOOL_SIZE to 32 where it is unset, and keeps one
 // does, once the folder and the browser have been looked at, and the
 // browser is not started.
 test("a MAKERSMCP_REFUSE_ADDRESSES that does not parse stops every command before any work, and an address given that it names stops a run before the browser starts", { skip: process.platform === "win32" && "the stand-ins are shell scripts", timeout: 60_000 }, () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-refuse-"));
+  const root = fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "easyscreenshotkit-refuse-"));
   const { CHROME_PATH, FFMPEG_PATH, MAKERSMCP_REFUSE_ADDRESSES, ...base } = process.env;
   try {
     const started = path.join(root, "started");
@@ -204,7 +204,7 @@ test("a MAKERSMCP_REFUSE_ADDRESSES that does not parse stops every command befor
 // commands says so, where it named only what is opened and not closed; a
 // line break at its end is white space and does not count.
 test("--hide refuses a selector that holds a comment or a control character, leaves a quote or a bracket open or holds a brace, before any work, as the help says", () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-hide-"));
+  const root = fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "easyscreenshotkit-hide-"));
   try {
     const out = path.join(root, "out");
     const env = { ...process.env, CHROME_PATH: path.join(root, "no-browser") };
@@ -724,7 +724,7 @@ test("two runs that put their files in one folder at the same moment take turns,
   const { LOCK, staleLock, takeOver } = require("../skills/easyscreenshotkit/scripts/lib/outdir");
   // Absolute, so a link made to a folder in it leads there under a TMPDIR
   // given as a relative path too.
-  const root = path.resolve(fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-dir-")));
+  const root = path.resolve(fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "easyscreenshotkit-dir-")));
   const dir = path.join(root, "shots");
   const lock = path.join(dir, LOCK);
   const runOf = (id, pictures) => {
@@ -869,7 +869,7 @@ const hourAgo = () => new Date(Date.now() - 3_600_000);
 // there cannot handle a stop: only SIGKILL ended it. In a child process, so a
 // check that waits cannot hold the tests up too.
 test("a named pipe where a run looks for an earlier run's manifest holds no earlier run", { skip: process.platform === "win32" && "no named pipes of that kind on Windows", timeout: 30_000 }, () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-marker-"));
+  const dir = fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "easyscreenshotkit-marker-"));
   try {
     assert.equal(spawnSync("mkfifo", [path.join(dir, "manifest.json")]).status, 0);
     const run = spawnSync(process.execPath, [CLI, "http://127.0.0.1:9/", "--out", dir], { encoding: "utf8", timeout: 10_000, killSignal: "SIGKILL" });
@@ -886,7 +886,7 @@ test("a named pipe where a run looks for an earlier run's manifest holds no earl
 // run started together in one new folder mixed their files.
 test("something else saved in the folder while a run worked is not written over", () => {
   const { openDemo } = require("../skills/easyscreenshotkit/scripts/lib/demo");
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-came-"));
+  const root = fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "easyscreenshotkit-came-"));
   const ours = JSON.stringify({ version: 1, tool: "easyscreenshotkit 0.1.2", pages: [] });
   const refusal = (dir, what) => `Could not move this run's files into ${dir}: ${dir} is not empty and holds no earlier easyscreenshotkit ${what}. Pick another folder with --out. This run added nothing to the folder.`;
   try {
@@ -934,7 +934,7 @@ test("something else saved in the folder while a run worked is not written over"
 test("a run's folder: refused when it holds someone else's files, and an earlier run's files stay until a new run has ended well", () => {
   // Absolute, so a link made to a folder in it leads there under a TMPDIR
   // given as a relative path too.
-  const root = path.resolve(fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-dir-")));
+  const root = path.resolve(fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "easyscreenshotkit-dir-")));
   const dir = path.join(root, "shots");
   const put = (rel, text) => {
     fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
@@ -1163,7 +1163,7 @@ test("a run's folder: refused when it holds someone else's files, and an earlier
 // library or of the loader it needs changed, for another processor, and
 // files that are no program at all.
 test("a browser or an ffmpeg that cannot be started stops a run before any work with its path, what is wrong with it and how to get one that runs", { skip: (process.platform !== "linux" && "the files that cannot be run are Linux's") || tempProblem(), timeout: 300_000 }, async (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-unstarted-"));
+  const root = fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "easyscreenshotkit-unstarted-"));
   const at = (...names) => path.join(root, ...names);
   const asRoot = process.getuid() === 0;
   const { CHROME_PATH, FFMPEG_PATH, ...base } = process.env;
@@ -1497,7 +1497,7 @@ test("a browser or an ffmpeg that cannot be started stops a run before any work 
 // one with no binfmt_misc of its own; and the line is written with printf,
 // as dash's echo reads a backslash of the path.
 test("a Windows program that the system hands to a program of its own, as binfmt-support does, is named a Windows program", { skip: process.platform !== "linux" && "binfmt_misc is Linux's", timeout: 120_000 }, (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-binfmt-"));
+  const root = fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "easyscreenshotkit-binfmt-"));
   try {
     const detectors = path.join(root, "run-detectors");
     fs.writeFileSync(detectors, '#!/bin/sh\necho "run-detectors: unable to find an interpreter for $1" >&2\nexit 2\n', { mode: 0o755 });
@@ -1546,7 +1546,7 @@ test("a run names a program by its role in that run, whatever runs before it in 
   const at = bytes.indexOf("libc.so.6", 0, "latin1");
   if (at < 0) return t.skip("true links no libc.so.6");
   if (!findFfmpeg()) return t.skip("no ffmpeg installed");
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-roles-"));
+  const root = fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "easyscreenshotkit-roles-"));
   const file = path.join(root, "program");
   const copy = Buffer.from(bytes);
   copy.write("libq.so.6", at, "latin1");
@@ -1600,7 +1600,7 @@ test("an ffmpeg has two minutes to say its version and to list its encoders, and
   const skill = fs.readFileSync(path.join(__dirname, "..", "skills", "easyscreenshotkit", "SKILL.md"), "utf8");
   assert.match(readme, /One that gives no answer in two minutes when asked its version or its encoders, as even one that works can on a machine too busy or short of memory, stops the demo too/);
   assert.match(skill, /When it says ffmpeg gave no answer in two minutes when asked its version or its encoders/);
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-late-"));
+  const root = fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "easyscreenshotkit-late-"));
   const put = (name, body) => {
     const file = path.join(root, name, "ffmpeg");
     fs.mkdirSync(path.dirname(file));

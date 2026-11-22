@@ -150,7 +150,7 @@ test("layout, backdrop and the address in the title bar", () => {
   // backdrop of them, a plain white one, alone or in a gradient.
   for (const word of ["inherit", "Initial", "unset", "revert", "red, inherit", "inherit, blue"]) assert.throws(() => backdropOf(word), { message: `--background takes a colour, two colours for a gradient, or a picture file, not ${word}` }, word);
   assert.throws(() => backdropOf("missing.png"), /no such picture file/);
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-backdrop-"));
+  const dir = fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "easyscreenshotkit-backdrop-"));
   try {
     // A regular file under a picture's name goes to the browser, which
     // says whether it can draw it (see the demo's tests); nothing else does.
@@ -179,7 +179,7 @@ test("layout, backdrop and the address in the title bar", () => {
 // there cannot handle a stop: only SIGKILL ended it. In a child process, so a
 // check that waits cannot hold the tests up too.
 test("a --background that is a named pipe is refused at once", { skip: process.platform === "win32" && "no named pipes of that kind on Windows", timeout: 30_000 }, () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "easyscreenshotkit-backdrop-"));
+  const dir = fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "easyscreenshotkit-backdrop-"));
   const pipe = path.join(dir, "pipe.png");
   const compose = path.resolve(__dirname, "../skills/easyscreenshotkit/scripts/lib/compose");
   try {
