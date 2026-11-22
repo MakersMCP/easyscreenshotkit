@@ -88,10 +88,11 @@ From the address given the run opens web addresses on the public internet
 only, on port 80 or 443 unless they are on the scheme, host and port given
 or at https on the host and port of an http address given, and that host and
 port when the address given is on this machine or its network, as a site you
-run there is, with https on 443 of a name or a public address given by http
-on port 80: a page, a redirect or a sitemap at localhost, 127.0.0.1, a
-private network or another address of that kind, or at an address of this
-machine's own on the public internet, is not opened, and the report names
+run there is, with https on 443 of a name under a domain of the internet,
+as intranet.acme.com, or a public IPv4 address given by http on port 80: a
+page, a redirect or a sitemap at localhost, 127.0.0.1, a private network or
+another address of that kind, or at an address of this machine's own on
+the public internet, is not opened, and the report names
 it with the reason, and neither is a frame or a window a page opens there,
 nor one on another port of a host on the public internet, nor a host whose
 name does not resolve here, gives no answer in 10 s, or answers both on the

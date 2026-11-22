@@ -58,6 +58,7 @@ const os = require("os");
 const http = require("http");
 const https = require("https");
 const zlib = require("zlib");
+const { TLDS } = require("./tlds");
 
 // What an address that is not opened is, as said after "it is".
 const NOT_WEB = "not a web address";
@@ -556,6 +557,23 @@ async function lookupWhy(hostname) {
 
 const portOf = (url) => url.port || (url.protocol === "https:" ? "443" : "80");
 
+// Whether the browser, given http://<host>/, tries https on port 443 of it
+// first by itself (HTTPS-Upgrades), as a URL gives the host: for an IPv4
+// address on the public internet, and for a name of two labels or more
+// under one of the internet's top-level domains (see tlds.js), as
+// intranet.acme.com, fritz.box and nas.home.arpa; not for an IPv6 address,
+// an address not on the public internet, a name of one label, though it be
+// a domain's, or with a label left empty, nor a name under a domain of a
+// network's own, as myapp.test, router.lan, nas.local, x.internal or one
+// under localhost, which Chrome 155 and 157 opened by http alone.
+function triedOverHttps(hostname) {
+  const host = lookupKey(hostname).toLowerCase();
+  const family = net.isIP(host);
+  if (family) return family === 4 && !notPublicIp(host);
+  const labels = host.split(".");
+  return labels.length >= 2 && labels.every(Boolean) && TLDS.has(labels[labels.length - 1]);
+}
+
 // A host as a URL gives it, with the one dot that can end a name left out,
 // as standing() looks it up: portal.example. and portal.example are one
 // host to the DNS, and on one port one program. Compared as written, an
@@ -614,16 +632,14 @@ async function guardFor(start) {
   // http://myapp.dev:8080/ stopped the run on the address the browser
   // itself opened for it. A move from https down to http on that port is
   // not the address given. From an http address given on port 80, https on
-  // port 443 of that host is the address given too, unless the host is a
-  // name for this machine or an address not on the public internet: the
-  // browser goes there itself from a plain http address on port 80, for a
-  // host that asks for https, and for a name under a public suffix or an
-  // address on the public internet, which it tries over https first
-  // (HTTPS-Upgrades). A site given by http at a name of the user's network
-  // that leads to one of its addresses, as intranet.acme.com, failed as the
-  // browser tried it there, and so would one given at an address of this
-  // machine's own on the public internet, as a server holds, which the run
-  // takes for this machine (see ownIp()).
+  // port 443 of that host is the address given too where the browser goes
+  // there first by itself (see triedOverHttps()): a site given by http at a
+  // name of the user's network that leads to one of its addresses, as
+  // intranet.acme.com, failed as the browser tried it there, and so would
+  // one given at an address of this machine's own on the public internet,
+  // as a server holds, which the run takes for this machine (see ownIp()).
+  // Of a host the browser does not try so, as myapp.test, port 443 is
+  // another program, which a page of the site could have the run open.
   // On the port given, this machine's own names (localhost, a name under
   // it, 127.0.0.1 and ::1) are the host given when it is one of them, where
   // they reach an address of it, which is all they reach (see lookupFor()):
@@ -640,7 +656,7 @@ async function guardFor(start) {
     return both.length ? both : null;
   };
   const sameHost = (url) => hostOf(url) === hostOf(from) || Boolean(shared(url));
-  const tried = web && from.protocol === "http:" && portOf(from) === "80" && !localName(lookupKey(from.hostname)) && !(net.isIP(bareIp(lookupKey(from.hostname))) && notPublicIp(lookupKey(from.hostname)));
+  const tried = web && from.protocol === "http:" && portOf(from) === "80" && triedOverHttps(from.hostname);
   const upgraded = (url) => tried && url.protocol === "https:" && portOf(url) === "443";
   const samePort = (url) => portOf(url) === portOf(from) || upgraded(url);
   const given = (url) => local && sameHost(url) && samePort(url);

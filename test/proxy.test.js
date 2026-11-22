@@ -1613,13 +1613,16 @@ test("once a run has saved, a name still waiting for its lookup is not asked, an
 // opens that too, where it refused it as another program of the host, so a
 // run given http://intranet.acme.com/ failed with "it leads to
 // https://intranet.acme.com/, which is not on the public internet, and not
-// on the host and port given". In namespaces of the test's own (see
-// network.js).
-test("a site given by http on port 80 at a name of the user's network or an address of this machine is taken, as the browser tries https first", { skip: noBrowser || noMountNamespace, timeout: 240_000 }, async () => {
+// on the host and port given". A name under no domain of the internet, as
+// myapp.test, the browser opens by http alone, and there port 443 stays
+// another program: a frame of its page at https://myapp.test/ is not
+// opened, where the run opened 127.0.0.1:443 for it. In namespaces of the
+// test's own (see network.js).
+test("a site given by http on port 80 at a name of the user's network or an address of this machine is taken, as the browser tries https first, and of a name it does not try so port 443 is not opened", { skip: noBrowser || noMountNamespace, timeout: 300_000 }, async () => {
   const root = tempDir();
   try {
     const hosts = path.join(root, "hosts");
-    fs.writeFileSync(hosts, "127.0.0.1 localhost\n::1 localhost\n10.1.2.3 intranet.acme.com\n");
+    fs.writeFileSync(hosts, "127.0.0.1 localhost\n::1 localhost\n10.1.2.3 intranet.acme.com\n127.0.0.1 myapp.test\n");
     const cli = require.resolve("../skills/easyscreenshotkit/scripts/easyscreenshotkit.js");
     const script = 'ip link set lo up && mount --bind "$1" /etc/hosts && exec "$2" "$3" upgraded "$4" "$5" "$6" "$7"';
     const child = spawn("unshare", ["-rmn", "sh", "-c", script, "sh", hosts, process.execPath, path.join(__dirname, "network.js"), String(process.getuid()), String(process.getgid()), cli, path.join(root, "shots")], { stdio: ["ignore", "pipe", "pipe"] });
@@ -1627,7 +1630,7 @@ test("a site given by http on port 80 at a name of the user's network or an addr
     let err = "";
     child.stdout.on("data", (d) => (out += d));
     child.stderr.on("data", (d) => (err += d));
-    const timer = setTimeout(() => child.kill("SIGKILL"), 230_000);
+    const timer = setTimeout(() => child.kill("SIGKILL"), 290_000);
     await new Promise((resolve) => child.on("close", resolve));
     clearTimeout(timer);
     let told = null;
@@ -1637,13 +1640,15 @@ test("a site given by http on port 80 at a name of the user's network or an addr
       assert.fail(`network.js printed no result: ${(out + err).trim().slice(-600)}`);
     }
     assert.deepEqual(
-      told.runs.map(({ url, status, titles }) => ({ url, status, titles })),
+      told.runs.map(({ url, status, titles, tls }) => ({ url, status, titles, tried: tls > 0 })),
       [
-        { url: "http://intranet.acme.com/", status: 0, titles: ["Site at 10.1.2.3"] },
-        { url: "http://81.2.69.160/", status: 0, titles: ["Site at 81.2.69.160"] },
+        { url: "http://intranet.acme.com/", status: 0, titles: ["Site at 10.1.2.3"], tried: true },
+        { url: "http://81.2.69.160/", status: 0, titles: ["Site at 81.2.69.160"], tried: true },
+        { url: "http://myapp.test/", status: 0, titles: ["Site at 127.0.0.1"], tried: false },
       ],
-      JSON.stringify(told.runs.map((run) => run.said)),
+      JSON.stringify(told.runs.map((run) => [run.said, run.tls])),
     );
+    assert.deepEqual(told.runs[2].notes, ["a frame of it tried to open https://myapp.test/frame, which is not on the public internet, and not on the host and port given: it was not opened"]);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

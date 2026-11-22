@@ -588,26 +588,39 @@ async function mixed(uid, gid, cli, folder) {
 //   unshare -rmn sh -c '... mount --bind <hosts> /etc/hosts && exec node
 //     network.js upgraded <uid> <gid> <cli> <folder>'
 //
-// with a hosts file that holds intranet.acme.com at 10.1.2.3, it stands in
-// for a machine on a network of its own whose own address is on the public
-// internet, 81.2.69.160, as a server's can be, with a site of the network's
-// at 10.1.2.3 that serves on port 80 and nothing on 443, and a site of the
-// machine's own there too. The kit's command takes each by http, at
-// http://intranet.acme.com/ and at http://81.2.69.160/, as the user who ran
-// the test, with --json, saving in <folder>. The browser tries both over
-// https on 443 first by itself. It prints one line of JSON: { runs }, for
-// each { url, status, said, titles }, the exit code, the last lines on
-// stderr and the titles of the pages it took.
+// with a hosts file that holds intranet.acme.com at 10.1.2.3 and myapp.test
+// at 127.0.0.1, it stands in for a machine on a network of its own whose own
+// address is on the public internet, 81.2.69.160, as a server's can be, with
+// a site of the network's at 10.1.2.3 that serves on port 80, a site of the
+// machine's own there too, and a site on 127.0.0.1:80 whose page holds a
+// frame of https://myapp.test/frame. On port 443 of every address another
+// program notes each connection and ends it. The kit's command takes each
+// by http, at http://intranet.acme.com/, at http://81.2.69.160/ and at
+// http://myapp.test/, as the user who ran the test, with --json, saving in
+// <folder>. The browser tries the first two over https on 443 first by
+// itself, and myapp.test, a name under no domain of the internet, by http
+// alone. It prints one line of JSON: { runs }, for each { url, status, said,
+// titles, notes, tls }, the exit code, the last lines on stderr, the titles
+// of the pages it took, the first page's notes and how many connections the
+// program on 443 got while it ran.
 async function upgraded(uid, gid, cli, folder) {
   ip("link", "set", "lo", "up");
   ip("link", "add", "d0", "type", "dummy");
   ip("link", "set", "d0", "up");
   ip("addr", "add", "10.1.2.3/32", "dev", "d0");
   ip("addr", "add", "81.2.69.160/32", "dev", "d0");
-  const page = http.createServer((req, res) => res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(`<!doctype html><title>Site at ${req.socket.localAddress}</title><h1>The team's site</h1><p>Served on port 80 alone.</p><div style="height:1400px"></div>`));
+  const page = http.createServer((req, res) => res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(`<!doctype html><title>Site at ${req.socket.localAddress}</title><h1>The team's site</h1><p>Served on port 80 alone.</p>${req.headers.host === "myapp.test" ? '<iframe src="https://myapp.test/frame" width="300" height="100"></iframe>' : ""}<div style="height:1400px"></div>`));
   await new Promise((resolve) => page.listen(80, "0.0.0.0", resolve));
+  let tls = 0;
+  const other = net.createServer((socket) => {
+    tls++;
+    socket.on("error", () => {});
+    socket.destroy();
+  });
+  await new Promise((resolve) => other.listen(443, "::", resolve));
   const runs = [];
-  for (const [n, url] of ["http://intranet.acme.com/", "http://81.2.69.160/"].entries()) {
+  for (const [n, url] of ["http://intranet.acme.com/", "http://81.2.69.160/", "http://myapp.test/"].entries()) {
+    tls = 0;
     runs.push(
       await new Promise((resolve) => {
         const child = spawn("unshare", ["-U", `--map-user=${uid}`, `--map-group=${gid}`, process.execPath, cli, url, "--pages", "1", "--sizes", "desktop", "--json", "--out", `${folder}-${n}`], { stdio: ["ignore", "pipe", "pipe"] });
@@ -624,12 +637,13 @@ async function upgraded(uid, gid, cli, folder) {
           } catch {
             manifest = null;
           }
-          resolve({ url, status: code === null ? signal : code, said: err.trim().split("\n").slice(-3).join(" | "), titles: manifest && manifest.pages ? manifest.pages.map((one) => one.title) : [] });
+          resolve({ url, status: code === null ? signal : code, said: err.trim().split("\n").slice(-3).join(" | "), titles: manifest && manifest.pages ? manifest.pages.map((one) => one.title) : [], notes: manifest && manifest.pages && manifest.pages[0] ? manifest.pages[0].notes || [] : [], tls });
         });
       }),
     );
   }
   page.close();
+  other.close();
   process.stdout.write(`${JSON.stringify({ runs })}\n`);
 }
 

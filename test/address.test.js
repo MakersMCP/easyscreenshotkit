@@ -114,7 +114,7 @@ test("an address this machine's network interfaces hold, a public one included, 
   let interfaces = server;
   os.networkInterfaces = () => interfaces;
   try {
-    await withNames({ "own-machine.example": "81.2.69.160", "own-machine6.example": "2a02:1205:5000::1", "own-lan6.example": ["93.184.215.14", "2a02:1205:5000::77"], "own-site.example": "93.184.215.14" }, async () => {
+    await withNames({ "own-machine.example": "81.2.69.160", "own-machine.acme.com": "81.2.69.160", "own-machine6.example": "2a02:1205:5000::1", "own-lan6.example": ["93.184.215.14", "2a02:1205:5000::77"], "own-site.example": "93.184.215.14" }, async () => {
       const guard = await guardFor("https://own-site.example/");
       assert.equal(guard.local, false);
       for (const [url, why] of [
@@ -155,10 +155,14 @@ test("an address this machine's network interfaces hold, a public one included, 
       assert.equal(await given.refuses("http://81.2.69.160:8080/app.js"), "");
       assert.equal(await given.refuses("http://[2a02:1205:5000::1]/"), "at 2a02:1205:5000::1, an address of this machine, and not on the host and port given");
       assert.equal(await given.refuses("https://81.2.69.160/"), "at 81.2.69.160, an address of this machine, and not on the host and port given");
-      const web = await guardFor("http://own-machine.example/");
-      assert.equal(await web.refuses("https://own-machine.example/"), "");
+      const web = await guardFor("http://own-machine.acme.com/");
+      assert.equal(await web.refuses("https://own-machine.acme.com/"), "");
       assert.equal(await web.refuses("https://81.2.69.160/"), "at 81.2.69.160, an address of this machine, and not on the host and port given");
       assert.equal(await (await guardFor("http://81.2.69.160/")).refuses("https://81.2.69.160/"), "");
+      // Not for a name under a domain of a network's own, nor an IPv6
+      // address, which the browser opens by http alone.
+      assert.equal(await (await guardFor("http://own-machine.example/")).refuses("https://own-machine.example/"), "at 81.2.69.160, an address of this machine, and not on the host and port given");
+      assert.equal(await (await guardFor("http://[2a02:1205:5000::1]/")).refuses("https://[2a02:1205:5000::1]/"), "at 2a02:1205:5000::1, an address of this machine, and not on the host and port given");
       // A run that could not reach it adds no word about a proxy setting.
       const proxySaved = process.env.HTTPS_PROXY;
       process.env.HTTPS_PROXY = "http://127.0.0.1:9";
@@ -323,7 +327,7 @@ test("a name given that answers both on the public internet and off it, or at th
 // A host is the one given with or without the dot that can end a name, and
 // its www form is another host, as the README says.
 test("away from the address given a run opens port 80 and 443 only, and the scheme, host and port given on any port", () =>
-  withNames({ "public.example": "93.184.215.14", "www.public.example": "93.184.215.14", "other.example": "93.184.215.15", "inside.example": "10.0.0.7" }, async () => {
+  withNames({ "public.example": "93.184.215.14", "www.public.example": "93.184.215.14", "other.example": "93.184.215.15", "inside.example": "10.0.0.7", "inside.acme.com": "10.0.0.7", "fritz.box": "192.168.178.1", "nas.home.arpa": "192.168.1.20", "myapp.test": "127.0.0.1", "router.lan": "192.168.1.1", "nas.local": "192.168.1.20", "x.internal": "10.0.0.8", "intranet": "10.0.0.9", "app.corp": "10.0.0.10", "acme.xn--p1ai": "10.0.0.11", "app": "10.0.0.12", "a..com": "10.0.0.13" }, async () => {
     const fromPublic = await guardFor("https://public.example/");
     for (const [url, why] of [
       ["https://public.example/", ""],
@@ -419,14 +423,29 @@ test("away from the address given a run opens port 80 and 443 only, and the sche
     assert.equal(await fromLocalWeb.refuses("https://localhost:80/"), "");
     assert.equal(await fromLocalWeb.refuses("https://localhost/"), NOT_GIVEN);
     // From http on port 80 of a name that leads to the user's network, https
-    // on 443 of it too, where the browser goes itself (HTTPS-Upgrades); not
-    // for localhost or an address not on the public internet, which it does
-    // not try so.
-    const fromNetworkWeb = await guardFor("http://inside.example/");
-    assert.equal(await fromNetworkWeb.refuses("https://inside.example/login"), "");
-    assert.equal(await fromNetworkWeb.refuses("https://inside.example:8443/"), NOT_GIVEN);
-    assert.equal(await (await guardFor("http://10.0.0.7/")).refuses("https://10.0.0.7/"), NOT_GIVEN);
-    assert.equal(await (await guardFor("http://inside.example:8080/")).refuses("https://inside.example/"), NOT_GIVEN);
+    // on 443 of it too, where the browser goes there first itself
+    // (HTTPS-Upgrades): a name of two labels or more under one of the
+    // internet's top-level domains, in ASCII as the URL parser writes it.
+    // Not a name under a domain of a network's own or of one label, which
+    // the browser opens by http alone, as Chrome 155 and 157 did, nor
+    // localhost or an address not on the public internet: of those, port
+    // 443 is another program, which a page could have the run open.
+    for (const host of ["inside.acme.com", "fritz.box", "nas.home.arpa", "acme.xn--p1ai", "INSIDE.ACME.COM", "inside.acme.com."]) {
+      const fromNetworkWeb = await guardFor(`http://${host}/`);
+      assert.equal(fromNetworkWeb.local, true, host);
+      assert.equal(await fromNetworkWeb.refuses(`https://${host}/login`), "", host);
+      assert.equal(await fromNetworkWeb.refuses(`https://${host}:8443/`), NOT_GIVEN, host);
+    }
+    // A name of one label is one too, though it be the name of a top-level
+    // domain, as a container's app or dev, and so is one with a label left
+    // empty, which no domain holds.
+    for (const host of ["inside.example", "myapp.test", "router.lan", "nas.local", "x.internal", "intranet", "app.corp", "10.0.0.7", "app", "a..com"]) {
+      const fromNetworkWeb = await guardFor(`http://${host}/`);
+      assert.equal(fromNetworkWeb.local, true, host);
+      assert.equal(await fromNetworkWeb.refuses(`http://${host}/login`), "", host);
+      assert.equal(await fromNetworkWeb.refuses(`https://${host}/login`), NOT_GIVEN, host);
+    }
+    assert.equal(await (await guardFor("http://inside.acme.com:8080/")).refuses("https://inside.acme.com/"), NOT_GIVEN);
     // No address given, as for a manifest read from a file: the web ports
     // only, said without an address given.
     const none = await guardFor("");
