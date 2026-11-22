@@ -1357,6 +1357,19 @@ test("a browser or an ffmpeg that cannot be started stops a run before any work 
         refused({ FFMPEG_PATH: findFfmpeg() }, DEMO, `easyscreenshotkit demo: The demo needs ffmpeg, and ${findFfmpeg()} could not be started: ${short}`, { spawn: limited });
       }
     });
+    // The system out of files, which a test cannot make of the machine: the
+    // listen of the browser's proxy, the first file the start opens, fails
+    // with ENFILE, as it does then, and the run says so as the start of a
+    // program says it, and leaves nothing behind, where it would end in
+    // Node.js's bare "listen ENFILE".
+    await t.test("the system has as many files open as it may as the browser's proxy starts", { skip: !(findChrome() && findFfmpeg()) && "needs a browser and ffmpeg on this machine" }, () => {
+      const full = "the system has as many files open as it may (file table overflow). Run fewer jobs at once.";
+      const preload = at("system-files-full.js");
+      fs.writeFileSync(preload, 'const net = require("node:net");\nnet.Server.prototype.listen = function listen() {\n  process.nextTick(() => this.emit("error", Object.assign(new Error("listen ENFILE: file table overflow 127.0.0.1"), { code: "ENFILE", errno: -23, syscall: "listen", address: "127.0.0.1", port: 0 })));\n  return this;\n};\n');
+      const filesFull = (args, options) => spawnSync(process.execPath, ["-r", preload, CLI, ...args], options);
+      refused({ CHROME_PATH: findChrome() }, SHOTS, `easyscreenshotkit: ${path.basename(findChrome())} did not start: ${full}`, { spawn: filesFull });
+      refused({ CHROME_PATH: findChrome() }, DEMO, `easyscreenshotkit demo: ${path.basename(findChrome())} did not start: ${full}`, { spawn: filesFull });
+    });
     // A program another process has open for writing, as one an update is
     // writing: the system does not start it (ETXTBSY), which Node throws
     // where it says most errors in an error event, and the run ended in
