@@ -220,9 +220,11 @@ function notPublicIp(address) {
 // connection had the browser load a frame, a picture or a fetch() from a
 // service of this machine that listens on all its addresses, and the kit
 // read the sitemap robots.txt named there, with no word. A global IPv6
-// network is the user's own, whose router and other machines answer there;
-// the rest of a public IPv4 range on an interface is other people's
-// servers, so in IPv4 the address alone. An IPv6 form of an IPv4 address of
+// network is mostly the user's own, whose router and other machines answer
+// there, and on a server whose provider puts other customers' servers in
+// it, as a DigitalOcean droplet's /64, theirs, which are refused all the
+// same (the README's Limits say so); the rest of a public IPv4 range on an
+// interface is other people's servers, so in IPv4 the address alone. An IPv6 form of an IPv4 address of
 // the machine's is judged by that address (see heldIpv4()). The interfaces
 // are read as the run goes, as their addresses change while it does, at
 // most once a second (see machineNow()).
