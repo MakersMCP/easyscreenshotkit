@@ -946,6 +946,43 @@ test("on the port given, this machine's own names are the host given where they 
     assert.equal(await ask(fromTest.lookupFor("http://app2.test/private"), "app2.test"), "ENOTPUBLIC");
   }));
 
+// The texts say the host given as the run judges it. The README, SKILL.md
+// and the help of both commands say that this machine's own names are the
+// host given where they reach an address of it: the help said that a page,
+// a redirect, a sitemap or a demo's visit at localhost or 127.0.0.1 is not
+// opened, where from 127.0.0.1 a run opens localhost on its port. And
+// SKILL.md has an agent tell the user where a site of the user's leads when
+// a run stops at a move to another of the machine's or the network's
+// addresses, and offer a run of that address only once the user says it is
+// the same site: it said that such a site moved on to another address of
+// its own, and had the agent offer the run whatever the address was, though
+// the run stops in the same words at a move to another site the machine
+// serves by its name, to another program on another port, or to a sign-in
+// server, as a local app sends a visitor who has not signed in.
+test("the texts say this machine's own names are the host given where they reach an address of it, and have an agent offer a run of the address a site leads to only once the user says it is the same site", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const cli = path.join(__dirname, "..", "skills", "easyscreenshotkit", "scripts", "easyscreenshotkit.js");
+  const skill = fs.readFileSync(path.join(__dirname, "..", "skills", "easyscreenshotkit", "SKILL.md"), "utf8");
+  const texts = [
+    ["the README", fs.readFileSync(path.join(__dirname, "..", "README.md"), "utf8")],
+    ["SKILL.md", skill],
+    ["--help", spawnSync(process.execPath, [cli, "--help"], { encoding: "utf8" }).stdout],
+    ["demo --help", spawnSync(process.execPath, [cli, "demo", "--help"], { encoding: "utf8" }).stdout],
+  ];
+  for (const [where, text] of texts) {
+    const flat = text.replace(/`/g, "").replace(/\s+/g, " ");
+    assert.match(flat, /localhost, 127\.0\.0\.1 and \[::1\],? are the host given when it is one of them, where they reach an address of it/, where);
+  }
+  for (const [where, text] of texts.slice(2)) {
+    const flat = text.replace(/\s+/g, " ");
+    assert.match(flat, /from localhost the other two, and from 127\.0\.0\.1 or \[::1\] localhost\. Any other name is another host, a name under localhost too, though it leads to the same address\. Away from that host and port, a (?:page|visit step)\b/, where);
+  }
+  const flat = skill.replace(/\s+/g, " ");
+  assert.doesNotMatch(flat, /moves on to another address of its own/);
+  assert.match(flat, /and the run stops with "it leads to <address>, which is \.\.\., and not on the host and port given", that site sends its visitors on to <address>, which the run does not open from there: it can be the same site at another of its names, [^;]*, or another site or program of the machine or its network, as another site the machine serves by its name, or a sign-in server on another port, where a local app sends a visitor who has not signed in\. Tell the user where it leads, and offer a run with <address> as the address, made only once they say it is that same site; a sign-in page there means the screens are behind a login, which a run does not reach\./);
+});
+
 // Behind a proxy in fake-ip mode every name answers in 198.18.0.0/15, which
 // is not on the public internet: no host but the one given is opened, and
 // the reason names the address and that range, where it said only that a

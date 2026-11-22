@@ -97,26 +97,29 @@ From the address given a demo opens web addresses on the public internet
 only, on port 80 or 443 unless they are on the scheme, host and port given
 or at https on the host and port of an http address given, and that host and
 port when the address given is on this machine or its network, as a site you
-run there is, with https on 443 of a name under a domain of the internet,
-as intranet.acme.com, or a public IPv4 address given by http on port 80; a
-steps file's url is the address given when the command line gives none.
-A visit step to localhost, 127.0.0.1, a private network or another address
-of that kind, or to an address of this machine's own on the
-public internet, to another port of a host on the public
-internet, or to a page that redirects to one or moves on to one before it
-has loaded, stops the demo, and so does a click on a link to a page that
-moves on so; a click on a link to one, or to a page that redirects to one,
-leaves the page where it was, with a note in steps.json, and a frame or a
-window a page opens there is not loaded; a tour leaves such a page out and
-says so. A host whose name does not resolve here or gives no answer in
-10 s is not opened either, and an address given on one stops the demo. A
-host whose name answers both with an address on the public internet and
-with one the demo does not open away from the address given is not opened
-wherever the demo meets it, the address given included, which stops the
-demo, with "on a host whose name answers with an address on the public
-internet, <address>, and with one ...": to take such a site, have the
-machine answer its name with the address you mean alone, as a line in its
-hosts file does.
+run there is, with https on 443 of a name under a domain of the internet, as
+intranet.acme.com, or a public IPv4 address given by http on port 80; a
+steps file's url is the address given when the command line gives none. On
+the port given, localhost, 127.0.0.1 and [::1] are the host given when it is
+one of them, where they reach an address of it: from localhost the other
+two, and from 127.0.0.1 or [::1] localhost. Any other name is another host,
+a name under localhost too, though it leads to the same address. Away from
+that host and port, a visit step to localhost, 127.0.0.1, a private network
+or another address of that kind, or to an address of this machine's own on
+the public internet, to another port of a host on the public internet, or to
+a page that redirects to one or moves on to one before it has loaded, stops
+the demo, and so does a click on a link to a page that moves on so; a click
+on a link to one, or to a page that redirects to one, leaves the page where
+it was, with a note in steps.json, and a frame or a window a page opens
+there is not loaded; a tour leaves such a page out and says so. A host whose
+name does not resolve here or gives no answer in 10 s is not opened either,
+and an address given on one stops the demo. A host whose name answers both
+with an address on the public internet and with one the demo does not open
+away from the address given is not opened wherever the demo meets it, the
+address given included, which stops the demo, with "on a host whose name
+answers with an address on the public internet, <address>, and with one
+...": to take such a site, have the machine answer its name with the address
+you mean alone, as a line in its hosts file does.
 The browser reaches the network only through a proxy the demo starts for
 it on 127.0.0.1, which holds every request it makes to the same rule, a
 page's pictures, styles, scripts and data included, and connects to the
