@@ -436,6 +436,20 @@ function machineAddresses(host) {
   return host === "127.0.0.1" || host === "::1" ? [host] : null;
 }
 
+// The addresses of this machine that two hosts, as URLs give them, both
+// stand for where each is one of its own names (see machineAddresses()), or
+// null: localhost and 127.0.0.1 share 127.0.0.1, localhost and ::1 share
+// ::1, and 127.0.0.1 and ::1 share none, as they can be two programs on one
+// port. On the port given, a host that shares one with the host given is
+// the host given (see guardFor()), and the tour takes a link of the site
+// there at the home page's own host (see pick.js).
+function sharedAddresses(one, other) {
+  const mine = machineAddresses(lookupKey(one));
+  const theirs = mine && machineAddresses(lookupKey(other));
+  const both = theirs ? theirs.filter((address) => mine.includes(address)) : [];
+  return both.length ? both : null;
+}
+
 // A host as a URL gives it, as its addresses are asked for and kept (see
 // addressesOf()): without the brackets of an IPv6 address and the dots that
 // can end a name, every one of them, as the DNS takes rebind.example.. and
@@ -711,13 +725,8 @@ async function guardFor(start) {
   // address, stops the run at that move, which names where it leads: given
   // that name, the run takes it. shared(url): the addresses of this
   // machine the host of url stands for that the host given does too, or
-  // null.
-  const mine = local ? machineAddresses(lookupKey(from.hostname)) : null;
-  const shared = (url) => {
-    const theirs = mine && machineAddresses(lookupKey(url.hostname));
-    const both = theirs ? theirs.filter((address) => mine.includes(address)) : [];
-    return both.length ? both : null;
-  };
+  // null (see sharedAddresses()).
+  const shared = (url) => (local ? sharedAddresses(from.hostname, url.hostname) : null);
   const sameHost = (url) => hostOf(url) === hostOf(from) || Boolean(shared(url));
   const tried = web && from.protocol === "http:" && portOf(from) === "80" && triedOverHttps(from.hostname);
   const upgraded = (url) => tried && url.protocol === "https:" && portOf(url) === "443";
@@ -931,4 +940,4 @@ function throughNoProxy(message) {
   return `${text}${/[.!?]$/.test(text) ? "" : "."} easyscreenshotkit does not use the proxy ${name} names: its browser and its own requests connect to each site themselves, so on a network that reaches the web only through that proxy, it reaches no site.`;
 }
 
-module.exports = { guardFor, getChecked, hostOf, notPublicIp, ownIp, hostRefusals, refusalsProblem, unresolvedError, refusedError, otherPort, refusedHere, stopLookups, throughNoProxy, NOT_WEB, NOT_PUBLIC, NOT_GIVEN, UNRESOLVED, REFUSE_SETTING };
+module.exports = { guardFor, getChecked, hostOf, sharedAddresses, notPublicIp, ownIp, hostRefusals, refusalsProblem, unresolvedError, refusedError, otherPort, refusedHere, stopLookups, throughNoProxy, NOT_WEB, NOT_PUBLIC, NOT_GIVEN, UNRESOLVED, REFUSE_SETTING };

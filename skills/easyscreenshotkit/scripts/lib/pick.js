@@ -12,7 +12,7 @@
 // site's robots.txt asks crawlers to stay out of.
 
 const zlib = require("zlib");
-const { guardFor, getChecked, hostOf } = require("./address");
+const { guardFor, getChecked, hostOf, sharedAddresses } = require("./address");
 
 const fold = (text) =>
   String(text || "")
@@ -211,6 +211,35 @@ const SHOWCASE_SECTIONS = new Set(["pricing", "product", "tour", "integrations",
 // https://acme.com:8443/ as another site's, and a --page there stopped the
 // run, though the rule opens them.
 const siteOf = (url) => hostOf(new URL(url)).toLowerCase().replace(/^www\./, "");
+
+// A link of the site at another of this machine's own names on the home
+// page's port, as http://localhost:4000/pricing on a site given at
+// http://127.0.0.1:4000/, where the two names reach an address of the same
+// program, which the rule for the addresses a run opens takes for the host
+// given (see address.js guardFor()): the same address at the home page's
+// host, so the tour takes it as a page of the site. Jekyll writes a site's
+// links and its sitemap's addresses with its url, http://localhost:4000,
+// and `jekyll serve` names http://127.0.0.1:4000/: such a site's tour took
+// its home page alone, with no word of its other pages. Any other address,
+// as one of another site or at 127.0.0.1 from [::1], is as it was.
+function onHomeHost(url, homeUrl) {
+  const port = (u) => u.port || (u.protocol === "https:" ? "443" : "80");
+  if (!url || hostOf(url) === hostOf(homeUrl) || port(url) !== port(homeUrl) || !sharedAddresses(homeUrl.hostname, url.hostname)) return url;
+  const moved = new URL(url.href);
+  moved.hostname = homeUrl.hostname;
+  return moved;
+}
+
+// The same for an address as text, against the home page's address as
+// text, as a page's version in another language names it: the address as
+// it is when either is none.
+function atHomeHost(raw, home) {
+  try {
+    return onHomeHost(new URL(raw), new URL(home)).href;
+  } catch {
+    return raw;
+  }
+}
 
 function localeOf(pathname) {
   const first = String(pathname || "").split("/").filter(Boolean)[0] || "";
@@ -471,7 +500,7 @@ function rankLinks(links, sitemap, { home, robots = null, alternates = [], exclu
   const skipped = new Map();
   let order = 0;
   const consider = (raw, text, where) => {
-    const url = linkUrl(raw, home);
+    const url = onHomeHost(linkUrl(raw, home), homeUrl);
     if (!url || siteOf(url.href) !== site || FILE.test(url.pathname)) return;
     const key = pageKey(url.href);
     if (taken.has(key)) return;
@@ -513,10 +542,11 @@ function rankLinks(links, sitemap, { home, robots = null, alternates = [], exclu
 // keys of the pages taken) or for the home page's own.
 function routeLinks(links, { home, keys = [] }) {
   const site = siteOf(home);
+  const homeUrl = new URL(home);
   const taken = new Set([viewKey(home), ...keys]);
   const routes = new Map();
   for (const link of links) {
-    const url = pageUrl(link.href, home);
+    const url = onHomeHost(pageUrl(link.href, home), homeUrl);
     if (!url || siteOf(url.href) !== site || !routeOf(url.href)) continue;
     const key = viewKey(url.href);
     if (!taken.has(key) && !routes.has(key)) routes.set(key, { url: url.href, reason: ROUTE_LINK });
@@ -712,6 +742,8 @@ module.exports = {
   ROUTE_LINK,
   localeOf,
   siteOf,
+  onHomeHost,
+  atHomeHost,
   excludedBecause,
   kindOf,
   rankLinks,

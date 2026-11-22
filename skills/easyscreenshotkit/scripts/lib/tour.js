@@ -13,7 +13,7 @@
 const { openTab, closeTab, navigate } = require("./chrome");
 const { waitForContent, settle, walk, watchRequests } = require("./page");
 const { readInfo, readLinks, rejectAtOnce, rejectReason, slugOf, siteName, identity, pagesAsked, waitForView, notOpened, alternateNote, watchFailedMoves } = require("./shots");
-const { homeOf, pageKey, routeOf, viewKey, pathOf, readable, siteOf, rankLinks, routeLinks, visitOrder, readSiteIndex, indexNotes, kindOf, alternateFor } = require("./pick");
+const { homeOf, pageKey, routeOf, viewKey, pathOf, readable, siteOf, atHomeHost, rankLinks, routeLinks, visitOrder, readSiteIndex, indexNotes, kindOf, alternateFor } = require("./pick");
 const { TOP_COVER } = require("./record");
 const { timeLeft } = require("./time");
 const { NOT_WEB } = require("./address");
@@ -94,8 +94,11 @@ async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = 
       if (failedMove()) throw failedMove();
       let info = await readInfo(tab);
       if (info.challenge) throw Object.assign(new Error(`${nav.url} answered with a bot check ("${info.title || "a challenge page"}") instead of its page, so no demo was recorded. Open the site in a normal browser to check it.`), { refused: "a bot check instead of the page" });
-      // The site's own home page in the language asked for, when it names one.
-      const alternate = alternates && alternateFor(info.alternates, lang);
+      // The site's own home page in the language asked for, when it names
+      // one, at the home page's host when it is at another of this
+      // machine's own names on its port, as a link of the site is.
+      const named = alternates && alternateFor(info.alternates, lang);
+      const alternate = named && { ...named, href: atHomeHost(named.href, nav.url) };
       if (alternate && pageKey(alternate.href) !== pageKey(nav.url) && [siteOf(home), siteOf(nav.url)].includes(siteOf(alternate.href))) {
         const barred = chrome.guard ? await chrome.guard.refuses(alternate.href) : "";
         if (barred) notes.push(alternateNote(alternate, lang, `which is ${barred}: it was not opened`));

@@ -25,7 +25,7 @@ const crypto = require("crypto");
 const { launch, browserProblem, openTab, closeTab, navigate, currentUrl, failedWords, CRASHED, BARRED, UNREACHED } = require("./chrome");
 const { AROUND, metrics, scrollTo, walk, showsContent, waitForContent, settle, watchRequests, networkQuiet, waitForDrawn, showsLoadingSign, looksEmpty, waitForFonts, clearHover, resetPictureWait, capture, captureScreen, capturePage } = require("./page");
 const { clean } = require("./clean");
-const { homeOf, pageKey, routeOf, viewKey, pathOf, pageUrl, anchorOf, siteOf, fold, wordsOf, kindOf, rankLinks, routeLinks, visitOrder, readSiteIndex, indexNotes, localeOf, alternateFor, oneLine, ROUTE_LINK } = require("./pick");
+const { homeOf, pageKey, routeOf, viewKey, pathOf, pageUrl, anchorOf, siteOf, onHomeHost, atHomeHost, fold, wordsOf, kindOf, rankLinks, routeLinks, visitOrder, readSiteIndex, indexNotes, localeOf, alternateFor, oneLine, ROUTE_LINK } = require("./pick");
 const { pngFileIsWhole, pngSize, tagPng } = require("./png");
 const { PWA_SHOTS, LOOKED_AT, planPwa, checkManifest } = require("./pwa");
 const { renderSheet } = require("./sheet");
@@ -333,10 +333,13 @@ function identity(asked, landed, canonical = "") {
 
 // The pages asked for with --page, as the addresses to open, each with its
 // fragment. A path is read from the home page, a fragment alone
-// ("#/plants") from the address given, as a view of that page.
+// ("#/plants") from the address given, as a view of that page. One at
+// another of this machine's own names on the home page's port is taken at
+// the home page's host, as a link of the site there is (see pick.js
+// onHomeHost()).
 function pagesAsked(extra, asked, home) {
   return extra.map((raw) => {
-    const url = pageUrl(raw, String(raw).trim().startsWith("#") ? asked : home);
+    const url = onHomeHost(pageUrl(raw, String(raw).trim().startsWith("#") ? asked : home), new URL(home));
     if (!url || siteOf(url.href) !== siteOf(home)) throw new Error(`--page ${raw} is not a page of ${siteOf(home)}`);
     return url.href;
   });
@@ -1465,7 +1468,10 @@ async function takeShots(rawUrl, options = {}) {
       // answered, and a stale link to a version that is gone is no reason to
       // lose it. A browser that ended or stopped answering fails the run.
       if (lang && wanted > 1 && !(spare && failure(result))) {
-        const alternate = alternateFor(result.info.alternates, lang);
+        // At another of this machine's own names on the home page's port,
+        // it is taken at the home page's host, as a link of the site is.
+        const named = alternateFor(result.info.alternates, lang);
+        const alternate = named && { ...named, href: atHomeHost(named.href, result.nav.url) };
         if (alternate && pageKey(alternate.href) !== pageKey(result.nav.url) && [siteOf(home), siteOf(result.nav.url)].includes(siteOf(alternate.href))) {
           const barred = chrome.guard ? await chrome.guard.refuses(alternate.href) : "";
           if (barred) notes.push(alternateNote(alternate, lang, `which is ${barred}: it was not opened`));

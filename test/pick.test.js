@@ -165,6 +165,44 @@ test("the host given is the site's with or without the one dot that can end a na
   assert.equal(pick.pageKey("https://dup.example.:8443/features"), pick.pageKey("https://dup.example:8443/features"));
 });
 
+// On the home page's port, another of this machine's own names that
+// reaches an address of the home page's host is the host given to the run's
+// rule (see address.js guardFor()), so a link of the site there is a page
+// of the site, taken at the home page's host: Jekyll writes a site's links
+// and its sitemap's addresses with its url, http://localhost:4000, and
+// `jekyll serve` names http://127.0.0.1:4000/, and the tour took that
+// site's home page alone, with no candidate, no page left out and no note.
+// A name that reaches no address of the home page's host, as [::1] from
+// 127.0.0.1, or another port, is another site's, as before.
+test("a link of the site at another of this machine's own names on the home page's port is a page of the site, at the home page's host", () => {
+  const links = [
+    { href: "http://localhost:4000/pricing", text: "Pricing", where: "header" },
+    { href: "http://localhost:4000/features", text: "Features", where: "header" },
+    { href: "/pricing", text: "Pricing", where: "footer" },
+    { href: "http://localhost:4000/login", text: "Log in", where: "header" },
+    { href: "http://[::1]:4000/customers", text: "Customers", where: "header" },
+    { href: "http://localhost:5000/integrations", text: "Integrations", where: "header" },
+  ];
+  const sitemap = ["http://localhost:4000/how-it-works", "http://localhost:4000/features"];
+  const ranked = pick.rankLinks(links, sitemap, { home: "http://127.0.0.1:4000/" });
+  assert.deepEqual(ranked.candidates.map((c) => c.url).sort(), ["http://127.0.0.1:4000/features", "http://127.0.0.1:4000/how-it-works", "http://127.0.0.1:4000/pricing"]);
+  assert.deepEqual(ranked.skipped, [{ url: "http://127.0.0.1:4000/login", reason: "sign-in or sign-up page" }]);
+  // A page taken already is not offered again from a link at that name.
+  const taken = pick.rankLinks(links, [], { home: "http://127.0.0.1:4000/", exclude: ["http://127.0.0.1:4000/pricing"] });
+  assert.deepEqual(taken.candidates.map((c) => c.url), ["http://127.0.0.1:4000/features"]);
+  // From [::1] and from localhost the same, each at its own host.
+  assert.deepEqual(pick.rankLinks([{ href: "http://localhost:4000/pricing", text: "Pricing", where: "header" }, { href: "http://127.0.0.1:4000/features", text: "Features", where: "header" }], [], { home: "http://[::1]:4000/" }).candidates.map((c) => c.url), ["http://[::1]:4000/pricing"]);
+  assert.deepEqual(pick.rankLinks([{ href: "http://127.0.0.1:4000/pricing", text: "Pricing", where: "header" }, { href: "http://[::1]:4000/features", text: "Features", where: "header" }], [], { home: "http://localhost:4000/" }).candidates.map((c) => c.url).sort(), ["http://localhost:4000/features", "http://localhost:4000/pricing"]);
+  // Over https on that port too, and not a name under localhost.
+  assert.deepEqual(pick.rankLinks([{ href: "https://localhost:4443/pricing", text: "Pricing", where: "header" }, { href: "https://app.localhost:4443/features", text: "Features", where: "header" }], [], { home: "https://127.0.0.1:4443/" }).candidates.map((c) => c.url), ["https://127.0.0.1:4443/pricing"]);
+  // A #route there is listed at the home page's host, and a page's version
+  // in another language there is taken at it.
+  assert.deepEqual(pick.routeLinks([{ href: "http://localhost:4000/app/#/plants" }, { href: "http://[::1]:4000/app/#/light" }], { home: "http://127.0.0.1:4000/" }).map((r) => r.url), ["http://127.0.0.1:4000/app/#/plants"]);
+  assert.equal(pick.atHomeHost("http://localhost:4000/tr/", "http://127.0.0.1:4000/"), "http://127.0.0.1:4000/tr/");
+  assert.equal(pick.atHomeHost("http://localhost:4001/tr/", "http://127.0.0.1:4000/"), "http://localhost:4001/tr/");
+  assert.equal(pick.atHomeHost("https://acme.com/tr/", "https://acme.com/"), "https://acme.com/tr/");
+});
+
 test("a #route is a view of its own; #/, #! and an anchor are not", () => {
   assert.equal(pick.routeOf("https://acme.com/app/#/plants"), "#/plants");
   assert.equal(pick.routeOf("https://acme.com/#/plant/Fern"), "#/plant/Fern");
