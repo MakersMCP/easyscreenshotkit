@@ -170,6 +170,21 @@ test("a MAKERSMCP_REFUSE_ADDRESSES that does not parse stops every command befor
     }
     const checked = run("127.0.0.0/8", "--pwa-check", "http://127.0.0.1:9/");
     assert.deepEqual([checked.status, checked.stderr], [1, "easyscreenshotkit: Could not read http://127.0.0.1:9/: it is at 127.0.0.1, an address MAKERSMCP_REFUSE_ADDRESSES refuses\n"]);
+    // So is the address given at 0.0.0.0, in any form, and at ::, which a
+    // connection takes to 127.0.0.1 and ::1: judged as written, each was
+    // opened, and the program on this machine's loopback at that port
+    // answered.
+    for (const [given, at, loop] of [["http://0.0.0.0:9/", "0.0.0.0", "127.0.0.1"], ["http://0:9/", "0.0.0.0", "127.0.0.1"], ["http://[::ffff:0.0.0.0]:9/", "::ffff:0:0", "127.0.0.1"], ["http://[::]:9/", "::", "::1"]]) {
+      const why = `it is at ${at}, where a connection reaches ${loop}, an address MAKERSMCP_REFUSE_ADDRESSES refuses`;
+      const shown = new URL(given).href;
+      for (const [name, args] of [["easyscreenshotkit", [given, "--out", out]], ["easyscreenshotkit demo", ["demo", given, "--out", out]]]) {
+        const refused = run("127.0.0.0/8,::1", ...args);
+        assert.deepEqual([refused.status, refused.stderr], [1, `${name}: Could not open ${shown}: ${why}.\n`], args.join(" "));
+        assert.equal(fs.existsSync(out), false, args.join(" "));
+      }
+      const read = run("127.0.0.0/8,::1", "--pwa-check", given);
+      assert.deepEqual([read.status, read.stderr], [1, `easyscreenshotkit: Could not read ${shown}: ${why}\n`], given);
+    }
     // The demo asks ffmpeg its version and encoders before the address is
     // judged, as before; no browser started at all. That ffmpeg wrote its
     // line says the stand-ins write where the test reads, whatever TMPDIR

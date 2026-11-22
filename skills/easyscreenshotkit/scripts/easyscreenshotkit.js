@@ -114,8 +114,9 @@ MAKERSMCP_REFUSE_ADDRESSES, a comma list of IP addresses and CIDR ranges,
 names addresses the machine refuses besides, as a service that runs the
 kit for others names its own: no page is opened, no file read and no
 request of the browser's sent at one as the run looks a name up, the
-address given included, which then stops the run. Empty or unset, it
-refuses nothing more; a value that does not parse stops every command
+address given included, which then stops the run, nor at 0.0.0.0 or ::,
+which a connection takes to the 127.0.0.1 or ::1 it names. Empty or unset,
+it refuses nothing more; a value that does not parse stops every command
 before any work, with exit code 2.
 
 An address of another kind that a page goes to, such as mailto:, is no

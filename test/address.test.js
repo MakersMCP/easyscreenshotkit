@@ -995,6 +995,64 @@ test("an entry of MAKERSMCP_REFUSE_ADDRESSES that holds every IPv4 address in an
   assert.equal(hostRefusals("2002::/17").has("185.137.215.163"), false);
 });
 
+// A connection to 0.0.0.0 reaches this machine's 127.0.0.1, and one to ::
+// reaches ::1, so a setting that refuses those refuses 0.0.0.0 in each of
+// its forms and ::, as the address given, at a page and for a name found
+// there, by the shared table (address-cases.json), and names both the
+// address and the one it reaches. Judged as written, with 127.0.0.0/8 and
+// ::1 refused, the address given at 0.0.0.0, 0, [::ffff:0.0.0.0] or [::],
+// and at a name whose answer was 0.0.0.0, was opened, and the program on
+// this machine's loopback at that port answered.
+test("MAKERSMCP_REFUSE_ADDRESSES that refuses 127.0.0.1 or ::1 refuses 0.0.0.0 and ::, which a connection takes there, in every form and for a name found at one", () =>
+  withNames({ "zero.example": "0.0.0.0", "zero6.example": "::", "zeromap.example": "::ffff:0.0.0.0", "zeropage.example": "93.184.215.14" }, async () => {
+    const reached = (address, loop) => `at ${address}, where a connection reaches ${loop}, an address ${SETTING} refuses`;
+    const lookup = (guard, raw) => new Promise((resolve) => guard.lookupFor(raw)(new URL(raw).hostname, { all: true }, (err, list) => resolve(err || list)));
+    for (const [loop, list] of Object.entries(CASES.reachesLoopback)) {
+      const other = loop === "::1" ? "127.0.0.1" : "::1";
+      for (const address of list) {
+        assert.deepEqual([hostRefusals(loop).has(address), hostRefusals(loop).via(address)], [true, loop], address);
+        assert.equal(hostRefusals(other).has(address), false, address);
+        assert.equal(hostRefusals("185.137.215.163").has(address), false, address);
+      }
+    }
+    // A range that holds 127.0.0.1 does as well; one that names 0.0.0.0
+    // names it itself; any other address of 0.0.0.0/8 reaches no program of
+    // this machine.
+    assert.deepEqual([hostRefusals("127.0.0.0/8").has("0.0.0.0"), hostRefusals("127.0.0.0/8").via("0.0.0.0")], [true, "127.0.0.1"]);
+    assert.deepEqual([hostRefusals("0.0.0.0/8").has("0.0.0.0"), hostRefusals("0.0.0.0/8").via("0.0.0.0")], [true, ""]);
+    assert.equal(hostRefusals("127.0.0.1").has("0.1.2.3"), false);
+    assert.equal(hostRefusals("127.0.0.1").has("::1"), false);
+    assert.equal(hostRefusals("::1").has("0.0.0.0"), false);
+    await withSetting("127.0.0.0/8,::1", async () => {
+      const page = await guardFor("https://zeropage.example/");
+      for (const [loop, hosts] of Object.entries(CASES.reachesLoopbackHosts)) {
+        for (const host of hosts) {
+          const url = `http://${host}:3000/`;
+          const guard = await guardFor(url);
+          const why = reached(new URL(url).hostname.replace(/^\[|\]$/g, ""), loop);
+          assert.equal(guard.refused, why, url);
+          assert.equal(refusedError(url, guard).message, `Could not open ${url}: it is ${why}.`);
+          assert.equal(await guard.refuses(`${url}app.js`), why, url);
+          assert.equal(await page.refuses(url), why, url);
+        }
+      }
+      for (const [host, address, loop] of [["zero.example", "0.0.0.0", "127.0.0.1"], ["zero6.example", "::", "::1"], ["zeromap.example", "::ffff:0.0.0.0", "127.0.0.1"]]) {
+        const url = `http://${host}:3000/`;
+        const guard = await guardFor(url);
+        assert.equal(guard.refused, reached(address, loop), url);
+        const answer = await lookup(guard, `${url}robots.txt`);
+        assert.deepEqual({ code: answer.code, refused: answer.refused }, { code: "ENOTPUBLIC", refused: `it is ${reached(address, loop)}` }, url);
+      }
+      // 127.0.0.1 itself, as before.
+      assert.equal((await guardFor("http://127.0.0.1:3000/")).refused, here("127.0.0.1"));
+    });
+    // Unset, 0.0.0.0 given is the user's own, as 127.0.0.1 is.
+    await withSetting(undefined, async () => {
+      const guard = await guardFor("http://0.0.0.0:3000/");
+      assert.deepEqual([guard.local, guard.refused], [true, ""]);
+    });
+  }));
+
 // A file the kit reads itself is held to the setting too, on the host and
 // port given on this machine, whose lookup the run otherwise leaves to the
 // system: no request is sent to an address it names.

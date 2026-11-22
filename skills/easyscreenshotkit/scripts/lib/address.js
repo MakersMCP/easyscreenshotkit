@@ -72,6 +72,9 @@ const otherPort = (port, given) => `on port ${port}, not 80 or 443${given ? ", a
 // host that the setting refuses.
 const REFUSE_SETTING = "MAKERSMCP_REFUSE_ADDRESSES";
 const refusedHere = (address) => `at ${address}, an address ${REFUSE_SETTING} refuses`;
+// One the setting refuses as the address a connection to it reaches, this
+// machine's 127.0.0.1 or ::1 (see hostRefusals()).
+const reachesHere = (address, reached) => `at ${address}, where a connection reaches ${reached}, an address ${REFUSE_SETTING} refuses`;
 
 // The ports a run opens on any host on the public internet: those of the
 // web. Any other is opened only on the scheme, host and port of the address
@@ -271,14 +274,22 @@ const insideIp = (address) => notPublicIp(address) || Boolean(ownIp(address));
 // opened 64:ff9b:1::7f00:1 and 2001:0:7f00:1:: with 127.0.0.1 refused. An
 // IPv6 entry refuses the IPv6 addresses it covers, and one in such a form,
 // local use prefix included, the IPv4 address or range it holds as well
-// (see heldRange()). An empty or missing value refuses nothing more.
+// (see heldRange()). A connection to 0.0.0.0 goes to this machine's
+// 127.0.0.1, and one to :: to its ::1, so 0.0.0.0 in every form, the IPv6
+// ones that hold it too, is judged as 127.0.0.1 as well, and :: as ::1:
+// judged as written, with 127.0.0.0/8 and ::1 refused, the address given at
+// 0.0.0.0, 0, [::ffff:0.0.0.0] or [::], or at a name whose answer was
+// 0.0.0.0, was opened, and the program on this machine's loopback at that
+// port answered. An empty or missing value refuses nothing more.
 // A value that does not parse throws, naming the setting, so that a run
 // stops before any work: a run that went on would open what the host meant
 // to refuse. So does an entry that holds every IPv4 address, as
 // 64:ff9b::/96 and 2002::/16 do, which would refuse them all: an entry a
 // host copies from a firewall's list of IPv6 ranges it refuses whole.
 // has(address): whether an address, as a URL or a lookup gives it, is one
-// of those. Read again for each run, and parsed once a value.
+// of those; via(address): for one the setting refuses only as the address a
+// connection to it reaches, that address, 127.0.0.1 or ::1, else "". Read
+// again for each run, and parsed once a value.
 const ENTRY = /^([0-9A-Fa-f:.]+)(?:\/(\d{1,3}))?$/;
 const settings = new Map();
 
@@ -322,20 +333,27 @@ function hostRefusals(value = process.env[REFUSE_SETTING]) {
     if (family === 4 || held) fours++;
     size++;
   }
-  const has = (address) => {
-    if (!size) return false;
+  // What the list says of an address: "" for one it does not refuse, "self"
+  // for one it names, or the loopback address it names that a connection to
+  // the address reaches.
+  const verdict = (address) => {
+    if (!size) return "";
     const ip = bareIp(address);
     const family = net.isIP(ip);
-    if (family === 4) return v4.check(ip, "ipv4");
-    if (family !== 6) return false;
-    if (v6.check(ip, "ipv6")) return true;
+    const four = (one) => (v4.check(one, "ipv4") ? "self" : one === "0.0.0.0" && v4.check("127.0.0.1", "ipv4") ? "127.0.0.1" : "");
+    if (family === 4) return four(ip);
+    if (family !== 6) return "";
+    if (v6.check(ip, "ipv6")) return "self";
     const groups = groupsOf(ip);
-    if (!groups) return false;
-    if (fours && localNat64(groups)) return true;
-    const held = [heldIpv4(groups), ...teredoIpv4(groups)].filter(Boolean);
-    return held.some((one) => v4.check(one, "ipv4"));
+    if (!groups) return "";
+    if (fours && localNat64(groups)) return "self";
+    const named = [heldIpv4(groups), ...teredoIpv4(groups)].filter(Boolean).map(four);
+    if (named.includes("self")) return "self";
+    return named.find(Boolean) || (groups.every((group) => group === 0) && v6.check("::1", "ipv6") ? "::1" : "");
   };
-  const refusals = { size, has };
+  const has = (address) => Boolean(verdict(address));
+  const via = (address) => (verdict(address) === "self" ? "" : verdict(address));
+  const refusals = { size, has, via };
   settings.set(text, refusals);
   return refusals;
 }
@@ -634,25 +652,32 @@ async function guardFor(start) {
       return null;
     }
   };
-  // The first address of a host that the host's setting refuses, or "".
-  // A name that cannot be looked up has none to judge: it is refused as
-  // such.
+  // Why the host's setting refuses an address of a host, as said after "it
+  // is", by the address, and by the address a connection to it reaches
+  // where that is the one it names.
+  const refusedWhy = (address) => {
+    const reached = refusals.via(address);
+    return reached ? reachesHere(bareIp(address), reached) : refusedHere(bareIp(address));
+  };
+  // Why the host's setting refuses the first address of a host that it
+  // refuses, or "". A name that cannot be looked up has none to judge: it
+  // is refused as such.
   const refusedAt = async (hostname) => {
     if (!refusals.size) return "";
     const { list } = await addressesFor(hostname);
     const hit = (list || []).find((answer) => refusals.has(answer.address));
-    return hit ? hit.address : "";
+    return hit ? refusedWhy(hit.address) : "";
   };
   const firstRefused = web ? await refusedAt(from.hostname) : "";
   return {
     local,
     unresolved: at === "unknown" ? await lookupWhy(from.hostname) : "",
-    refused: firstRefused ? refusedHere(firstRefused) : mixed,
+    refused: firstRefused || mixed,
     async refuses(raw) {
       const url = parse(raw);
       if (!url || !/^https?:$/.test(url.protocol)) return NOT_WEB;
       const hit = await refusedAt(url.hostname);
-      if (hit) return refusedHere(hit);
+      if (hit) return hit;
       if (ofMixed(url)) return mixed;
       const port = portOf(url);
       const anyPort = own(url) || WEB_PORTS.has(port);
@@ -700,7 +725,7 @@ async function guardFor(start) {
         addressesFor(hostname).then(({ list, error }) => {
           if (error) return callback(error);
           const hit = list.find((answer) => refusals.has(answer.address));
-          if (hit) return refuse(refusedHere(hit.address));
+          if (hit) return refuse(refusedWhy(hit.address));
           if (ofMixed(url) && lookupKey(hostname) === lookupKey(url.hostname)) return refuse(mixed);
           if (!inside && list.some((answer) => insideIp(answer.address))) return refuse(insideWhy(hostname, list, local));
           const family = options && options.family;
