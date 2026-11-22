@@ -483,12 +483,14 @@ async function loadImage(src, base, guard) {
 // its own, where the check cannot say whether it shows it, on another port,
 // at an address MAKERSMCP_REFUSE_ADDRESSES names, on this machine or its
 // network named by a manifest file, or at another address of this machine
-// named by a manifest of a site given there, and one on a host whose
-// lookup gave no answer in time. Could not be loaded: one no visitor's
-// Chrome loads either, on a host whose name does not exist, as a typo in a
-// CDN's host, not on the public internet in a manifest of a site on it, as
-// a localhost address left from development, or that leads to an address
-// that is no web address. Each was listed as not read, with nothing to fix.
+// named by a manifest of a site given there, one on a host whose name
+// answers both on the public internet and off it (see address.js
+// mixedWhy()), and one on a host whose lookup gave no answer in time.
+// Could not be loaded: one no visitor's Chrome loads either, on a host
+// whose name does not exist, as a typo in a CDN's host, not on the public
+// internet in a manifest of a site on it, as a localhost address left from
+// development, or that leads to an address that is no web address. Each
+// was listed as not read, with nothing to fix.
 async function unreadAs(err, guard, target) {
   if (!err || !err.refused) return false;
   if (err.why === NOT_WEB) return false;

@@ -483,14 +483,15 @@ test("a screenshot on a host written with two dots at its end is read at the add
 test("--pwa-check counts a screenshot on a host that does not exist, or on this machine in a site's manifest on the public internet, as one that could not be loaded, and words several as several", async () => {
   const dns = require("node:dns");
   const http = require("node:http");
-  const names = { "public-site.example": "93.184.215.14", "cdn-other.example": "93.184.215.15" };
+  const names = { "public-site.example": "93.184.215.14", "cdn-other.example": "93.184.215.15", "cdn-mixed.example": ["93.184.215.15", "10.0.0.7"], "cdn-inside.example": "10.0.0.8" };
   const failing = { "cdn-typo.example": "ENOTFOUND", "cdn-busy.example": "EAI_AGAIN" };
   const lookup = dns.lookup;
   dns.lookup = (host, options, callback) => {
     if (typeof options === "function") [options, callback] = [{}, options];
     if (failing[host]) return process.nextTick(callback, Object.assign(new Error(`getaddrinfo ${failing[host]} ${host}`), { code: failing[host], hostname: host }));
     if (!names[host]) return lookup(host, options, callback);
-    process.nextTick(callback, null, options && options.all ? [{ address: names[host], family: 4 }] : names[host], 4);
+    const list = [names[host]].flat();
+    process.nextTick(callback, null, options && options.all ? list.map((address) => ({ address, family: 4 })) : list[0], 4);
   };
   const screenshots = [
     { src: "https://cdn-typo.example/s/wide.png", sizes: "1920x1080", type: "image/png", form_factor: "wide" },
@@ -501,8 +502,15 @@ test("--pwa-check counts a screenshot on a host that does not exist, or on this 
     { src: "https://cdn-typo.example/s/again.png", sizes: "1080x1920", type: "image/png", form_factor: "narrow" },
     { src: "/s/moved.png", sizes: "1080x1920", type: "image/png", form_factor: "narrow" },
   ];
+  // A second manifest of the site, whose wide screenshot is on a name that
+  // answers both on the public internet and off it.
+  const mixedShots = [
+    { src: "https://cdn-mixed.example/s/wide.png", sizes: "1920x1080", type: "image/png", form_factor: "wide" },
+    { src: "https://cdn-inside.example/s/narrow.png", sizes: "1080x1920", type: "image/png", form_factor: "narrow" },
+  ];
   const { server, origin } = await serve((req, res) => {
     if (req.url === "/app.webmanifest") return res.writeHead(200, { "Content-Type": "application/manifest+json" }).end(JSON.stringify({ name: "Acme", screenshots }));
+    if (req.url === "/mixed.webmanifest") return res.writeHead(200, { "Content-Type": "application/manifest+json" }).end(JSON.stringify({ name: "Acme", screenshots: mixedShots }));
     if (req.url === "/s/moved.png") return res.writeHead(302, { Location: "mailto:shots@acme.example" }).end();
     res.writeHead(404).end();
   });
@@ -557,6 +565,30 @@ test("--pwa-check counts a screenshot on a host that does not exist, or on this 
       ],
     );
     assert.ok(fromFile.unchecked.includes("To have a screenshot on http://localhost:9 or https://cdn-other.example:8443 read, give the check the manifest's own address on its host and port: the host and port of the address it is given are the check's own."), fromFile.unchecked.join("\n"));
+    // A screenshot on a name that answers both on the public internet and
+    // off it is one the check did not read, in the words the run refuses
+    // such a name with wherever it meets it, and its side is not known: the
+    // check cannot say whether a visitor's Chrome loads it, from which of
+    // its answers. Before such a name had its own words, it was one not on
+    // the public internet, listed to fix as one that could not be loaded,
+    // and its side was said to get the plain install dialog; no test held
+    // either.
+    const MIXED = "on a host whose name answers with an address on the public internet, 93.184.215.15, and with one that is not, 10.0.0.7";
+    const mixed = await checkManifest({ url: "http://public-site.example/mixed.webmanifest" });
+    assert.deepEqual(mixed.screenshots.map((shot) => [shot.n, shot.unread, shot.error]), [
+      [1, `it is ${MIXED}`, ""],
+      [2, "", "it is not on the public internet"],
+    ]);
+    assert.deepEqual(mixed.unchecked, [
+      "Desktops: the check did not read screenshot 1, so it cannot say whether they get the richer install dialog.",
+      `Screenshot 1 (https://cdn-mixed.example/s/wide.png): not read, as it is ${MIXED}: the check cannot say whether Chrome shows it.`,
+    ]);
+    assert.ok(mixed.problems.includes("Screenshot 2 (https://cdn-inside.example/s/narrow.png): could not be loaded (it is not on the public internet)."), mixed.problems.join("\n"));
+    assert.ok(!mixed.problems.some((problem) => /^Desktops/.test(problem)), mixed.problems.join("\n"));
+    assert.equal(mixed.ok, false);
+    // The README lists it with the screenshots the check does not read.
+    const readme = fs.readFileSync(path.join(__dirname, "..", "README.md"), "utf8");
+    assert.match(readme, /A screenshot the check does not read, from a manifest file or a manifest on the web, is listed as not read, with the reason: [^\n]* That is a screenshot on another port, [^\n]*, on a host whose name answers both with an address on the public internet and with one the run does not open away from the address given, or on a host whose name gave no answer\./);
   } finally {
     dns.lookup = lookup;
     http.get = saved;
