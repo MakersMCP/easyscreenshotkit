@@ -921,10 +921,13 @@ const UNREACHED_GIVEN = /^Could not (?:open|read) (\S+): (?:net::ERR_(?:NAME_NOT
 // the word, when one of those settings is set, that the kit does not use
 // the proxy it names; the setting's value is not said, as it can hold a
 // password. An address of this machine or of a private network by its
-// form, as a server under development that is not running, gets no such
-// word. On a server or a CI runner that reaches the web only through such
-// a proxy, 0.1.3's browser went through it; without this word a run there
-// gave only the browser's words for a connection that failed.
+// form, as a server under development that is not running, a name under
+// .local or of one label among them (see networkName()), as a device of
+// the user's network or an intranet's host that a network's proxy
+// settings send past the proxy, gets no such word. On a server or a CI
+// runner that reaches the web only through such a proxy, 0.1.3's browser
+// went through it; without this word a run there gave only the browser's
+// words for a connection that failed.
 function throughNoProxy(message) {
   const name = PROXY_SETTINGS.find((one) => process.env[one]);
   const found = name ? UNREACHED_GIVEN.exec(String(message)) : null;
@@ -935,7 +938,7 @@ function throughNoProxy(message) {
   } catch {
     return message;
   }
-  if (localName(host) || (net.isIP(bareIp(host)) && insideIp(host))) return message;
+  if (localName(host) || networkName(host) || (net.isIP(bareIp(host)) && insideIp(host))) return message;
   const text = String(message).trim();
   return `${text}${/[.!?]$/.test(text) ? "" : "."} easyscreenshotkit does not use the proxy ${name} names: its browser and its own requests connect to each site themselves, so on a network that reaches the web only through that proxy, it reaches no site.`;
 }

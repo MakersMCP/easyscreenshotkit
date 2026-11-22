@@ -1521,6 +1521,12 @@ test("a run that cannot reach the address given says that the kit does not use t
     "Could not open http://127.0.0.1:3000/: net::ERR_CONNECTION_REFUSED",
     "Could not open http://localhost:3000/: net::ERR_CONNECTION_REFUSED",
     "Could not open http://192.168.1.20/: net::ERR_ADDRESS_UNREACHABLE",
+    // A name of the machine's networks by its form, as a device of the
+    // user's network or an intranet's host, which a network's proxy
+    // settings send past the proxy.
+    "Could not open http://octopi.local/: net::ERR_CONNECTION_REFUSED",
+    "Could not open http://intranet/wiki: net::ERR_CONNECTION_TIMED_OUT",
+    "Could not open https://nas:8443/: it is on a host whose name could not be looked up (no such name).",
     "Could not read https://acme.com/manifest.json, the manifest https://acme.com/ links: ECONNREFUSED",
     "Could not open https://acme.com/: net::ERR_CERT_AUTHORITY_INVALID",
     "Could not open https://acme.com/: it is at 185.137.215.163, an address MAKERSMCP_REFUSE_ADDRESSES refuses.",
@@ -1532,6 +1538,9 @@ test("a run that cannot reach the address given says that the kit does not use t
     for (const message of failed) assert.equal(throughNoProxy(message), `${message}${/[.]$/.test(message) ? "" : "."}${word("HTTPS_PROXY")}`, message);
     for (const message of kept) assert.equal(throughNoProxy(message), message, message);
     delete process.env.HTTPS_PROXY;
+    // The README says which addresses get no such word.
+    const readme = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "README.md"), "utf8");
+    assert.match(readme, /naming the setting and not its value, unless that address is the machine's or a private network's by its form, as `localhost:3000`, `192\.168\.1\.20` or a name under `\.local` or of one label\./);
     // Each of the six settings, set alone, is named.
     for (const name of names) {
       process.env[name] = "socks5://127.0.0.1:1080";
