@@ -33,6 +33,23 @@ const DESKTOP = { width: 1200, height: 800, scale: 1, mobile: false, touch: fals
 const tempDir = () => fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "easyscreenshotkit-proxy-"));
 const html = { "Content-Type": "text/html; charset=utf-8" };
 
+// A connection the proxy dials, refused at once, as one to a closed port is.
+function refused(options) {
+  const socket = new net.Socket();
+  process.nextTick(() => socket.destroy(Object.assign(new Error(`connect ECONNREFUSED ${options.host}:${options.port}`), { code: "ECONNREFUSED" })));
+  return socket;
+}
+
+// Every connection the proxy dials to a port refused so: a test that closed
+// a server of its own and counted on its port staying closed got the answer
+// of a program that another test or job of the machine had started on it
+// meanwhile. restore() puts the dialer back.
+function refusing(port) {
+  const before = dialer.connect;
+  dialer.connect = (options) => (Number(options.port) === Number(port) ? refused(options) : before(options));
+  return { restore: () => (dialer.connect = before) };
+}
+
 // A server that counts every connection made to it and what came first on
 // each: what a test's request must never reach.
 async function trap() {
@@ -189,6 +206,7 @@ test("the proxy answers its probe itself, refuses all with no rule, and keeps wh
   const closed = await serve((req, res) => res.end("gone"));
   const closedOrigin = closed.origin;
   await new Promise((resolve) => closed.server.close(resolve));
+  const down = refusing(new URL(closedOrigin).port);
   const guard = await guardFor(`${closedOrigin}/`);
   const proxy = await startProxy(() => guard);
   const none = await startProxy(() => null);
@@ -227,6 +245,7 @@ test("the proxy answers its probe itself, refuses all with no rule, and keeps wh
     assert.equal(none.refused.get(new URL(site.origin).host), NO_RULE);
     assert.equal(await proxy.reachable(), "");
   } finally {
+    down.restore();
     proxy.close();
     none.close();
     site.server.close();
@@ -291,9 +310,6 @@ test("the proxy keeps the last outcome for each host and port, by the way it was
 // server.
 test("the proxy tries each address of a host, the next beside one that has not connected, then two more, and its close() ends what is under way", { timeout: 60_000 }, async () => {
   const site = await serve((req, res) => res.end(`site ${req.url}`));
-  const closed = await serve((req, res) => res.end("gone"));
-  const closedPort = Number(new URL(closed.origin).port);
-  await new Promise((resolve) => closed.server.close(resolve));
   const made = [];
   const silent = [];
   let madeByFailure = 0;
@@ -301,7 +317,7 @@ test("the proxy tries each address of a host, the next beside one that has not c
   dialer.connect = (options) => {
     made.push(`${options.host}:${options.port}`);
     if (options.host === "93.184.215.41") return before({ ...options, host: "127.0.0.1", port: Number(new URL(site.origin).port), family: 4 });
-    if (options.host === "93.184.215.42") return before({ ...options, host: "127.0.0.1", port: closedPort, family: 4 });
+    if (options.host === "93.184.215.42") return refused(options);
     const socket = new net.Socket();
     // An address this machine has no way to fails at once; how many
     // connections were made by the time that failure has been heard is
@@ -436,9 +452,6 @@ test("a connection the network loses has another started beside it, and the page
     assert.ok(lost.length >= 3 && lost.every((socket) => socket.destroyed));
     // A host whose one address refuses the connection started beside the
     // lost one is not waited for: it refuses, and the request fails then.
-    const closed = await serve((req, res) => res.end("gone"));
-    const closedPort = Number(new URL(closed.origin).port);
-    await new Promise((resolve) => closed.server.close(resolve));
     n = 0;
     dialer.connect = (options) => {
       if (n++ === 0) {
@@ -446,7 +459,7 @@ test("a connection the network loses has another started beside it, and the page
         lost.push(socket);
         return socket;
       }
-      return before({ ...options, host: "127.0.0.1", port: closedPort, family: 4 });
+      return refused(options);
     };
     const started = Date.now();
     assert.equal(await unanswered(proxy.port, "http://lossy.example/d"), "ECONNRESET");
@@ -2347,6 +2360,7 @@ test("a site that is down is said so in the browser's own words through the prox
   const gone = await serve((req, res) => res.end("gone"));
   const port = new URL(gone.origin).port;
   await new Promise((resolve) => gone.server.close(resolve));
+  const down = refusing(port);
   let chrome = null;
   try {
     chrome = await launch();
@@ -2361,6 +2375,7 @@ test("a site that is down is said so in the browser's own words through the prox
     }
   } finally {
     if (chrome) await chrome.close();
+    down.restore();
   }
 });
 
@@ -2632,9 +2647,6 @@ test("a page asked for on another port of the site's host is named with why it i
 // visited it, with "<url> could not be opened.".
 test("a page that moves on to an address the browser cannot open is not taken as the browser's error page", { skip: noBrowser, timeout: 400_000 }, () =>
   withNames({ "moves.acme.example": "93.184.215.14", "dead.acme.example": "93.184.215.15", "hole.acme.example": "93.184.215.16", "home-moves.acme.example": "93.184.215.14" }, async () => {
-    const closed = await serve((req, res) => res.end("gone"));
-    const closedPort = Number(new URL(closed.origin).port);
-    await new Promise((resolve) => closed.server.close(resolve));
     const { server, origin } = await serve((req, res) => {
       const to = { "/moves-dead": "http://dead.acme.example/landing", "/moves-hole": "http://hole.acme.example/landing", "/moves-thrice": "/thrice-1", "/thrice-1": "/thrice-2", "/thrice-2": "http://dead.acme.example/landing" }[req.url];
       const moving = req.url === "/" && String(req.headers.host).startsWith("home-moves.") ? "http://dead.acme.example/landing" : "";
@@ -2644,7 +2656,12 @@ test("a page that moves on to an address the browser cannot open is not taken as
       if (/thrice/.test(req.url)) return res.writeHead(200, html).end(`<!doctype html><title>Acme | Moving</title><h1>Moving</h1><p>This page moves on once its banner is hidden.</p><div style="height:1400px"></div><div id="banner" style="position:fixed;bottom:0;left:0;right:0;height:60px;background:#222;color:#fff">We use cookies on this site. <button>Accept</button></div><script>new ResizeObserver(([seen]) => { if (seen.contentRect.height === 0 && !window.moving) { window.moving = true; location.href = ${JSON.stringify(to)}; } }).observe(document.getElementById("banner"));</script>`);
       res.writeHead(200, html).end(`<!doctype html><title>Acme | Moving</title><h1>Moving</h1><p>This page moves on.</p><div style="height:1400px"></div><script>addEventListener("load", () => setTimeout(() => (location.href = ${JSON.stringify(to)}), 300));</script>`);
     });
-    const stand = reachAt({ "93.184.215.14": `127.0.0.1:${new URL(origin).port}`, "93.184.215.15": `127.0.0.1:${closedPort}` });
+    // dead.acme.example's address, 93.184.215.15, refuses each connection,
+    // as reachAt() refuses one to an address it does not stand in for: a
+    // port of this machine a server of the test's own had left, whose
+    // program another test or job could take meanwhile, gave the page's
+    // move that program's answer now and then.
+    const stand = reachAt({ "93.184.215.14": `127.0.0.1:${new URL(origin).port}` });
     const reached = dialer.connect;
     dialer.connect = (options) => {
       if (options.host !== "93.184.215.16") return reached(options);
