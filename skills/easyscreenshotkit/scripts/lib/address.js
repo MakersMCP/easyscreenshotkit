@@ -640,27 +640,38 @@ async function guardFor(start) {
   // as a server holds, which the run takes for this machine (see ownIp()).
   // Of a host the browser does not try so, as myapp.test, port 443 is
   // another program, which a page of the site could have the run open.
-  // On the port given, this machine's own names (localhost, a name under
-  // it, 127.0.0.1 and ::1) are the host given when it is one of them, where
-  // they reach an address of it, which is all they reach (see lookupFor()):
-  // a site given at http://127.0.0.1:4000/ whose pages name their styles,
-  // scripts and pictures at http://localhost:4000/, as Jekyll writes them,
-  // was taken without them, where 0.1.3, which judged documents alone, took
-  // them. 127.0.0.1 and ::1 reach no address of each other, and can be two
-  // programs on one port. shared(url): the addresses of this machine the
-  // host of url stands for that the host given does too, or null.
-  const mine = local ? machineAddresses(lookupKey(from.hostname)) : null;
-  const shared = (url) => {
-    const theirs = mine && machineAddresses(lookupKey(url.hostname));
-    const both = theirs ? theirs.filter((address) => mine.includes(address)) : [];
-    return both.length ? both : null;
+  // On the port given, a host every address of which is one of the host
+  // given's, as the run looks it up, is the host given, the same program on
+  // that port: a site a server serves at an address of its own, given by a
+  // name that moves on to another of its names there, as own.example to
+  // www.own.example, stopped the run at that move as an address of this
+  // machine, where 0.1.3 took it. This machine's own names (localhost, a
+  // name under it, 127.0.0.1 and ::1) are the host given where they reach an
+  // address of it, which is all they reach (see lookupFor()): a site given
+  // at http://127.0.0.1:4000/ whose pages name their styles, scripts and
+  // pictures at http://localhost:4000/, as Jekyll writes them, was taken
+  // without them, where 0.1.3, which judged documents alone, took them.
+  // 127.0.0.1 and ::1 reach no address of each other, and can be two
+  // programs on one port. shared(url): the addresses the host of url stands
+  // for that the host given does too, all of them but for this machine's
+  // own names, or null.
+  const mine = local ? ((await addressesFor(from.hostname)).list || []).map((answer) => bareIp(answer.address)) : null;
+  const shared = async (url) => {
+    if (!mine) return null;
+    const theirs = machineAddresses(lookupKey(url.hostname));
+    if (theirs) {
+      const both = theirs.filter((address) => mine.includes(address));
+      return both.length ? both : null;
+    }
+    const all = ((await addressesFor(url.hostname)).list || []).map((answer) => bareIp(answer.address));
+    return all.length && all.every((address) => mine.includes(address)) ? all : null;
   };
-  const sameHost = (url) => hostOf(url) === hostOf(from) || Boolean(shared(url));
+  const sameHost = async (url) => hostOf(url) === hostOf(from) || Boolean(await shared(url));
   const tried = web && from.protocol === "http:" && portOf(from) === "80" && triedOverHttps(from.hostname);
   const upgraded = (url) => tried && url.protocol === "https:" && portOf(url) === "443";
   const samePort = (url) => portOf(url) === portOf(from) || upgraded(url);
-  const given = (url) => local && sameHost(url) && samePort(url);
-  const own = (url) => web && sameHost(url) && samePort(url) && (url.protocol === from.protocol || (from.protocol === "http:" && url.protocol === "https:"));
+  const given = async (url) => local && samePort(url) && (await sameHost(url));
+  const own = async (url) => web && samePort(url) && (url.protocol === from.protocol || (from.protocol === "http:" && url.protocol === "https:")) && (await sameHost(url));
   const parse = (raw) => {
     try {
       return new URL(String(raw));
@@ -696,8 +707,8 @@ async function guardFor(start) {
       if (hit) return hit;
       if (ofMixed(url)) return mixed;
       const port = portOf(url);
-      const anyPort = own(url) || WEB_PORTS.has(port);
-      if (given(url)) return anyPort ? "" : otherPort(port, web);
+      const anyPort = (await own(url)) || WEB_PORTS.has(port);
+      if (await given(url)) return anyPort ? "" : otherPort(port, web);
       const where = await standing(url.hostname);
       if (where === "unknown") return UNRESOLVED;
       if (where === "inside" || where === "mixed") return insideWhy(url.hostname, (await addressesFor(url.hostname)).list, local);
@@ -733,12 +744,14 @@ async function guardFor(start) {
       return (hostname, options, callback) => {
         const refuse = (why) => callback(Object.assign(new Error(`${hostname} is ${why}`), { code: "ENOTPUBLIC", hostname, refused: `it is ${why}`, why, at: url.href }));
         // The host and port given on this machine or its network, asked for
-        // by its own name: every address of it goes, as the run opens it,
-        // and of another of this machine's names only those it shares with
-        // the host given (see shared()).
-        const inside = given(url) && lookupKey(hostname) === lookupKey(url.hostname);
-        const only = inside ? shared(url) : null;
-        addressesFor(hostname).then(({ list, error }) => {
+        // by its own name: every address of it goes, as the run opens it, as
+        // do those of another host that are all of them its, and of another
+        // of this machine's names only those it shares with the host given
+        // (see shared()).
+        (async () => {
+          const inside = (await given(url)) && lookupKey(hostname) === lookupKey(url.hostname);
+          return { inside, only: inside ? await shared(url) : null, ...(await addressesFor(hostname)) };
+        })().then(({ inside, only, list, error }) => {
           if (error) return callback(error);
           const hit = list.find((answer) => refusals.has(answer.address));
           if (hit) return refuse(refusedWhy(hit.address));

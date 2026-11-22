@@ -1232,6 +1232,64 @@ test("from a site on the public internet, a picture and a frame on another port 
     }
   }));
 
+// On a machine whose own address is on the public internet, as a server's,
+// a site it serves given by a name that moves on to its www name at that
+// address is taken there, its picture from another of its names at that
+// address too, the same program on the port given: the run stopped at that
+// move as an address of this machine, where 0.1.3 took the site. Here the
+// machine's network interfaces hold 81.2.69.160, and the run's proxy takes
+// that address to the site's server on this machine.
+test("a site a server serves at its own address, given by a name that moves on to its www name there, is taken with what its other names there serve", { skip: noBrowser, timeout: 90_000 }, () =>
+  withNames({ "own.example": "81.2.69.160", "www.own.example": "81.2.69.160", "static.own.example": "81.2.69.160" }, async () => {
+    setTimeLimit(80_000);
+    const saved = os.networkInterfaces;
+    os.networkInterfaces = () => ({ ...saved(), own0: [{ address: "81.2.69.160", netmask: "255.255.255.255", family: "IPv4", internal: false, cidr: "81.2.69.160/32" }] });
+    const seen = [];
+    let port = 0;
+    const { server, origin } = await serve((req, res) => {
+      const host = String(req.headers.host).replace(/:\d+$/, "");
+      seen.push(`${host} ${req.url}`);
+      if (host === "own.example") return res.writeHead(301, { Location: `http://www.own.example:${port}/` }).end();
+      if (host === "static.own.example" && req.url === "/logo.svg") return res.writeHead(200, { "Content-Type": "image/svg+xml" }).end('<svg xmlns="http://www.w3.org/2000/svg" width="40" height="30"><rect width="40" height="30" fill="rgb(0,160,0)"/></svg>');
+      if (host !== "www.own.example" || req.url !== "/") return res.writeHead(404).end();
+      res.writeHead(200, html).end(`<!doctype html><title>Own | Home</title><h1>Own</h1><img id="logo" src="http://static.own.example:${port}/logo.svg">`);
+    });
+    port = Number(new URL(origin).port);
+    const stand = reachAt({ "81.2.69.160": "127.0.0.1" });
+    let chrome = null;
+    try {
+      const given = `http://own.example:${port}/`;
+      chrome = await launch({ guard: await guardFor(given) });
+      const tab = await openTab(chrome, DESKTOP);
+      const barred = [];
+      const unreached = [];
+      tab.on(BARRED, (b) => barred.push([b.url, b.why]));
+      tab.on(UNREACHED, (u) => unreached.push([u.url, u.why]));
+      try {
+        assert.equal((await navigate(tab, given)).status, 200);
+        const until = Date.now() + 5_000;
+        let loaded = false;
+        while (!loaded && Date.now() < until) {
+          const { result } = await tab.send("Runtime.evaluate", { expression: "document.getElementById('logo').complete && document.getElementById('logo').naturalWidth", returnByValue: true });
+          loaded = result.value === 40;
+          if (!loaded) await sleep(100);
+        }
+        const { result } = await tab.send("Runtime.evaluate", { expression: "location.href", returnByValue: true });
+        assert.equal(result.value, `http://www.own.example:${port}/`);
+        assert.ok(loaded, "the picture from static.own.example was loaded");
+      } finally {
+        await closeTab(chrome, tab);
+      }
+      assert.deepEqual([barred, unreached], [[], []]);
+      assert.deepEqual(seen.filter((line) => !line.endsWith("/favicon.ico")), ["own.example /", "www.own.example /", "static.own.example /logo.svg"]);
+    } finally {
+      os.networkInterfaces = saved;
+      if (chrome) await chrome.close();
+      stand.restore();
+      server.close();
+    }
+  }));
+
 // A page's speculation rules have a browser whose own preloading is on fetch
 // an address before any move there: the kit's browser runs with it off, and
 // one that preloads is not used (see shots.test.js), but the proxy refuses

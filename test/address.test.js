@@ -157,7 +157,9 @@ test("an address this machine's network interfaces hold, a public one included, 
       assert.equal(await given.refuses("https://81.2.69.160/"), "at 81.2.69.160, an address of this machine, and not on the host and port given");
       const web = await guardFor("http://own-machine.acme.com/");
       assert.equal(await web.refuses("https://own-machine.acme.com/"), "");
-      assert.equal(await web.refuses("https://81.2.69.160/"), "at 81.2.69.160, an address of this machine, and not on the host and port given");
+      // Its address on that port is the same program.
+      assert.equal(await web.refuses("https://81.2.69.160/"), "");
+      assert.equal(await web.refuses("https://81.2.69.160:8443/"), "at 81.2.69.160, an address of this machine, and not on the host and port given");
       assert.equal(await (await guardFor("http://81.2.69.160/")).refuses("https://81.2.69.160/"), "");
       // Not for a name under a domain of a network's own, nor an IPv6
       // address, which the browser opens by http alone.
@@ -172,6 +174,63 @@ test("an address this machine's network interfaces hold, a public one included, 
         if (proxySaved === undefined) delete process.env.HTTPS_PROXY;
         else process.env.HTTPS_PROXY = proxySaved;
       }
+    });
+  } finally {
+    os.networkInterfaces = saved;
+  }
+});
+
+// On a machine whose own address is on the public internet, as a server's,
+// a site it serves given by a name is taken with its other names on the
+// port given whose every address is one of the name given's, the same
+// program, as a www or a CDN name of its own: given by a name that moves on
+// to its www name, the run stopped at that move as an address of this
+// machine, where 0.1.3 took the site. A name with another address of the
+// machine, or with one more, and another port, are not the host given.
+test("on the port given, a name every address of which is one of the host given's is the host given, as a server's www name at its own address", async () => {
+  const os = require("node:os");
+  const saved = os.networkInterfaces;
+  os.networkInterfaces = () => ({
+    lo: [{ address: "127.0.0.1", netmask: "255.0.0.0", family: "IPv4", internal: true, cidr: "127.0.0.1/8" }],
+    eth0: [
+      { address: "81.2.69.160", netmask: "255.255.255.0", family: "IPv4", internal: false, cidr: "81.2.69.160/24" },
+      { address: "81.2.69.161", netmask: "255.255.255.0", family: "IPv4", internal: false, cidr: "81.2.69.161/24" },
+    ],
+  });
+  const ask = (resolve, host) => new Promise((done) => resolve(host, { all: true }, (err, list) => done(err ? err.refused : list.map((one) => one.address))));
+  const at = (address) => `at ${address}, an address of this machine, and not on the host and port given`;
+  try {
+    await withNames({ "own.example": "81.2.69.160", "www.own.example": "81.2.69.160", "static.own.example": "81.2.69.160", "two.own.example": ["81.2.69.160", "81.2.69.161"], "other.own.example": "81.2.69.161", "own.acme.com": "81.2.69.160", "www.own.acme.com": "81.2.69.160", "loop.example": "127.0.0.1" }, async () => {
+      const guard = await guardFor("https://own.example/");
+      assert.equal(guard.local, true);
+      for (const [url, why] of [
+        ["https://www.own.example/", ""],
+        ["https://www.own.example/pricing", ""],
+        ["https://static.own.example/site.css", ""],
+        ["https://81.2.69.160/logo.png", ""],
+        ["https://www.own.example:8443/", at("81.2.69.160")],
+        ["http://www.own.example:443/", ""],
+        ["https://other.own.example/", at("81.2.69.161")],
+        ["https://two.own.example/", at("81.2.69.160")],
+        ["https://81.2.69.161/", at("81.2.69.161")],
+        ["https://loop.example/", NOT_GIVEN],
+      ]) {
+        assert.equal(await guard.refuses(url), why, url);
+      }
+      // Its requests go to those addresses, all of them the host given's.
+      assert.deepEqual(await ask(guard.lookupFor("https://www.own.example/pricing"), "www.own.example"), ["81.2.69.160"]);
+      assert.deepEqual(await ask(guard.lookupFor("https://static.own.example/site.css"), "static.own.example"), ["81.2.69.160"]);
+      assert.equal(await ask(guard.lookupFor("https://two.own.example/"), "two.own.example"), `it is ${at("81.2.69.160")}`);
+      // From http on port 80 of a name the browser tries over https first,
+      // its www name on 443 too.
+      const web = await guardFor("http://own.acme.com/");
+      assert.equal(await web.refuses("https://www.own.acme.com/"), "");
+      assert.equal(await web.refuses("http://www.own.acme.com/"), "");
+      // A site given on this machine by 127.0.0.1: a name of the site's at
+      // that address alone is the same program on the port given.
+      const local = await guardFor("http://127.0.0.1:4000/");
+      assert.equal(await local.refuses("http://loop.example:4000/app.js"), "");
+      assert.equal(await local.refuses("http://loop.example:4001/"), NOT_GIVEN);
     });
   } finally {
     os.networkInterfaces = saved;
@@ -690,7 +749,8 @@ test("a host written with dots at its end is looked up once, however many", asyn
 // a site given at http://127.0.0.1:4000/ whose pages name their styles,
 // scripts and pictures at http://localhost:4000/, as Jekyll writes them,
 // was taken without them. 127.0.0.1 and ::1 reach no address of each
-// other, and can be two programs on one port.
+// other, and can be two programs on one port. Another name all of whose
+// addresses are the host given's is the same program on that port.
 test("on the port given, this machine's own names are the host given where they reach an address of it", () =>
   withNames({ "loopback-name.example": "127.0.0.1" }, async () => {
     const ask = (resolve, host) => new Promise((done) => resolve(host, { all: true }, (err, list) => done(err ? err.code : list.map((one) => one.address))));
@@ -702,11 +762,13 @@ test("on the port given, this machine's own names are the host given where they 
       ["http://[::1]:4000/", NOT_GIVEN],
       ["http://localhost:4001/", NOT_GIVEN],
       ["http://127.0.0.2:4000/", NOT_GIVEN],
-      ["http://loopback-name.example:4000/", NOT_GIVEN],
+      ["http://loopback-name.example:4000/", ""],
+      ["http://loopback-name.example:4001/", NOT_GIVEN],
     ]) {
       assert.equal(await fromFour.refuses(url), why, url);
     }
     assert.deepEqual(await ask(fromFour.lookupFor("http://localhost:4000/site.css"), "localhost"), ["127.0.0.1"]);
+    assert.deepEqual(await ask(fromFour.lookupFor("http://loopback-name.example:4000/"), "loopback-name.example"), ["127.0.0.1"]);
     const fromName = await guardFor("http://localhost:4000/");
     for (const [url, why] of [
       ["http://127.0.0.1:4000/", ""],
