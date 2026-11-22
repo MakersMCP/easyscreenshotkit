@@ -107,8 +107,9 @@ has loaded, stops the demo, and so does a click on a link to a page that
 moves on so; a click on a link to one, or to a page that redirects to one,
 leaves the page where it was, with a note in steps.json, and a frame or a
 window a page opens there is not loaded; a tour leaves such a page out and
-says so. A host whose name does not resolve here, or gives no answer in
-10 s, is not opened either, and an address given on one stops the demo.
+says so. A host whose name does not resolve here, gives no answer in
+10 s, or answers both on the public internet and off it, is not opened
+either, and an address given on one stops the demo.
 The browser reaches the network only through a proxy the demo starts for
 it on 127.0.0.1, which holds every request it makes to the same rule, a
 page's pictures, styles, scripts and data included, and connects to the

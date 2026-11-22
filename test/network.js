@@ -62,6 +62,24 @@
 // it, in ms, each name the DNS server was asked, once, as [name, when it
 // was first asked, in ms after the manifest was printed, under 0 before],
 // and how long the process lived after the server's last question, in ms.
+//
+// Run as
+//
+//   unshare -rmn sh -c 'ip link set lo up && mount --bind <hosts> /etc/hosts
+//     && exec node network.js mixed <uid> <gid> <cli> <folder>'
+//
+// with a hosts file that holds evil.example at SITE6 and at 127.0.0.1, and
+// mixdev.example at 127.0.0.1 alone, it stands in for a machine with a
+// global IPv6 address of its own and a service of its own on 127.0.0.1:80,
+// which notes each request, joined by a veth link to the site's network
+// namespace (see siteMixed()): the site at SITE6 serves a home page that
+// fetch()es /secret from its own address and shows what it read, and turns
+// away every connection after it. The kit's command takes
+// http://evil.example/ and then http://mixdev.example/, as the user who ran
+// the test, with --json, saving in <folder>-0 and <folder>-1. It prints one
+// line of JSON: { runs, seen, site }, for each run { url, status, said,
+// titles }, then the requests the machine's service got and those the
+// site got.
 
 const { spawn, spawnSync } = require("node:child_process");
 const dgram = require("node:dgram");
@@ -482,6 +500,89 @@ async function own(uid, gid, cli, folder) {
   }
 }
 
+// Run in a network namespace of its own (see mixed()): the site. It waits
+// for the link mixed() moves into its namespace, takes SITE6 there, and
+// serves on port 80 a home page that fetch()es /secret from its own
+// address every 300 ms and shows what it read, then closes its listener
+// 50 ms after serving that page, so every connection after it is refused.
+// It notes each request it gets on stdout, and prints "ready" once it
+// serves.
+async function siteMixed() {
+  for (let i = 0; i < 200 && spawnSync("ip", ["link", "show", "v1"]).status !== 0; i++) await new Promise((resolve) => setTimeout(resolve, 50));
+  ip("link", "set", "lo", "up");
+  ip("link", "set", "v1", "up");
+  ip("-6", "addr", "add", `${SITE6}/128`, "dev", "v1", "nodad");
+  ip("-6", "route", "add", "default", "dev", "v1");
+  const server = http.createServer((req, res) => {
+    process.stdout.write(`site ${req.method} ${req.headers.host} ${req.url}\n`);
+    if (req.url !== "/") return res.writeHead(404).end();
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end('<!doctype html><title>Evil</title><h1 id="said">Waiting</h1><script>setInterval(() => fetch("/secret?try=" + Date.now()).then((r) => r.text()).then((text) => { document.getElementById("said").textContent = "READ: " + text; document.title = "READ " + text; }).catch(() => {}), 300);</script><div style="height:1400px"></div>');
+    setTimeout(() => server.close(), 50);
+  });
+  await new Promise((resolve) => server.listen(80, "::", resolve));
+  process.stdout.write("ready\n");
+}
+
+async function mixed(uid, gid, cli, folder) {
+  ip("link", "set", "lo", "up");
+  ip("link", "add", "v0", "type", "veth", "peer", "name", "v1");
+  const site = spawn("unshare", ["-n", process.execPath, __filename, "siteMixed"], { stdio: ["ignore", "pipe", "inherit"] });
+  let printed = "";
+  site.stdout.on("data", (d) => (printed += d));
+  const seen = [];
+  const service = http.createServer((req, res) => {
+    seen.push(`${req.socket.remoteAddress} ${req.method} ${req.headers.host} ${req.url}`);
+    if (req.url.startsWith("/secret")) return res.writeHead(200, { "Content-Type": "text/plain" }).end("LOCAL SECRET of this machine's own service");
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end("<!doctype html><title>Machine service</title><h1>This machine's own service</h1><div style=\"height:1400px\"></div>");
+  });
+  try {
+    await new Promise((resolve, reject) => {
+      site.once("error", reject);
+      site.once("spawn", resolve);
+    });
+    for (let i = 0; i < 200 && spawnSync("ip", ["link", "show", "v1"]).status === 0; i++) {
+      if (spawnSync("ip", ["link", "set", "v1", "netns", String(site.pid)]).status === 0) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    ip("link", "set", "v0", "up");
+    ip("-6", "addr", "add", `${MACHINE6}/64`, "dev", "v0", "nodad");
+    ip("-6", "route", "add", `${SITE6}/128`, "dev", "v0");
+    await new Promise((resolve) => service.listen(80, "127.0.0.1", resolve));
+    for (let i = 0; i < 200 && !printed.includes("ready"); i++) await new Promise((resolve) => setTimeout(resolve, 50));
+    if (!printed.includes("ready")) throw new Error("the site did not start");
+    const runs = [];
+    for (const [n, host] of ["evil.example", "mixdev.example"].entries()) {
+      const url = `http://${host}/`;
+      runs.push(
+        await new Promise((resolve) => {
+          const child = spawn("unshare", ["-U", `--map-user=${uid}`, `--map-group=${gid}`, process.execPath, cli, url, "--pages", "1", "--sizes", "desktop", "--json", "--out", `${folder}-${n}`], { stdio: ["ignore", "pipe", "pipe"] });
+          let out = "";
+          let err = "";
+          child.stdout.on("data", (d) => (out += d));
+          child.stderr.on("data", (d) => (err += d));
+          const timer = setTimeout(() => child.kill("SIGKILL"), 100_000);
+          child.on("close", (code, signal) => {
+            clearTimeout(timer);
+            let manifest = null;
+            try {
+              manifest = JSON.parse(out);
+            } catch {
+              manifest = null;
+            }
+            resolve({ url, status: code === null ? signal : code, said: err.trim().split("\n").slice(-3).join(" | "), titles: manifest && manifest.pages ? manifest.pages.map((one) => one.title) : [] });
+          });
+        }),
+      );
+    }
+    // A moment for what is still on its way.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    process.stdout.write(`${JSON.stringify({ runs, seen, site: printed.split("\n").filter((line) => line.startsWith("site ")) })}\n`);
+  } finally {
+    service.close();
+    site.kill("SIGKILL");
+  }
+}
+
 // Run as
 //
 //   unshare -rmn sh -c '... mount --bind <hosts> /etc/hosts && exec node
@@ -598,7 +699,7 @@ if (require.main !== module && process.env.DIAL_TO) {
 }
 
 const [mode, ...rest] = process.argv.slice(2);
-const modes = { outer, alone, silent, own, site6, upgraded, lossy };
+const modes = { outer, alone, silent, own, site6, upgraded, lossy, mixed, siteMixed };
 if (require.main === module) (modes[mode] || inner)(...rest).catch((err) => {
   process.stdout.write(JSON.stringify({ failed: String((err && err.message) || err) }));
   process.exitCode = 1;

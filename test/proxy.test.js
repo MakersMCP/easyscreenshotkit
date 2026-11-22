@@ -1649,6 +1649,50 @@ test("a site given by http on port 80 at a name of the user's network or an addr
   }
 });
 
+// A site given by a name that answers both with its public address and with
+// 127.0.0.1 is not opened: the run stops before any work, naming both. Taken
+// for the user's own, as one of its answers was, its every answer was
+// opened, so once the site served its first page and then refused new
+// connections, the page's fetch() of its own address went through the
+// proxy's next address to this machine's service on 127.0.0.1:80, and the
+// page read it. A name all of whose answers are 127.0.0.1, as a dev name
+// in the hosts file, is the user's own and taken. In namespaces of the
+// test's own (see network.js).
+test("a site given by a name that answers with a public address and with 127.0.0.1 is not opened, and nothing reaches this machine's service", { skip: noBrowser || noMountNamespace || noVeth, timeout: 240_000 }, async () => {
+  const root = tempDir();
+  try {
+    const hosts = path.join(root, "hosts");
+    fs.writeFileSync(hosts, "127.0.0.1 localhost\n::1 localhost\n2606:2800:220:1::99 evil.example\n127.0.0.1 evil.example\n127.0.0.1 mixdev.example\n");
+    const cli = require.resolve("../skills/easyscreenshotkit/scripts/easyscreenshotkit.js");
+    const script = 'ip link set lo up && mount --bind "$1" /etc/hosts && exec "$2" "$3" mixed "$4" "$5" "$6" "$7"';
+    const child = spawn("unshare", ["-rmn", "sh", "-c", script, "sh", hosts, process.execPath, path.join(__dirname, "network.js"), String(process.getuid()), String(process.getgid()), cli, path.join(root, "shots")], { stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (d) => (out += d));
+    child.stderr.on("data", (d) => (err += d));
+    const timer = setTimeout(() => child.kill("SIGKILL"), 230_000);
+    await new Promise((resolve) => child.on("close", resolve));
+    clearTimeout(timer);
+    let told = null;
+    try {
+      told = JSON.parse(out.trim().split("\n").pop());
+    } catch {
+      assert.fail(`network.js printed no result: ${(out + err).trim().slice(-600)}`);
+    }
+    const [evil, dev] = told.runs;
+    assert.equal(evil.status, 1, evil.said);
+    assert.ok(evil.said.endsWith("easyscreenshotkit: Could not open http://evil.example/: it is on a host whose name answers with an address on the public internet, 2606:2800:220:1::99, and with one that is not, 127.0.0.1."), evil.said);
+    // Nothing of the site's reached this machine's service, and the site
+    // was not opened at all.
+    assert.deepEqual(told.seen.filter((line) => line.includes("evil.example")), []);
+    assert.deepEqual(told.site, []);
+    assert.deepEqual({ status: dev.status, titles: dev.titles }, { status: 0, titles: ["Machine service"] }, dev.said);
+    assert.ok(told.seen.includes("127.0.0.1 GET mixdev.example /"), JSON.stringify(told.seen));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // So does a demo: once it has saved, a name still waiting for its lookup is
 // not asked, and its process ends once the system has given up on the 16
 // it was trying. Here a page fetch()es from another name whose DNS gives

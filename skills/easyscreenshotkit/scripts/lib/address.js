@@ -21,7 +21,10 @@
 // internet: MAKERSMCP_REFUSE_ADDRESSES (below) is for those. A run given
 // such an address itself, as a developer gives the address of a site on
 // their own machine, opens that host and port and no other address of the
-// kind.
+// kind. That is an address given whose host is such an address, or a name
+// every address of which is one: a name that answers both with an address
+// on the public internet and with one that is not, or is this machine's,
+// is not opened, the address given included (see standing()).
 //
 // The host that runs the kit can refuse more addresses with
 // MAKERSMCP_REFUSE_ADDRESSES, a comma list of IP addresses and CIDR ranges,
@@ -449,10 +452,20 @@ function stopLookups() {
 
 // Where a host, as a URL gives it, stands: "inside" when it is not on the
 // public internet or is this machine's own (an address of that kind, a
-// name for this machine, or a name one of whose addresses is), "unknown"
-// for a name that could not be looked up here, "" for one on the public
-// internet. A failed lookup is kept as unknown for the run, never as
-// public.
+// name for this machine, or a name every address of which is), "mixed" for
+// a name that answers both with such an address and with one on the
+// public internet, "unknown" for a name that could not be looked up here,
+// "" for one on the public internet. A failed lookup is kept as unknown for
+// the run, never as public. A mixed name is refused wherever it is, as an
+// inside one is away from the address given, and given as the address it
+// stops the run (see guardFor()): taken for the user's own, as one of its
+// answers was, its every answer was opened, so a site whose name answered
+// with its public address and with 127.0.0.1, which served its first page
+// and then refused new connections, had its page's fetch() of its own
+// address reach this machine's service on port 80 there, through the
+// proxy's next address, and send what it read to another host; and where
+// the system put 127.0.0.1 first, the run saved that service's page as the
+// site's.
 async function standing(hostname) {
   const host = lookupKey(hostname);
   if (!host) return "inside";
@@ -460,11 +473,8 @@ async function standing(hostname) {
   if (localName(host)) return "inside";
   const { list } = await addressesOf(host);
   if (!list || !list.length) return "unknown";
-  return list.some((answer) => insideIp(answer.address)) ? "inside" : "";
-}
-
-async function hostNotPublic(hostname) {
-  return (await standing(hostname)) === "inside";
+  const inside = list.filter((answer) => insideIp(answer.address)).length;
+  return !inside ? "" : inside === list.length ? "inside" : "mixed";
 }
 
 // Behind a proxy in fake-ip mode, as Clash, Surge or sing-box run with a
@@ -503,6 +513,17 @@ function insideWhy(hostname, list, local) {
   if (own) return `at ${bareIp(hit.address)}, ${own === "network" ? "on a network of this machine" : "an address of this machine"}${tail}`;
   if (hit && !literal && inFakeRange(hit.address)) return `at ${bareIp(hit.address)}, in the range a proxy in fake-ip mode gives every name, 198.18.0.0/15, which is not on the public internet${tail}`;
   return local ? NOT_GIVEN : NOT_PUBLIC;
+}
+
+// Why a name whose answers mix (see standing()) is refused, as said after
+// "it is": its first answer on the public internet and its first that is
+// not, or is this machine's, named as insideWhy() names it.
+function mixedWhy(list) {
+  const outside = list.find((answer) => !insideIp(answer.address));
+  const hit = list.find((answer) => insideIp(answer.address));
+  const own = !notPublicIp(hit.address) ? ownIp(hit.address) : "";
+  const kind = own === "network" ? "one on a network of this machine" : own ? "one of this machine's" : inFakeRange(hit.address) ? "one in the range a proxy in fake-ip mode gives every name, 198.18.0.0/15" : "one that is not";
+  return `on a host whose name answers with an address on the public internet, ${bareIp(outside.address)}, and with ${kind}, ${bareIp(hit.address)}`;
 }
 
 // Why a name could not be looked up, in a few words.
@@ -547,8 +568,10 @@ function addressesFor(hostname) {
 // refuses() calls one whose name could not be looked up was not, in a few
 // words (see lookupWhy()). unresolved: why the host of the address given
 // could not be looked up, or "": a run given it opens nothing. refused: why
-// MAKERSMCP_REFUSE_ADDRESSES refuses the address given, or "" likewise.
-// Throws when MAKERSMCP_REFUSE_ADDRESSES does not parse.
+// MAKERSMCP_REFUSE_ADDRESSES refuses the address given, or why a name of it
+// that answers both on the public internet and off it is not opened (see
+// standing()), or "" likewise. Throws when MAKERSMCP_REFUSE_ADDRESSES does
+// not parse.
 async function guardFor(start) {
   const refusals = hostRefusals();
   let from = null;
@@ -560,6 +583,10 @@ async function guardFor(start) {
   const web = Boolean(from) && /^https?:$/.test(from.protocol);
   const at = web ? await standing(from.hostname) : "";
   const local = at === "inside";
+  // A name given whose answers mix, which the run refuses as a whole, the
+  // address given and every page of it.
+  const mixed = at === "mixed" ? mixedWhy((await addressesFor(from.hostname)).list) : "";
+  const ofMixed = (url) => Boolean(mixed) && hostOf(url) === hostOf(from);
   // The host and port given on this machine or its network, which the run
   // opens though they are not on the public internet; and the scheme, host
   // and port given, which the run opens on any port, and https on the host
@@ -620,18 +647,19 @@ async function guardFor(start) {
   return {
     local,
     unresolved: at === "unknown" ? await lookupWhy(from.hostname) : "",
-    refused: firstRefused ? refusedHere(firstRefused) : "",
+    refused: firstRefused ? refusedHere(firstRefused) : mixed,
     async refuses(raw) {
       const url = parse(raw);
       if (!url || !/^https?:$/.test(url.protocol)) return NOT_WEB;
       const hit = await refusedAt(url.hostname);
       if (hit) return refusedHere(hit);
+      if (ofMixed(url)) return mixed;
       const port = portOf(url);
       const anyPort = own(url) || WEB_PORTS.has(port);
       if (given(url)) return anyPort ? "" : otherPort(port, web);
       const where = await standing(url.hostname);
       if (where === "unknown") return UNRESOLVED;
-      if (where === "inside") return insideWhy(url.hostname, (await addressesFor(url.hostname)).list, local);
+      if (where === "inside" || where === "mixed") return insideWhy(url.hostname, (await addressesFor(url.hostname)).list, local);
       return anyPort ? "" : otherPort(port, web);
     },
     lookupWhy(raw) {
@@ -673,6 +701,7 @@ async function guardFor(start) {
           if (error) return callback(error);
           const hit = list.find((answer) => refusals.has(answer.address));
           if (hit) return refuse(refusedHere(hit.address));
+          if (ofMixed(url) && lookupKey(hostname) === lookupKey(url.hostname)) return refuse(mixed);
           if (!inside && list.some((answer) => insideIp(answer.address))) return refuse(insideWhy(hostname, list, local));
           const family = options && options.family;
           const fit = list.filter((answer) => (!family || answer.family === family) && (!only || only.includes(bareIp(answer.address))));
@@ -794,4 +823,4 @@ function throughNoProxy(message) {
   return `${text}${/[.!?]$/.test(text) ? "" : "."} easyscreenshotkit does not use the proxy ${name} names: its browser and its own requests connect to each site themselves, so on a network that reaches the web only through that proxy, it reaches no site.`;
 }
 
-module.exports = { guardFor, getChecked, hostOf, notPublicIp, ownIp, hostNotPublic, hostRefusals, refusalsProblem, unresolvedError, refusedError, otherPort, refusedHere, stopLookups, throughNoProxy, NOT_WEB, NOT_PUBLIC, NOT_GIVEN, UNRESOLVED, REFUSE_SETTING };
+module.exports = { guardFor, getChecked, hostOf, notPublicIp, ownIp, hostRefusals, refusalsProblem, unresolvedError, refusedError, otherPort, refusedHere, stopLookups, throughNoProxy, NOT_WEB, NOT_PUBLIC, NOT_GIVEN, UNRESOLVED, REFUSE_SETTING };

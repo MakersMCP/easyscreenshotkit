@@ -234,6 +234,81 @@ test("from a public address a run opens web addresses on the public internet onl
   }
 });
 
+// A name that answers both with an address on the public internet and with
+// one that is not, or that is this machine's, is not opened, the address
+// given included, which a run then refuses before any work: taken for the
+// user's own, as one of its answers was, its every answer was opened, so a
+// site whose name answered with its public address and with 127.0.0.1,
+// which served its first page and then refused new connections, had its
+// page's fetch() of its own address reach this machine's service there,
+// through the proxy's next address. A name all of whose answers are inside
+// is the user's own, as a dev name at 127.0.0.1 is.
+test("a name given that answers both on the public internet and off it, or at this machine, is refused before any work, and one all of whose answers are inside is the user's own", async () => {
+  const os = require("node:os");
+  const { checkManifest } = require("../skills/easyscreenshotkit/scripts/lib/pwa");
+  const saved = os.networkInterfaces;
+  os.networkInterfaces = () => ({
+    lo: [{ address: "127.0.0.1", netmask: "255.0.0.0", family: "IPv4", internal: true, cidr: "127.0.0.1/8" }],
+    eth0: [
+      { address: "81.2.69.160", netmask: "255.255.255.0", family: "IPv4", internal: false, cidr: "81.2.69.160/24" },
+      { address: "2a02:1205:5000::1", netmask: "ffff:ffff:ffff:ffff::", family: "IPv6", internal: false, cidr: "2a02:1205:5000::1/64", scopeid: 0 },
+    ],
+  });
+  const names = {
+    "evil.example": ["2606:2800:220:1::99", "127.0.0.1"],
+    "evil4.example": ["93.184.216.34", "10.9.8.7"],
+    "first.example": ["192.168.1.1", "93.184.216.34"],
+    "evil-own.example": ["93.184.216.34", "81.2.69.160"],
+    "evil-lan.example": ["93.184.216.34", "2a02:1205:5000::77"],
+    "evil-fake.example": ["2606:2800:220:1::99", "198.18.0.5"],
+    "mixdev.example": ["127.0.0.1", "::1"],
+    "mixsite.example": "93.184.216.34",
+  };
+  const lookup = (guard, raw) => new Promise((resolve) => guard.lookupFor(raw)(new URL(raw).hostname, { all: true }, (err, list) => resolve(err || list)));
+  try {
+    await withNames(names, async () => {
+      for (const [given, why] of [
+        ["http://evil.example/", "on a host whose name answers with an address on the public internet, 2606:2800:220:1::99, and with one that is not, 127.0.0.1"],
+        ["http://evil4.example/", "on a host whose name answers with an address on the public internet, 93.184.216.34, and with one that is not, 10.9.8.7"],
+        ["https://first.example/", "on a host whose name answers with an address on the public internet, 93.184.216.34, and with one that is not, 192.168.1.1"],
+        ["https://evil-own.example/", "on a host whose name answers with an address on the public internet, 93.184.216.34, and with one of this machine's, 81.2.69.160"],
+        ["https://evil-lan.example/", "on a host whose name answers with an address on the public internet, 93.184.216.34, and with one on a network of this machine, 2a02:1205:5000::77"],
+        ["http://evil-fake.example/", "on a host whose name answers with an address on the public internet, 2606:2800:220:1::99, and with one in the range a proxy in fake-ip mode gives every name, 198.18.0.0/15, 198.18.0.5"],
+      ]) {
+        const guard = await guardFor(given);
+        assert.equal(guard.local, false, given);
+        assert.equal(guard.unresolved, "", given);
+        assert.equal(guard.refused, why, given);
+        assert.equal(refusedError(given, guard).message, `Could not open ${given}: it is ${why}.`);
+        // Every page of it, on any port and either scheme, and every
+        // connection for it.
+        const { hostname } = new URL(given);
+        for (const url of [given, `http://${hostname}/secret`, `https://${hostname}/`, `http://${hostname}:8080/`, `http://${hostname}./x`]) assert.equal(await guard.refuses(url), why, url);
+        const answer = await lookup(guard, `http://${hostname}/secret`);
+        assert.deepEqual({ code: answer.code, refused: answer.refused }, { code: "ENOTPUBLIC", refused: `it is ${why}` }, given);
+        // --pwa-check of it reads nothing.
+        await assert.rejects(checkManifest({ url: given }), { message: `Could not read ${given}: it is ${why}` });
+      }
+      // Away from the address given, such a name is refused as any name
+      // with an answer off the public internet is.
+      const site = await guardFor("https://mixsite.example/");
+      assert.equal(site.refused, "");
+      assert.equal(await site.refuses("http://evil.example/secret"), NOT_PUBLIC);
+      assert.equal(await site.refuses("https://evil-own.example/"), "at 81.2.69.160, an address of this machine");
+      // All its answers inside: the user's own, as before.
+      const dev = await guardFor("http://mixdev.example:4000/");
+      assert.deepEqual([dev.local, dev.refused], [true, ""]);
+      assert.equal(await dev.refuses("http://mixdev.example:4000/app.js"), "");
+      assert.deepEqual(await lookup(dev, "http://mixdev.example:4000/app.js"), [
+        { address: "127.0.0.1", family: 4 },
+        { address: "::1", family: 6 },
+      ]);
+    });
+  } finally {
+    os.networkInterfaces = saved;
+  }
+});
+
 // Away from the address given a run opens port 80 and 443 only: a site's
 // link, redirect, frame or manifest that names another port of its own host
 // or of another one on the public internet reached another program there,

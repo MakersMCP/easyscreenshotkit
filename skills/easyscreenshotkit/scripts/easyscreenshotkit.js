@@ -94,11 +94,12 @@ private network or another address of that kind, or at an address of this
 machine's own on the public internet, is not opened, and the report names
 it with the reason, and neither is a frame or a window a page opens there,
 nor one on another port of a host on the public internet, nor a host whose
-name does not resolve here or gives no answer in 10 s; an address
-given on such a host stops the run. A page that moves on to one before it
-has loaded is refused as a redirect there is. --pwa and --pwa-check read a
-manifest and its screenshots by the same rule, and from a manifest file no
-screenshot at such an address or on another port than 80 and 443. The
+name does not resolve here, gives no answer in 10 s, or answers both on the
+public internet and off it; an address given on such a host stops the run.
+A page that moves on to one before it has loaded is refused as a redirect
+there is. --pwa and --pwa-check read a manifest and its screenshots by the
+same rule, and from a manifest file no screenshot at such an address or on
+another port than 80 and 443. The
 browser reaches the network only through a proxy the run starts for it on
 127.0.0.1, which holds every request it makes to the same rule, a page's
 pictures, styles, scripts and data included, and connects to the address
