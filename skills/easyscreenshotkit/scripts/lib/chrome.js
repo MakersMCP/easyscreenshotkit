@@ -370,6 +370,9 @@ function pipeTo(child, { onClose = () => {}, watch = null } = {}) {
 // profile, from the moment it is spawned.
 const open = new Set();
 
+// The codes of a process or a system that has as many files open as it may.
+const FILES_SHORT = new Set(["EMFILE", "ENFILE"]);
+
 // --use-mock-keychain and --password-store=basic keep Chrome on macOS from
 // asking for the login keychain, which it does for a fresh profile. The
 // profile is a temp folder, removed when the browser has ended. On Linux the
@@ -393,13 +396,24 @@ async function launch({ lang = "", args = [], guard = null } = {}) {
   // The proxy that is the browser's one way to the network, started first
   // and asked once by this process: where a firewall keeps this user from
   // 127.0.0.1, the browser could not reach it either, and every page would
-  // fail in the browser's bare words.
+  // fail in the browser's bare words. Its sockets are the first files the
+  // start opens, so a process with as many files open as it may, or a
+  // system, runs out of them there: that is said as the start of a program
+  // says it (see programs.SHORT), where it was said to be a firewall's
+  // doing, or in Node.js's bare "listen EMFILE", by how many files were
+  // left and what else of the process held one at that moment.
   let chrome = null;
-  const proxy = await startProxy(() => (chrome ? chrome.guard : guard));
+  const short = (code) => (FILES_SHORT.has(code) ? new Error(`${name} did not start: ${programs.SHORT[code]}.`) : null);
+  let proxy;
+  try {
+    proxy = await startProxy(() => (chrome ? chrome.guard : guard));
+  } catch (err) {
+    throw short(err && err.code) || err;
+  }
   const blocked = await proxy.reachable();
   if (blocked) {
     proxy.close();
-    throw new Error(`${name} was not started: the proxy the run starts for it on 127.0.0.1, the browser's one way to the network, cannot be reached here (${blocked}), as a firewall that keeps this user from 127.0.0.1 can make it. Let this user connect to its own ports on 127.0.0.1.`);
+    throw short(blocked) || new Error(`${name} was not started: the proxy the run starts for it on 127.0.0.1, the browser's one way to the network, cannot be reached here (${blocked}), as a firewall that keeps this user from 127.0.0.1 can make it. Let this user connect to its own ports on 127.0.0.1.`);
   }
   // A browser whose lock has a longer name than room was left for in its
   // profile (see roomIn) does not start there: it starts again with the

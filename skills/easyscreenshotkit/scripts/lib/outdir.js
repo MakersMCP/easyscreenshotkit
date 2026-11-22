@@ -570,16 +570,26 @@ function end(run) {
 }
 
 // Synchronous and short: a process that is being stopped may have a second
-// left before it is killed outright.
+// left before it is killed outright. Whether it is gone is looked at, and
+// an empty folder is removed with no file descriptor: Node.js 24's removal
+// needs one, so a run whose process had as many files open as it may left
+// its empty part folder, and the folder it made for it, in place.
 function remove(at) {
   for (let tries = 0; tries < 3; tries++) {
     try {
       fs.rmSync(at, { recursive: true, force: true });
-      return;
     } catch {
-      // Something was still being written in it: once more a moment later.
-      pause(50);
+      // Something was still being written in it, or no file descriptor was
+      // left to read it with.
+      try {
+        fs.rmdirSync(at);
+      } catch {
+        // Not empty, or not there.
+      }
     }
+    if (!fs.existsSync(at)) return;
+    // Once more a moment later.
+    pause(50);
   }
 }
 

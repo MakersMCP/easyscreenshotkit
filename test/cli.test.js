@@ -1337,16 +1337,25 @@ test("a browser or an ffmpeg that cannot be started stops a run before any work 
       refused({ FFMPEG_PATH: path.join(mount, "ffmpeg") }, DEMO, `easyscreenshotkit demo: The demo needs ffmpeg, and FFMPEG_PATH is ${path.join(mount, "ffmpeg")}, ${what}. ${FIX.FFMPEG_PATH}`, { spawn: inside("ffmpeg") });
     });
     // With no file descriptor left for the pipes of the program it starts:
-    // a node that holds all it may but three.
+    // a node that has loaded the kit's code and then holds all it may but
+    // one, two or three. The sockets of the browser's proxy are the first
+    // files the start opens, and each is said as the limit it is, where the
+    // run said a firewall kept this user from 127.0.0.1, or gave Node.js's
+    // bare "listen EMFILE", by how many were left and what else of the
+    // process held one at that moment, as a thread that reads the system's
+    // certificates can.
     const { findChrome } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
     const { findFfmpeg } = require("../skills/easyscreenshotkit/scripts/lib/ffmpeg");
     await t.test("no file descriptor left to start a program with", { skip: !(findChrome() && findFfmpeg()) && "needs a browser and ffmpeg on this machine" }, () => {
-      const hold = at("hold-fds.js");
-      fs.writeFileSync(hold, 'const fs = require("node:fs");\nconst held = [];\ntry {\n  for (;;) held.push(fs.openSync(__filename, "r"));\n} catch {}\nfor (let i = 0; i < 3; i++) fs.closeSync(held.pop());\n');
-      const limited = (args, options) => spawnSync("sh", ["-c", 'ulimit -n 256 && exec "$@"', "sh", process.execPath, "-r", hold, CLI, ...args], options);
       const short = "this process has as many files open as it may (too many open files). Raise that limit, as ulimit -n does, and run again.";
-      refused({ CHROME_PATH: findChrome() }, SHOTS, `easyscreenshotkit: ${path.basename(findChrome())} did not start: ${short}`, { spawn: limited });
-      refused({ FFMPEG_PATH: findFfmpeg() }, DEMO, `easyscreenshotkit demo: The demo needs ffmpeg, and ${findFfmpeg()} could not be started: ${short}`, { spawn: limited });
+      const lib = path.join(__dirname, "..", "skills", "easyscreenshotkit", "scripts", "lib");
+      for (const left of [1, 2, 3]) {
+        const hold = at(`hold-fds-${left}.js`);
+        fs.writeFileSync(hold, `const fs = require("node:fs");\nconst path = require("node:path");\nconst lib = ${JSON.stringify(lib)};\nfor (const name of fs.readdirSync(lib)) require(path.join(lib, name));\nconst held = [];\ntry {\n  for (;;) held.push(fs.openSync(__filename, "r"));\n} catch {}\nfor (let i = 0; i < ${left}; i++) fs.closeSync(held.pop());\n`);
+        const limited = (args, options) => spawnSync("sh", ["-c", 'ulimit -n 256 && exec "$@"', "sh", process.execPath, "-r", hold, CLI, ...args], options);
+        refused({ CHROME_PATH: findChrome() }, SHOTS, `easyscreenshotkit: ${path.basename(findChrome())} did not start: ${short}`, { spawn: limited });
+        refused({ FFMPEG_PATH: findFfmpeg() }, DEMO, `easyscreenshotkit demo: The demo needs ffmpeg, and ${findFfmpeg()} could not be started: ${short}`, { spawn: limited });
+      }
     });
     // A program another process has open for writing, as one an update is
     // writing: the system does not start it (ETXTBSY), which Node throws
