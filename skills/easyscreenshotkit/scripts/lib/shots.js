@@ -823,35 +823,12 @@ async function visit(chrome, page, group, theme, ctx, { check = null, links = fa
     let current = "";
     let doc = "";
     const urls = new Map();
-    // Of a document that is the browser's error page, the address it could
-    // not open, by its loader; and the browser's words for each address of
-    // the main frame's documents that failed, but for one it gave up on as
-    // it showed its error page (canceled, net::ERR_ABORTED).
-    const unreachable = new Map();
-    const failures = new Map();
     tab.on("Page.frameNavigated", ({ frame }) => {
       if (!frame || frame.parentId || !frame.loaderId) return;
       current = frame.loaderId;
       urls.set(current, `${frame.url}${frame.urlFragment || ""}`);
-      if (frame.unreachableUrl) unreachable.set(current, frame.unreachableUrl);
     });
-    const documents = new Map();
-    tab.on("Network.requestWillBeSent", (p) => {
-      if (p.type === "Document" && p.frameId === tab.targetId && p.request) documents.set(p.requestId, p.request.url);
-    });
-    tab.on("Network.loadingFailed", (p) => {
-      if (documents.has(p.requestId) && p.errorText && !p.canceled) failures.set(documents.get(p.requestId), p.errorText);
-    });
-    // The error for a page whose document is now the browser's error page,
-    // or null: it is left out, or stops the run, as one that could not be
-    // opened.
-    const failedMove = () => {
-      const to = unreachable.get(current);
-      if (!to) return null;
-      const words = failedWords(tab, to, failures.get(to) || "");
-      const why = `it moved on to ${to} once it had loaded, and the browser could not open that${words ? ` (${words})` : ""}`;
-      return Object.assign(new Error(`Could not open ${page.url}: ${why}.`), { reason: why });
-    };
+    const failedMove = watchFailedMoves(tab, page.url);
     tab.on("Page.loadEventFired", () => (doc = doc || current));
     let nav = await navigate(tab, page.url);
     doc = doc || current;
@@ -892,6 +869,44 @@ async function visit(chrome, page, group, theme, ctx, { check = null, links = fa
 // What takeOpen() gives for a page that moved on to another document before
 // it was taken, or while it was.
 const MOVED = Symbol("moved");
+
+// Watches a tab opened at `asked` for a page that moves on, once it has
+// loaded, to an address the browser could not open, its document then the
+// browser's own error page: that is no page of the site. Gives a function
+// that gives the error for such a page, or null while the tab's document is
+// none. The error says the address it moved on to and the browser's words
+// for it, those of the main frame's document that failed, but for one it
+// gave up on as it showed its error page (canceled, net::ERR_ABORTED), and
+// it is left out, or stops the run, as a page that could not be opened. A
+// demo's tour leaves such a page out too (see tour.js), where its video then
+// stopped at the step that visited it.
+function watchFailedMoves(tab, asked) {
+  // The main frame's document, by its loader; of one that is the browser's
+  // error page, the address it could not open; and the browser's words for
+  // each address of the main frame's documents that failed.
+  let current = "";
+  const unreachable = new Map();
+  const documents = new Map();
+  const failures = new Map();
+  tab.on("Page.frameNavigated", ({ frame }) => {
+    if (!frame || frame.parentId || !frame.loaderId) return;
+    current = frame.loaderId;
+    if (frame.unreachableUrl) unreachable.set(current, frame.unreachableUrl);
+  });
+  tab.on("Network.requestWillBeSent", (p) => {
+    if (p.type === "Document" && p.frameId === tab.targetId && p.request) documents.set(p.requestId, p.request.url);
+  });
+  tab.on("Network.loadingFailed", (p) => {
+    if (documents.has(p.requestId) && p.errorText && !p.canceled) failures.set(documents.get(p.requestId), p.errorText);
+  });
+  return () => {
+    const to = unreachable.get(current);
+    if (!to) return null;
+    const words = failedWords(tab, to, failures.get(to) || "");
+    const why = `it moved on to ${to} once it had loaded, and the browser could not open that${words ? ` (${words})` : ""}`;
+    return Object.assign(new Error(`Could not open ${asked}: ${why}.`), { reason: why });
+  };
+}
 
 // The page a visit's page moved on to once it had loaded, waited for as
 // navigate() waits for a page: until it has loaded, 20 s at most and never
@@ -1798,4 +1813,4 @@ function leftOut(rejected, routes, links) {
   return { skipped: all.slice(0, LEFT_OUT), routesPast: all.slice(LEFT_OUT).filter((skip) => skip.reason === ROUTE_LINK).length };
 }
 
-module.exports = { takeShots, unreadNote, schemeHint, parseSizes, addPwaShots, normalizeUrl, fragmentNotes, prepareDir, openShots, slugOf, identity, movedOn, pagesAsked, waitForView, leftOut, siteName, readInfo, readLinks, rejectAtOnce, rejectReason, notOpened, alternateNote, barredNote, barredNotes, writeMarkdown, DEVICES, MAX_HEIGHT };
+module.exports = { takeShots, watchFailedMoves, unreadNote, schemeHint, parseSizes, addPwaShots, normalizeUrl, fragmentNotes, prepareDir, openShots, slugOf, identity, movedOn, pagesAsked, waitForView, leftOut, siteName, readInfo, readLinks, rejectAtOnce, rejectReason, notOpened, alternateNote, barredNote, barredNotes, writeMarkdown, DEVICES, MAX_HEIGHT };

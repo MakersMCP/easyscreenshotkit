@@ -2447,16 +2447,25 @@ test("a page asked for on another port of the site's host is named with why it i
 // site: it is not taken. It was saved as the site's screenshot, its title
 // the host's name and its heading "This site can't be reached", with exit
 // 0. Here a page moves on as it has loaded, to a host that refuses and to
-// one that answers nothing, whose connections fail in 3 s.
-test("a page that moves on to an address the browser cannot open is not taken as the browser's error page", { skip: noBrowser, timeout: 240_000 }, () =>
-  withNames({ "moves.acme.example": "93.184.215.14", "dead.acme.example": "93.184.215.15", "hole.acme.example": "93.184.215.16" }, async () => {
+// one that answers nothing, whose connections fail in 3 s; and one moves on
+// twice to pages of its own and then to the host that refuses, each once
+// the run's clean-up has hidden its banner, so the last move comes as the
+// run's last round of following it takes the page as it stands, and that
+// round does not take it either. A demo's tour leaves such a page out in the same words,
+// where it stayed in the tour and the demo stopped at the step that
+// visited it, with "<url> could not be opened.".
+test("a page that moves on to an address the browser cannot open is not taken as the browser's error page", { skip: noBrowser, timeout: 400_000 }, () =>
+  withNames({ "moves.acme.example": "93.184.215.14", "dead.acme.example": "93.184.215.15", "hole.acme.example": "93.184.215.16", "home-moves.acme.example": "93.184.215.14" }, async () => {
     const closed = await serve((req, res) => res.end("gone"));
     const closedPort = Number(new URL(closed.origin).port);
     await new Promise((resolve) => closed.server.close(resolve));
     const { server, origin } = await serve((req, res) => {
-      const to = { "/moves-dead": "http://dead.acme.example/landing", "/moves-hole": "http://hole.acme.example/landing" }[req.url];
-      if (req.url === "/") return res.writeHead(200, html).end('<!doctype html><title>Acme | Tools</title><h1>Acme</h1><p>Tools for teams.</p><div style="height:1400px"></div>');
+      const to = { "/moves-dead": "http://dead.acme.example/landing", "/moves-hole": "http://hole.acme.example/landing", "/moves-thrice": "/thrice-1", "/thrice-1": "/thrice-2", "/thrice-2": "http://dead.acme.example/landing" }[req.url];
+      const moving = req.url === "/" && String(req.headers.host).startsWith("home-moves.") ? "http://dead.acme.example/landing" : "";
+      if (req.url === "/" && !moving) return res.writeHead(200, html).end('<!doctype html><title>Acme | Tools</title><h1>Acme</h1><p>Tools for teams.</p><div style="height:1400px"></div>');
+      if (moving) return res.writeHead(200, html).end(`<!doctype html><title>Acme | Moving</title><h1>Moving</h1><p>This home page moves on.</p><div style="height:1400px"></div><script>addEventListener("load", () => setTimeout(() => (location.href = ${JSON.stringify(moving)}), 300));</script>`);
       if (!to) return res.writeHead(404).end();
+      if (/thrice/.test(req.url)) return res.writeHead(200, html).end(`<!doctype html><title>Acme | Moving</title><h1>Moving</h1><p>This page moves on once its banner is hidden.</p><div style="height:1400px"></div><div id="banner" style="position:fixed;bottom:0;left:0;right:0;height:60px;background:#222;color:#fff">We use cookies on this site. <button>Accept</button></div><script>new ResizeObserver(([seen]) => { if (seen.contentRect.height === 0 && !window.moving) { window.moving = true; location.href = ${JSON.stringify(to)}; } }).observe(document.getElementById("banner"));</script>`);
       res.writeHead(200, html).end(`<!doctype html><title>Acme | Moving</title><h1>Moving</h1><p>This page moves on.</p><div style="height:1400px"></div><script>addEventListener("load", () => setTimeout(() => (location.href = ${JSON.stringify(to)}), 300));</script>`);
     });
     const stand = reachAt({ "93.184.215.14": `127.0.0.1:${new URL(origin).port}`, "93.184.215.15": `127.0.0.1:${closedPort}` });
@@ -2476,6 +2485,33 @@ test("a page that moves on to an address the browser cannot open is not taken as
       assert.deepEqual(manifest.pages.map((page) => page.title), ["Acme | Tools"]);
       assert.ok(manifest.notes.some((note) => /^http:\/\/moves\.acme\.example\/moves-hole was asked for but not taken: could not be opened: it moved on to http:\/\/hole\.acme\.example\/landing once it had loaded, and the browser could not open that \(net::ERR_(CONNECTION_)?TIMED_OUT\)\.$/.test(note)), JSON.stringify(manifest.notes));
       assert.deepEqual(fs.readdirSync(path.join(root, "hole")).filter((name) => name.endsWith(".png")).sort(), ["01-home-desktop.png", "sheet.png"]);
+      const thrice = await takeShots("http://moves.acme.example/", { dir: path.join(root, "thrice"), pages: 1, extra: ["/moves-thrice"], sizes: "desktop", timeLimit: 120_000 });
+      assert.deepEqual(thrice.manifest.pages.map((page) => page.title), ["Acme | Tools"]);
+      assert.ok(thrice.manifest.notes.includes("http://moves.acme.example/moves-thrice was asked for but not taken: could not be opened: it moved on to http://dead.acme.example/landing once it had loaded, and the browser could not open that (net::ERR_CONNECTION_REFUSED)."), JSON.stringify(thrice.manifest.notes));
+      // A demo's tour, of the page given and of a page asked for.
+      setTimeLimit(400_000);
+      const chrome = await launch({ guard: await guardFor("http://moves.acme.example/") });
+      try {
+        const tour = await pickPages(chrome, "http://moves.acme.example/", { pages: 1, extra: ["/moves-dead"] });
+        assert.deepEqual(tour.pages.map((page) => page.url), ["http://moves.acme.example/"]);
+        assert.deepEqual(tour.skipped, [{ url: "http://moves.acme.example/moves-dead", reason: "could not be opened: it moved on to http://dead.acme.example/landing once it had loaded, and the browser could not open that (net::ERR_CONNECTION_REFUSED)" }]);
+      } finally {
+        await chrome.close();
+      }
+      const given = await launch({ guard: await guardFor("http://moves.acme.example/moves-dead") });
+      try {
+        await assert.rejects(pickPages(given, "http://moves.acme.example/moves-dead", { pages: 1 }), { message: "http://moves.acme.example/moves-dead was asked for but not taken: could not be opened: it moved on to http://dead.acme.example/landing once it had loaded, and the browser could not open that (net::ERR_CONNECTION_REFUSED). No demo was recorded." });
+      } finally {
+        await given.close();
+      }
+      // A home page given that moves on so: the tour stops at it, where it
+      // went on with the browser's error page as the home page.
+      const home = await launch({ guard: await guardFor("http://home-moves.acme.example/") });
+      try {
+        await assert.rejects(pickPages(home, "http://home-moves.acme.example/", { pages: 1 }), { message: "Could not open http://home-moves.acme.example/: it moved on to http://dead.acme.example/landing once it had loaded, and the browser could not open that (net::ERR_CONNECTION_REFUSED)." });
+      } finally {
+        await home.close();
+      }
     } finally {
       dialer.connect = reached;
       stand.restore();

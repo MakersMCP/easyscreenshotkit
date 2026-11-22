@@ -12,7 +12,7 @@
 
 const { openTab, closeTab, navigate } = require("./chrome");
 const { waitForContent, settle, walk, watchRequests } = require("./page");
-const { readInfo, readLinks, rejectAtOnce, rejectReason, slugOf, siteName, identity, pagesAsked, waitForView, notOpened, alternateNote } = require("./shots");
+const { readInfo, readLinks, rejectAtOnce, rejectReason, slugOf, siteName, identity, pagesAsked, waitForView, notOpened, alternateNote, watchFailedMoves } = require("./shots");
 const { homeOf, pageKey, routeOf, viewKey, pathOf, readable, siteOf, rankLinks, routeLinks, visitOrder, readSiteIndex, indexNotes, kindOf, alternateFor } = require("./pick");
 const { TOP_COVER } = require("./record");
 const { timeLeft } = require("./time");
@@ -28,12 +28,16 @@ const PROBE = { width: 1600, height: 900, scale: 1, mobile: false, touch: false,
 // by itself in those seconds to a sign-in page stays in the tour, and the
 // video shows that page, and one that moves on to a page the tour already
 // has is left out as that page; the screenshots judge such a page by where
-// it went (see shots.js). A view of a single page app is waited for as the
-// screenshots wait for it. links: read the page's links too, for the
-// #routes in its menu.
+// it went (see shots.js). One that moves on in those seconds to an address
+// the browser could not open, which shows its own error page, is left out
+// as one that could not be opened, as the screenshots leave it out, where it
+// stayed in the tour and the demo stopped at the step that visited it. A
+// view of a single page app is waited for as the screenshots wait for it.
+// links: read the page's links too, for the #routes in its menu.
 async function probe(chrome, url, check, ctx, { links = false } = {}) {
   const tab = await openTab(chrome, PROBE, ctx);
   try {
+    const failedMove = watchFailedMoves(tab, url);
     await watchRequests(tab);
     const nav = await navigate(tab, url);
     const glance = await readInfo(tab);
@@ -42,6 +46,7 @@ async function probe(chrome, url, check, ctx, { links = false } = {}) {
     await waitForView(tab, nav, url, false);
     const loaded = await waitForContent(tab, 15_000);
     await settle(tab, 4_000);
+    if (failedMove()) throw failedMove();
     const info = await readInfo(tab);
     const reason = rejectReason({ asked: url, nav, info, loaded }, check);
     return reason ? { rejected: reason } : { nav, info, links: links ? await readLinks(tab) : [] };
@@ -72,17 +77,21 @@ async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = 
   // it is opened, as one that answers an error or a bot check or cannot be
   // opened is, leaves the home page as it was taken, with a note; the home
   // page is opened again then, as the tab holds that version, or a page
-  // that left its own load. A browser that ended fails the demo.
+  // that left its own load. A browser that ended fails the demo. One that
+  // moves on once it has loaded to an address the browser could not open
+  // is one that could not be opened (see probe()).
   const opening = async (url, { alternates = false } = {}) => {
     let again = false;
     const tab = await openTab(chrome, PROBE, ctx);
     try {
+      const failedMove = watchFailedMoves(tab, url);
       await watchRequests(tab);
       let nav = await navigate(tab, url);
       if (nav.status >= 400) throw Object.assign(new Error(`${nav.url} answered ${nav.status}, so no demo was recorded.`), { refused: `the page answered ${nav.status}` });
       await waitForView(tab, nav, url, false);
       await waitForContent(tab, 20_000);
       await settle(tab, 6_000);
+      if (failedMove()) throw failedMove();
       let info = await readInfo(tab);
       if (info.challenge) throw Object.assign(new Error(`${nav.url} answered with a bot check ("${info.title || "a challenge page"}") instead of its page, so no demo was recorded. Open the site in a normal browser to check it.`), { refused: "a bot check instead of the page" });
       // The site's own home page in the language asked for, when it names one.
