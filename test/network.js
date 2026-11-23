@@ -111,6 +111,21 @@
 // for each address { refuses, http, tunnel, kit }, the first line of what
 // the proxy answered ("" for none) and what the kit's request gave, and
 // the connections the service got.
+//
+// Run as
+//
+//   unshare -rn node network.js networks
+//
+// it stands in for a machine whose interfaces hold IPv6 addresses on
+// networks of its own (see NETWORKS): n0 a 6to4 address, which a network
+// builds from the IPv4 address of its 6to4 router, another box's. The rest
+// of each network is in a network namespace of its own, joined to the
+// machine by a veth link (see devices()), where the router at the prefix's
+// ::1 and another device answer on port 80 and note each request. It asks
+// for each address of NETWORKS as downed() does, with a service of the
+// machine's own on port 80 and 443 of all its addresses, and prints one
+// line of JSON: { judged, seen, devices }, as downed() does, and the
+// requests the devices got.
 
 const { spawn, spawnSync } = require("node:child_process");
 const dgram = require("node:dgram");
@@ -818,6 +833,16 @@ async function downed() {
   ip("route", "add", "local", "0.0.0.0/0", "dev", "lo", "table", "100");
   ip("-6", "rule", "add", "fwmark", "1", "table", "100");
   ip("-6", "route", "add", "local", "::/0", "dev", "lo", "table", "100");
+  process.stdout.write(`${JSON.stringify(await judgeAll(Object.values(DOWNED)))}\n`);
+}
+
+// With the run's rule for a site on the public internet, each of addresses
+// asked for by the rule's refuses(), through the run's proxy as the browser
+// asks, a plain http request to port 80 and a tunnel to port 443, and as a
+// request of the kit's own (getChecked()), with a service of this machine's
+// own on port 80 and 443 of all its addresses that notes each connection:
+// { judged, seen }, as downed() prints them.
+async function judgeAll(addresses) {
   const { guardFor, getChecked } = require("../skills/easyscreenshotkit/scripts/lib/address");
   const { startProxy } = require("../skills/easyscreenshotkit/scripts/lib/proxy");
   const seen = [];
@@ -845,7 +870,7 @@ async function downed() {
     });
   const judged = {};
   try {
-    for (const address of Object.values(DOWNED)) {
+    for (const address of addresses) {
       const host = address.includes(":") ? `[${address}]` : address;
       let kit;
       try {
@@ -867,7 +892,71 @@ async function downed() {
     web.close();
     tls.close();
   }
-  process.stdout.write(`${JSON.stringify({ judged, seen })}\n`);
+  return { judged, seen };
+}
+
+// The machine of networks(): an IPv6 address of its own on each network,
+// on the public internet by its range, beside a running dummy, d0, with the
+// default routes, and the addresses of devices of those networks, which
+// answer in devices(). machine: the machine's own; each other: a device's.
+const NETWORKS = {
+  sixToFour: { link: "n0", peer: "n1", machine: "2002:5db8:d84d:1::5/64", devices: ["2002:5db8:d84d:1::1", "2002:5db8:d84d:1::9"] },
+};
+
+async function networks() {
+  ip("link", "set", "lo", "up");
+  ip("link", "add", "d0", "type", "dummy");
+  ip("link", "set", "d0", "up");
+  ip("addr", "add", "198.51.100.9/24", "dev", "d0");
+  ip("-6", "addr", "add", "2a02:2f0c:8000:1::9/64", "dev", "d0", "nodad");
+  ip("route", "add", "default", "dev", "d0");
+  ip("-6", "route", "add", "default", "dev", "d0");
+  const all = Object.values(NETWORKS);
+  for (const one of all) ip("link", "add", one.link, "type", "veth", "peer", "name", one.peer);
+  const rest = spawn("unshare", ["-n", process.execPath, __filename, "devices", ...all.map((one) => `${one.peer}=${one.devices.join(",")}`)], { stdio: ["ignore", "pipe", "inherit"] });
+  let printed = "";
+  rest.stdout.on("data", (d) => (printed += d));
+  try {
+    await new Promise((resolve, reject) => {
+      rest.once("error", reject);
+      rest.once("spawn", resolve);
+    });
+    for (const one of all) {
+      for (let i = 0; i < 200 && spawnSync("ip", ["link", "show", one.peer]).status === 0; i++) {
+        if (spawnSync("ip", ["link", "set", one.peer, "netns", String(rest.pid)]).status === 0) break;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      ip("link", "set", one.link, "up");
+      ip("-6", "addr", "add", one.machine, "dev", one.link, "nodad");
+    }
+    for (let i = 0; i < 200 && !printed.includes("ready"); i++) await new Promise((resolve) => setTimeout(resolve, 50));
+    if (!printed.includes("ready")) throw new Error("the devices did not start");
+    const told = await judgeAll(all.flatMap((one) => [one.machine.split("/")[0], ...one.devices]));
+    process.stdout.write(`${JSON.stringify({ ...told, devices: printed.split("\n").filter((line) => line.startsWith("device ")) })}\n`);
+  } finally {
+    rest.kill("SIGKILL");
+  }
+}
+
+// Run in a network namespace of its own (see networks()): the rest of the
+// machine's networks. Each argument names a link networks() moves into its
+// namespace and the addresses it takes there, as n1=<address>,<address>.
+// It serves on port 80 of all of them, notes each request it gets on
+// stdout, and prints "ready" once it serves.
+async function devices(...links) {
+  ip("link", "set", "lo", "up");
+  for (const one of links) {
+    const [name, list] = one.split("=");
+    for (let i = 0; i < 200 && spawnSync("ip", ["link", "show", name]).status !== 0; i++) await new Promise((resolve) => setTimeout(resolve, 50));
+    ip("link", "set", name, "up");
+    for (const address of list.split(",")) ip("-6", "addr", "add", `${address}/64`, "dev", name, "nodad");
+  }
+  const server = http.createServer((req, res) => {
+    process.stdout.write(`device ${req.socket.localAddress} ${req.method} ${req.url}\n`);
+    res.writeHead(200, { "Content-Type": "text/plain", "Access-Control-Allow-Origin": "*" }).end("A DEVICE OF THIS MACHINE'S NETWORK");
+  });
+  await new Promise((resolve) => server.listen({ port: 80, host: "::", ipv6Only: true }, resolve));
+  process.stdout.write("ready\n");
 }
 
 // As the preload of the kit's command (see silent()): the kit's proxy
@@ -880,7 +969,7 @@ if (require.main !== module && process.env.DIAL_TO) {
 }
 
 const [mode, ...rest] = process.argv.slice(2);
-const modes = { outer, alone, silent, own, site6, upgraded, lossy, mixed, siteMixed, routed, downed };
+const modes = { outer, alone, silent, own, site6, upgraded, lossy, mixed, siteMixed, routed, downed, networks, devices };
 if (require.main === module) (modes[mode] || inner)(...rest).catch((err) => {
   process.stdout.write(JSON.stringify({ failed: String((err && err.message) || err) }));
   process.exitCode = 1;

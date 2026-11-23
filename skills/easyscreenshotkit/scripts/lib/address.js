@@ -228,42 +228,46 @@ function notPublicIp(address) {
 // there, and on a server whose provider puts other customers' servers in
 // it, as a DigitalOcean droplet's /64, theirs, which are refused all the
 // same (the README's Limits say so); the rest of a public IPv4 range on an
-// interface is other people's servers, so in IPv4 the address alone. An IPv6 form of an IPv4 address of
-// the machine's is judged by that address (see heldIpv4()). The machine's
-// addresses are read as the run goes, as they change while it does, at
-// most once a second (see machineNow()).
+// interface is other people's servers, so in IPv4 the address alone. An
+// IPv6 address that holds an IPv4 one is judged by that IPv4 address (see
+// heldIpv4()) and by itself, as any other IPv6 address: a network that
+// gives this machine a 6to4 address builds it from the IPv4 address of its
+// 6to4 router, which another box holds, and judged by that IPv4 address
+// alone, the machine's own 6to4 address and every device of its 6to4
+// network, the router at the prefix's ::1 among them, were taken for the
+// public internet, so a page's frames, pictures and fetch() reached them.
+// The machine's addresses are read as the run goes, as they change while
+// it does, at most once a second (see machineNow()).
 function ownIp(address) {
   const ip = bareIp(address);
   const family = net.isIP(ip);
   if (!family) return "";
   const groups = family === 6 ? groupsOf(ip) : null;
   if (family === 6 && !groups) return "";
-  const held = groups ? heldIpv4(groups) : ip;
-  const { mine, networks, some } = machineNow();
-  if (!some) return "";
-  if (held) return mine.check(held, "ipv4") ? "machine" : "";
-  if (mine.check(ip, "ipv6")) return "machine";
+  const { mine, networks } = machineNow();
+  if (family === 4) return mine.check(ip, "ipv4") ? "machine" : "";
+  const held = heldIpv4(groups);
+  if ((held && mine.check(held, "ipv4")) || mine.check(ip, "ipv6")) return "machine";
   return networks.check(ip, "ipv6") ? "network" : "";
 }
 
 // This machine's own addresses (mine) and the IPv6 networks of them
-// (networks), and whether it holds any (some), read again once a second has
-// passed since the last reading (see wait below), or the clock went back,
-// or a function that reads them is another, as a test puts one in its
-// place. os.networkInterfaces() lists the addresses of the interfaces that
-// are up and have a link alone, as Node.js's libuv leaves the others out,
-// on every system. On Linux the kernel takes a connection to more of them
-// for one to this machine, which its own files list (see
-// kernelAddresses()), and those are read too: an address of an interface
-// that is up with no link, as a cable out, a veth whose other end is down
-// or a tun no program holds, of an interface that is down, as kube-proxy
-// keeps every Service's address on kube-ipvs0, and every address of a
-// range routed to the machine itself, as a pool of addresses for a proxy
-// is set up (ip route add local ... dev lo). Read from the interfaces
-// alone, each was taken for an address on the public internet, and a page
-// had the browser, through the run's proxy, and the kit's own requests
-// reach a service of this machine that listens on all its addresses there
-// and read what it answered. Read at each judgement, twice for each
+// (networks), read again once a second has passed since the last reading
+// (see wait below), or the clock went back, or a function that reads them is
+// another, as a test puts one in its place. os.networkInterfaces() lists the
+// addresses of the interfaces that are up and have a link alone, as
+// Node.js's libuv leaves the others out, on every system. On Linux the
+// kernel takes a connection to more of them for one to this machine, which
+// its own files list (see kernelAddresses()), and those are read too: an
+// address of an interface that is up with no link, as a cable out, a veth
+// whose other end is down or a tun no program holds, of an interface that is
+// down, as kube-proxy keeps every Service's address on kube-ipvs0, and every
+// address of a range routed to the machine itself, as a pool of addresses
+// for a proxy is set up (ip route add local ... dev lo). Read from the
+// interfaces alone, each was taken for an address on the public internet,
+// and a page had the browser, through the run's proxy, and the kit's own
+// requests reach a service of this machine that listens on all its addresses
+// there and read what it answered. Read at each judgement, twice for each
 // address of each request the proxy judged, the interfaces were read 4001
 // times for one load of a news site's home page, each reading longer the
 // more interfaces the machine has, as a Docker host has one for each
@@ -271,8 +275,8 @@ function ownIp(address) {
 // slowly than with 0.1.3, the run's main thread busy reading them. The
 // kernel's count of its routes (see KERNEL_ROUTES) takes longer to read the
 // more routes it holds, so a machine of many, as a router that holds the
-// internet's a million, is read again only once a second has passed for
-// each ROUTES_A_SECOND of them, where that is longer.
+// internet's a million, is read again only once a second has passed for each
+// ROUTES_A_SECOND of them, where that is longer.
 const INTERFACES_MS = 1_000;
 const ROUTES_A_SECOND = 20_000;
 let machine = null;
@@ -396,13 +400,11 @@ function machineNow() {
   }
   const mine = new net.BlockList();
   const networks = new net.BlockList();
-  let some = false;
   for (const list of Object.values(interfaces || {})) {
     for (const one of list || []) {
       const at = bareIp(one && one.address);
       const kind = net.isIP(at);
       if (!kind) continue;
-      some = true;
       mine.addAddress(at, kind === 4 ? "ipv4" : "ipv6");
       const bits = Number(String(one.cidr || "").split("/")[1]);
       if (kind === 6 && bits >= 48 && bits < 128) networks.addSubnet(at, bits, "ipv6");
@@ -412,9 +414,8 @@ function machineNow() {
   for (const [at, bits] of four) mine.addSubnet(at, bits, "ipv4");
   for (const [at, bits] of six) mine.addSubnet(at, bits, "ipv6");
   for (const [at, bits] of nets) networks.addSubnet(at, bits, "ipv6");
-  if (four.length || six.length) some = true;
   // wait: how long this reading is kept.
-  machine = { at: now, read, kernel: kernel.read, wait: Math.max(INTERFACES_MS, (routes / ROUTES_A_SECOND) * 1_000), mine, networks, some };
+  machine = { at: now, read, kernel: kernel.read, wait: Math.max(INTERFACES_MS, (routes / ROUTES_A_SECOND) * 1_000), mine, networks };
   return machine;
 }
 

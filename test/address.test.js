@@ -220,6 +220,59 @@ test("an address this machine's network interfaces hold, a public one included, 
   }
 });
 
+// An IPv6 address that holds an IPv4 one is judged by that IPv4 address and
+// by itself, as any other IPv6 address. A network that gives this machine a
+// 6to4 address (2002::/16) builds it from the IPv4 address of its 6to4
+// router, which another box holds: judged by that IPv4 address alone, the
+// machine's own 6to4 address and every device of its 6to4 network, the
+// router at the prefix's ::1 among them, were taken for the public
+// internet, so a page's frames, pictures and fetch() reached them.
+test("an address of this machine's that holds an IPv4 address, as a 6to4 one, and its IPv6 network are this machine's, though another box holds that IPv4 address", async () => {
+  const os = require("node:os");
+  const { ownIp, kernel } = require("../skills/easyscreenshotkit/scripts/lib/address");
+  const saved = os.networkInterfaces;
+  const savedRead = kernel.read;
+  os.networkInterfaces = () => ({
+    lo: [{ address: "127.0.0.1", netmask: "255.0.0.0", family: "IPv4", internal: true, cidr: "127.0.0.1/8" }],
+    dm0: [
+      { address: "93.184.215.14", netmask: "255.255.255.255", family: "IPv4", internal: false, cidr: "93.184.215.14/32" },
+      { address: "2002:5db8:d822:1::5", netmask: "ffff:ffff:ffff:ffff::", family: "IPv6", internal: false, cidr: "2002:5db8:d822:1::5/64", scopeid: 0 },
+    ],
+  });
+  // The kernel's lists, none here.
+  kernel.read = () => "";
+  try {
+    assert.equal(ownIp("2002:5db8:d822:1::5"), "machine");
+    assert.equal(ownIp("2002:5db8:d822:1::1"), "network");
+    assert.equal(ownIp("[2002:5db8:d822:1::50]"), "network");
+    // The IPv4 address it holds is another box's, and another 6to4 network
+    // of that address is another network.
+    assert.equal(ownIp("93.184.216.34"), "");
+    assert.equal(ownIp("2002:5db8:d822:2::1"), "");
+    // An IPv6 form of this machine's own IPv4 address is this machine's.
+    assert.equal(ownIp("2002:5db8:d70e::1"), "machine");
+    assert.equal(ownIp("::ffff:93.184.215.14"), "machine");
+    await withNames({ "sixtofour-site.example": "93.184.216.34", "sixtofour-router.example": "2002:5db8:d822:1::1" }, async () => {
+      // Each name of its own, as the run keeps each name's answer for the
+      // process.
+      const site = await guardFor("https://sixtofour-site.example/");
+      for (const [url, why] of [
+        ["http://[2002:5db8:d822:1::5]/pixel.png", "at 2002:5db8:d822:1::5, an address of this machine"],
+        ["http://[2002:5db8:d822:1::1]/admin", "at 2002:5db8:d822:1::1, on a network of this machine"],
+        ["http://sixtofour-router.example/api", "at 2002:5db8:d822:1::1, on a network of this machine"],
+        ["http://[2002:5db8:d70e::1]/", "at 2002:5db8:d70e::1, an address of this machine"],
+        ["http://93.184.216.34/", ""],
+        ["http://[2002:5db8:d822:2::1]/", ""],
+      ]) {
+        assert.equal(await site.refuses(url), why, url);
+      }
+    });
+  } finally {
+    os.networkInterfaces = saved;
+    kernel.read = savedRead;
+  }
+});
+
 // On the port given, the host given is its own name, wherever it is: a name
 // every address of which is one of the host given's is another host, as a
 // server's www name at its own address is, and so is that address itself.

@@ -1707,6 +1707,47 @@ test("an address of this machine on an interface that is down or has no link, or
   assert.deepEqual(told.seen, []);
 });
 
+// Nor is an address of this machine's own that holds an IPv4 address
+// another box holds, as the 6to4 address a network builds from the IPv4
+// address of its 6to4 router, nor a device of its IPv6 network, the router
+// at the prefix's ::1 among them: judged by that IPv4 address alone, each
+// was taken for an address on the public internet, and a page's request
+// through the run's proxy and the kit's own request reached the machine's
+// own service there and the devices of its network. In network namespaces
+// of the test's own (see network.js), with the rest of the network in one
+// of its own, where the devices answer.
+test("an address of this machine on a network of its own, as a 6to4 one, and a device of that network are reached neither through the run's proxy nor by the kit's own request", { skip: noVeth, timeout: 60_000 }, async () => {
+  const child = spawn("unshare", ["-rn", process.execPath, path.join(__dirname, "network.js"), "networks"], { stdio: ["ignore", "pipe", "pipe"] });
+  let out = "";
+  let err = "";
+  child.stdout.on("data", (d) => (out += d));
+  child.stderr.on("data", (d) => (err += d));
+  const timer = setTimeout(() => child.kill("SIGKILL"), 50_000);
+  await new Promise((resolve) => child.on("close", resolve));
+  clearTimeout(timer);
+  let told = null;
+  try {
+    told = JSON.parse(out.trim().split("\n").pop());
+  } catch {
+    assert.fail(`network.js printed no result: ${(out + err).trim().slice(-600)}`);
+  }
+  assert.equal(told.failed, undefined);
+  const machine = (address) => `at ${address}, an address of this machine`;
+  const network = (address) => `at ${address}, on a network of this machine`;
+  const want = {
+    "2002:5db8:d84d:1::5": machine("2002:5db8:d84d:1::5"),
+    "2002:5db8:d84d:1::1": network("2002:5db8:d84d:1::1"),
+    "2002:5db8:d84d:1::9": network("2002:5db8:d84d:1::9"),
+  };
+  assert.deepEqual(Object.keys(told.judged), Object.keys(want));
+  for (const [address, why] of Object.entries(want)) {
+    assert.deepEqual(told.judged[address], { refuses: why, http: "", tunnel: "HTTP/1.1 403 Forbidden", kit: `it is ${why}` }, address);
+  }
+  // Nothing reached the machine's own service, nor a device of its network.
+  assert.deepEqual(told.seen, []);
+  assert.deepEqual(told.devices, []);
+});
+
 // The start's probe of WebRTC ends 1.5 s after its offer was set, where the
 // browser does not say it is done gathering: waited for, as on a machine
 // whose one network is its loopback, the probe ran to its 10 s and the
