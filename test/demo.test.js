@@ -967,6 +967,38 @@ test("a tour: the pages the menu puts forward, clicked through the menu, pricing
   }
 });
 
+// A site given at 127.0.0.1 whose menu links its pages at localhost on its
+// port, as Jekyll writes them, has its tour click through that menu to the
+// pages it takes at the address given, where it found no link to them, as
+// it looked for one at 127.0.0.1 alone, and moved on to each with a
+// crossfade. A link to the same path on another port is no link to the
+// page, as the run does not open that port.
+test("a tour of a site given at 127.0.0.1 whose menu links its pages at localhost clicks through that menu", { skip: missing, timeout: 300_000 }, async () => {
+  const html = { "Content-Type": "text/html; charset=utf-8" };
+  let at = "";
+  let elsewhere = "";
+  const { server, origin } = await serve((req, res) => {
+    const page = (title, color) => `<!doctype html><html><head><meta charset="utf-8"><title>${title} | Jekyll</title><style>body{margin:0;font-family:sans-serif} header{background:#c00;padding:20px} header a{color:#fff;margin-right:30px;font-size:22px} main{background:rgb(${color});height:2000px;padding:40px}</style></head><body><header><nav><a href="${elsewhere}/pricing">Old pricing</a><a href="${at}/features">Features</a><a href="${at}/pricing">Pricing</a></nav></header><main><h1>${title}</h1><p>The ${title.toLowerCase()} page of a site Jekyll serves.</p></main></body></html>`;
+    const path = req.url.split("?")[0];
+    if (path === "/") return res.writeHead(200, html).end(page("Tools for teams", GREEN.join(",")));
+    if (path === "/features") return res.writeHead(200, html).end(page("Features", TEAL.join(",")));
+    if (path === "/pricing") return res.writeHead(200, html).end(page("Pricing", ORANGE.join(",")));
+    res.writeHead(404).end("not found");
+  });
+  const port = Number(new URL(origin).port);
+  at = `http://localhost:${port}`;
+  elsewhere = `http://localhost:${port === 65535 ? port - 1 : port + 1}`;
+  const root = tempDir();
+  try {
+    const { manifest } = await makeDemo(`${origin}/`, { dir: path.join(root, "tour"), pages: 3, gif: false, timeLimit: 280_000 });
+    assert.deepEqual(manifest.pages.map((p) => new URL(p.url).pathname), ["/", "/features", "/pricing"]);
+    assert.deepEqual(manifest.steps.filter((s) => s.action === "click" || s.action === "visit").map((s) => s.label), ["Open 127.0.0.1", 'Click "Features"', 'Click "Pricing"']);
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a #route in the address and in a steps file: each view opened on its route, a route clicked to is a page of its own", { skip: missing, timeout: 300_000 }, async () => {
   const { server, origin } = await fixture();
   const root = tempDir();
@@ -1295,6 +1327,16 @@ test("a tour clicks to a view by its link only when the view has the query of th
   };
   const at = (url) => ({ url: `https://acme.com${url}` });
   assert.deepEqual(await moves([at("/spa/?mode=a#/one"), at("/spa/?mode=a#/two")]), ["visit", "click"]);
+  // A link at another of this machine's own names on the page's port is a
+  // link to a page of a site given at one of them (see LOCATE).
+  const targets = async (pages) => {
+    const found = [];
+    for await (const step of tourSteps(recorder, pages)) if (step.action === "click") found.push(step.target);
+    return found;
+  };
+  assert.deepEqual(await targets([{ url: "http://127.0.0.1:4000/" }, { url: "http://127.0.0.1:4000/pricing" }]), [{ href: "http://127.0.0.1:4000/pricing", hosts: ["localhost"] }]);
+  assert.deepEqual(await targets([{ url: "http://localhost:4000/" }, { url: "http://localhost:4000/pricing" }]), [{ href: "http://localhost:4000/pricing", hosts: ["127.0.0.1", "[::1]"] }]);
+  assert.deepEqual(await targets([at("/"), at("/pricing")]), [{ href: "https://acme.com/pricing", hosts: [] }]);
   assert.deepEqual(await moves([at("/spa/?mode=a#/one"), at("/spa/?mode=b#/two")]), ["visit", "visit"]);
   // A page with no #route is the link's whatever query the page before has.
   assert.deepEqual(await moves([at("/spa/?mode=a#/one"), at("/pricing")]), ["visit", "click"]);

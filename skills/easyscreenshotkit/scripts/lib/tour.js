@@ -313,9 +313,14 @@ function chooseStops({ max, tops }, height, cover = 0) {
   return stops.filter((stop, i, all) => i === 0 || stop.y - all[i - 1].y > height * 0.3);
 }
 
+// What a click on the link to url points at: its address, and the other
+// names of this machine that the run takes for its host on its port, at
+// which the site may link it (see LOCATE in record.js).
+const linkTo = (url) => ({ href: url, hosts: sitesOf(url).slice(1) });
+
 // The link to url on the screen as it is, or null.
 async function linkOnScreen(recorder, url) {
-  const found = await recorder.locate({ href: url }, { timeout: 0, scroll: false });
+  const found = await recorder.locate(linkTo(url), { timeout: 0, scroll: false });
   if (!found || found.covered) return null;
   const inside = found.top >= 0 && found.top + found.height <= recorder.viewport.height && found.left >= 0 && found.left + found.width <= recorder.viewport.width;
   return inside ? found : null;
@@ -324,7 +329,7 @@ async function linkOnScreen(recorder, url) {
 // Whether a link to url shows on the page's first screen: a menu that
 // scrolled away with the page is there again at the top.
 async function linkAtTop(recorder, url) {
-  const found = await recorder.locate({ href: url }, { timeout: 0, scroll: false });
+  const found = await recorder.locate(linkTo(url), { timeout: 0, scroll: false });
   if (!found) return false;
   const { y } = await recorder.scrollState();
   return found.top + y >= 0 && found.top + y + found.height <= recorder.viewport.height;
@@ -411,7 +416,7 @@ async function* tourSteps(recorder, pages, { reserve = 60_000, left = [], clock 
       link = await linkOnScreen(recorder, next.url);
     }
     const where = placeOf(next.url);
-    if (link) yield { action: "click", target: { href: next.url }, label: link.text ? `Click ${quote(link.text)}` : `Open ${where}`, text: link.text, attribute: link.attribute, expect: next.url };
+    if (link) yield { action: "click", target: linkTo(next.url), label: link.text ? `Click ${quote(link.text)}` : `Open ${where}`, text: link.text, attribute: link.attribute, expect: next.url };
     else yield { action: "visit", url: next.url, label: `Open ${where}` };
     // The pages left out on the way are passed over.
     i = j - 1;
