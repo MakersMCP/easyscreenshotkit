@@ -441,10 +441,17 @@ test("--pwa-check reads a manifest given as a named pipe to its end within --tim
 // What is no regular file is named before it is opened, as opening a
 // device can do something of its own; and what is opened is looked at
 // again before it is read, as a named pipe can take a regular file's place
-// between the two, which here a stand-in for the first look shows. In a
-// process of its own, with a time of its own, as a check that opened the
-// named pipe to read it would hold its process with it.
-test("--pwa-check opens no screenshot's file that is no regular file, and reads none that became one after it was looked at", { skip: process.platform === "win32" && "no named pipes of that kind on Windows" }, () => {
+// between the two, which here a stand-in for the first look shows. The
+// manifest given, which may be a named pipe (see pwa.js readGiven()), is
+// looked at again too: a regular file that took a named pipe's place is
+// read as the file it is, where it was handed to the reading of a pipe,
+// which refused it (ERR_INVALID_FD_TYPE) and kept it open. In a process of
+// its own, with a time of its own, as a check that opened the named pipe
+// to read it would hold its process with it. A manifest whose screenshots
+// are files makes no rule for addresses, so nothing else is opened, the
+// kernel's lists of this machine's addresses included (see
+// checkManifest()).
+test("--pwa-check opens no screenshot's file that is no regular file, reads none that became one after it was looked at, and reads a manifest given as the regular file it opened", { skip: process.platform === "win32" && "no named pipes of that kind on Windows" }, () => {
   const dir = fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "easyscreenshotkit-pwa-open-"));
   try {
     const pipe = path.join(dir, "pipe.png");
@@ -465,19 +472,22 @@ fs.openSync = (file, ...rest) => {
 };
 (async () => {
   const first = await checkManifest({ file: manifest });
-  // Past the manifest and the kernel's lists of this machine's addresses,
-  // which the check's rule reads as it is made (see address.js).
-  const before = opened.filter((file) => file !== manifest && !file.startsWith("/proc/net/"));
+  const before = opened.filter((file) => file !== manifest);
   // The first look sees a regular file where the named pipe is.
   const regular = statSync(manifest);
   fs.statSync = (file, ...rest) => (String(file) === pipe ? regular : statSync(file, ...rest));
   const second = await checkManifest({ file: manifest });
-  process.stdout.write(JSON.stringify({ first: first.screenshots.map((shot) => shot.error), before, second: second.screenshots[0].error, openedPipe: opened.includes(pipe) }));
+  // And a named pipe where the manifest is, at the first look alone.
+  const fifo = statSync(pipe);
+  let looked = false;
+  fs.statSync = (file, ...rest) => (String(file) === manifest && !looked ? ((looked = true), fifo) : statSync(file, ...rest));
+  const third = await checkManifest({ file: manifest }, { timeLimit: 10_000 }).then((report) => report.name, (err) => err.message);
+  process.stdout.write(JSON.stringify({ first: first.screenshots.map((shot) => shot.error), before, second: second.screenshots[0].error, openedPipe: opened.includes(pipe), third, looked }));
 })();
 `;
     const run = spawnSync(process.execPath, ["-e", script, manifest, pipe], { encoding: "utf8", timeout: 30_000 });
     assert.equal(run.status, 0, `${run.signal || ""} ${run.stderr}`);
-    assert.deepEqual(JSON.parse(run.stdout), { first: ["it is a named pipe, not a file", "it is a device, not a file"], before: [], second: "it is a named pipe, not a file", openedPipe: true });
+    assert.deepEqual(JSON.parse(run.stdout), { first: ["it is a named pipe, not a file", "it is a device, not a file"], before: [], second: "it is a named pipe, not a file", openedPipe: true, third: "Acme", looked: true });
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
