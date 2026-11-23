@@ -360,6 +360,48 @@ test("the IPv6 network of an address of this machine's is the prefix its interfa
   assert.ok(readme.includes("and the IPv6 network of each address of an interface, the prefix its interface gives it held to /48 at the widest and /64 at the narrowest,"));
 });
 
+// The rest of the user's own network at public addresses outside the
+// networks of this machine's interfaces, as another IPv6 network of the
+// same site, such as a home router's guest network in the range its
+// provider gives it, cannot be told from the public internet: the README's
+// Limits and SKILL.md say so, and that MAKERSMCP_REFUSE_ADDRESSES can name
+// its ranges, which it then refuses as the address given too. They said
+// the rule refuses the IPv6 network of an interface, whoever's machines
+// answer there, which read as the user's whole network.
+test("the user's other networks at public addresses are taken for the public internet, as the texts say, and MAKERSMCP_REFUSE_ADDRESSES that names their ranges refuses them, the address given too", async () => {
+  const os = require("node:os");
+  const { kernel } = require("../skills/easyscreenshotkit/scripts/lib/address");
+  const saved = os.networkInterfaces;
+  const savedRead = kernel.read;
+  os.networkInterfaces = () => ({
+    lo: [{ address: "127.0.0.1", netmask: "255.0.0.0", family: "IPv4", internal: true, cidr: "127.0.0.1/8" }],
+    eth0: [{ address: "2001:470:1:2::5", netmask: "ffff:ffff:ffff:ffff::", family: "IPv6", internal: false, cidr: "2001:470:1:2::5/64", scopeid: 0 }],
+  });
+  // The kernel's lists, none here.
+  kernel.read = () => "";
+  try {
+    const site = await guardFor("https://93.184.216.34/");
+    assert.equal(await site.refuses("http://[2001:470:1:2::1]/"), "at 2001:470:1:2::1, on a network of this machine");
+    assert.equal(await site.refuses("http://[2001:470:1:3::1]/"), "");
+    await withSetting("2001:470:1::/56", async () => {
+      const guest = await guardFor("https://93.184.216.34/");
+      assert.equal(await guest.refuses("http://[2001:470:1:3::1]/"), here("2001:470:1:3::1"));
+      assert.equal((await guardFor("http://[2001:470:1:3::9]:3000/")).refused, here("2001:470:1:3::9"));
+    });
+  } finally {
+    os.networkInterfaces = saved;
+    kernel.read = savedRead;
+  }
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const readme = fs.readFileSync(path.join(__dirname, "..", "README.md"), "utf8").replace(/\s+/g, " ");
+  const limits = readme.slice(readme.indexOf(" ## Limits "));
+  assert.match(limits, /Nor can the run tell the rest of your own network where it is at public addresses outside the networks of your machine's interfaces, [^.]*: a page can have the run reach a device there too\. On such a network, name its ranges in `MAKERSMCP_REFUSE_ADDRESSES`, which then refuses them as the address you give too\./);
+  assert.ok(readme.includes("nor is the rest of your network at public addresses outside the networks of your machine's interfaces, as a home router's guest network, and the run cannot tell them from any other on the public internet (see [Limits](#limits))."));
+  const skill = fs.readFileSync(path.join(__dirname, "..", "skills", "easyscreenshotkit", "SKILL.md"), "utf8").replace(/\s+/g, " ");
+  assert.match(skill, /The kit takes the rest of the user's own network for the public internet where it is at public addresses outside the networks of the machine's interfaces, [^.]*\. When the user says their network is such, tell them that `MAKERSMCP_REFUSE_ADDRESSES` can name its ranges, which are then refused as the address given too\./);
+});
+
 // On the port given, the host given is its own name, wherever it is: a name
 // every address of which is one of the host given's is another host, as a
 // server's www name at its own address is, and so is that address itself.

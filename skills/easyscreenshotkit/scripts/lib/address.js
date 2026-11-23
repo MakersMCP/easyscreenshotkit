@@ -17,11 +17,13 @@
 // or a report. An address that leads into this machine or its network from
 // outside, as the public IPv4 address of a router that turns a connection
 // to it back inside, is no address this machine holds, and the run cannot
-// tell it from any other on the public internet:
-// MAKERSMCP_REFUSE_ADDRESSES (below) is for those. A run given
-// such an address itself, as a developer gives the address of a site on
-// their own machine, opens that host and port and no other address of the
-// kind. That is an address given whose host is such an address, or a name
+// tell it from any other on the public internet, nor the rest of the
+// user's own network at addresses on the public internet outside the
+// networks of this machine's interfaces, as another IPv6 network of the
+// same site: MAKERSMCP_REFUSE_ADDRESSES (below) is for those (the README's
+// Limits say so). A run given such an address itself, as a developer gives
+// the address of a site on their own machine, opens that host and port and
+// no other address of the kind. That is an address given whose host is such an address, or a name
 // every address of which is one: a name that answers both with an address
 // on the public internet and with one that is not, or is this machine's,
 // is not opened, the address given included (see standing()).
