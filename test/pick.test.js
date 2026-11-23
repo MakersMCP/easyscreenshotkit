@@ -199,6 +199,14 @@ test("a link of the site at another of this machine's own names on the home page
   // in another language there is taken at it.
   assert.deepEqual(pick.routeLinks([{ href: "http://localhost:4000/app/#/plants" }, { href: "http://[::1]:4000/app/#/light" }], { home: "http://127.0.0.1:4000/" }).map((r) => r.url), ["http://127.0.0.1:4000/app/#/plants"]);
   assert.equal(pick.atHomeHost("http://localhost:4000/tr/", "http://127.0.0.1:4000/"), "http://127.0.0.1:4000/tr/");
+  // The home page's version in another language there, at a path that does
+  // not read as a language, is left out as one, as from its own host.
+  const languages = [{ href: "http://localhost:4000/pricing", text: "Pricing", where: "header" }, { href: "http://localhost:4000/deutsch", text: "Deutsch", where: "header" }, { href: "http://localhost:4000/features", text: "Features", where: "header" }];
+  for (const home of ["http://127.0.0.1:4000/", "http://localhost:4000/"]) {
+    const other = pick.rankLinks(languages, [], { home, alternates: ["http://localhost:4000/deutsch"] });
+    assert.deepEqual(other.candidates.map((c) => new URL(c.url).pathname).sort(), ["/features", "/pricing"], home);
+    assert.deepEqual(other.skipped, [{ url: `${home}deutsch`, reason: "another language" }], home);
+  }
   assert.equal(pick.atHomeHost("http://localhost:4001/tr/", "http://127.0.0.1:4000/"), "http://localhost:4001/tr/");
   assert.equal(pick.atHomeHost("https://acme.com/tr/", "https://acme.com/"), "https://acme.com/tr/");
   // A page of the tour that lands at another of those names stays a page

@@ -508,7 +508,11 @@ function rankLinks(links, sitemap, { home, robots = null, alternates = [], exclu
   const site = siteOf(home);
   // The home page is its path whatever route it opened on.
   const taken = new Set([pageKey(home), viewKey(home), ...exclude.map(viewKey), ...keys]);
-  const otherLanguages = new Set(alternates.map((alt) => { try { return pageKey(alt); } catch { return ""; } }));
+  // The home page's versions in other languages, moved to its host as the
+  // links are (see onHomeHost()): keyed by their own host, one at
+  // http://localhost:4000/deutsch on a site given at http://127.0.0.1:4000/
+  // missed the link moved there and was taken as a page of the tour.
+  const otherLanguages = new Set(alternates.map((alt) => { try { return pageKey(atHomeHost(alt, home)); } catch { return ""; } }));
   const byKey = new Map();
   const skipped = new Map();
   let order = 0;

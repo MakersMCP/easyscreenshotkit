@@ -4111,7 +4111,10 @@ test("of a menu's link to a page on another port and the footer's on the site's 
 // of the site. And a page that moves on to localhost on that port, as a
 // server sends a folder's address on to the one with a slash at its end by
 // the name it was made with, is a page of the site, where the tour left it
-// out as redirected to localhost.
+// out as redirected to localhost. The home page's version in another
+// language, which its head names there too, at a path that does not read
+// as a language, is left out as another language there, where the tour
+// took it as a page.
 test("a site given at 127.0.0.1 whose links and sitemap name its pages at localhost on its port has its tour take them at the address given", { skip: noBrowser, timeout: 240_000 }, async () => {
   const html = { "Content-Type": "text/html; charset=utf-8" };
   const pages = { "/pricing": "Pricing", "/features": "Features", "/how-it-works": "How it works", "/about": "About us", "/customers/": "Customers" };
@@ -4120,9 +4123,11 @@ test("a site given at 127.0.0.1 whose links and sitemap name its pages at localh
   const { server, origin } = await serve((req, res) => {
     const path = req.url.split("?")[0];
     hosts.set(path, req.headers.host);
+    const languages = `<link rel="alternate" hreflang="de" href="${at}/deutsch">`;
     if (path === "/sitemap.xml") return res.writeHead(200, { "Content-Type": "application/xml" }).end(`<urlset><url><loc>${at}/how-it-works</loc></url><url><loc>${at}/features</loc></url></urlset>`);
     if (path === "/customers") return res.writeHead(301, { Location: `${at}/customers/` }).end();
-    if (path === "/") return res.writeHead(200, html).end(page("Jekyll | Tools for teams", `<header><nav><a href="${at}/pricing">Pricing</a> <a href="${at}/features">Features</a> <a href="${at}/customers">Customers</a></nav></header><h1>Tools for teams</h1><div style="height:1400px"></div>`));
+    if (path === "/") return res.writeHead(200, html).end(page("Jekyll | Tools for teams", `<header><nav><a href="${at}/pricing">Pricing</a> <a href="${at}/features">Features</a> <a href="${at}/customers">Customers</a> <a href="${at}/deutsch">Deutsch</a></nav></header><h1>Tools for teams</h1><div style="height:1400px"></div>`, { head: languages }));
+    if (path === "/deutsch") return res.writeHead(200, html).end(page("Jekyll | Werkzeuge für Teams", "<h1>Werkzeuge für Teams</h1><div style=\"height:1400px\"></div>", { head: languages, lang: "de" }));
     if (pages[path]) return res.writeHead(200, html).end(page(`${pages[path]} | Jekyll`, `<h1>${pages[path]}</h1><p>The ${pages[path].toLowerCase()} page of a site Jekyll serves.</p><div style="height:1400px"></div>`));
     res.writeHead(404).end("not found");
   });
@@ -4131,13 +4136,15 @@ test("a site given at 127.0.0.1 whose links and sitemap name its pages at localh
   try {
     const { manifest } = await takeShots(`${origin}/`, { dir: path.join(root, "shots"), pages: 6, sizes: "desktop", extra: [`${at}/about`], timeLimit: 200_000 });
     assert.deepEqual(manifest.pages.map((p) => p.url).sort(), [`${origin}/`, `${origin}/about`, `${origin}/features`, `${origin}/how-it-works`, `${origin}/pricing`, `${at}/customers/`]);
-    assert.deepEqual([manifest.skipped, manifest.notes], [[], []]);
+    assert.deepEqual([manifest.skipped, manifest.notes], [[{ url: `${origin}/deutsch`, reason: "another language" }], []]);
     // The same of a demo's tour, which looks for pages while four minutes
     // of the demo are left.
     setTimeLimit(400_000);
     const chrome = await launch({ guard: await guardFor(`${origin}/`) });
     try {
-      const tour = await pickPages(chrome, `${origin}/`, { pages: 5 });
+      // Room for one page more than the site has besides its version in
+      // German.
+      const tour = await pickPages(chrome, `${origin}/`, { pages: 6 });
       assert.deepEqual(tour.pages.map((p) => p.url).sort(), [`${origin}/`, `${origin}/features`, `${origin}/how-it-works`, `${origin}/pricing`, `${at}/customers/`]);
       assert.deepEqual(tour.skipped, []);
     } finally {
