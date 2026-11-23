@@ -118,7 +118,10 @@
 //
 // it stands in for a machine whose interfaces hold IPv6 addresses on
 // networks of its own (see NETWORKS): n0 a 6to4 address, which a network
-// builds from the IPv4 address of its 6to4 router, another box's. The rest
+// builds from the IPv4 address of its 6to4 router, another box's, and v0
+// an address at /128 with the network's /64 a route alone, as a DHCPv6
+// client holds the address it gets and a router's advertisement gives the
+// network. The rest
 // of each network is in a network namespace of its own, joined to the
 // machine by a veth link (see devices()), where the router at the prefix's
 // ::1 and another device answer on port 80 and note each request. It asks
@@ -898,9 +901,11 @@ async function judgeAll(addresses) {
 // The machine of networks(): an IPv6 address of its own on each network,
 // on the public internet by its range, beside a running dummy, d0, with the
 // default routes, and the addresses of devices of those networks, which
-// answer in devices(). machine: the machine's own; each other: a device's.
+// answer in devices(). machine: the machine's own, with its prefix; route:
+// the network as a route alone; devices: the devices' addresses.
 const NETWORKS = {
   sixToFour: { link: "n0", peer: "n1", machine: "2002:5db8:d84d:1::5/64", devices: ["2002:5db8:d84d:1::1", "2002:5db8:d84d:1::9"] },
+  dhcp: { link: "v0", peer: "v1", machine: "2001:470:1:2::5/128", route: "2001:470:1:2::/64", devices: ["2001:470:1:2::1", "2001:470:1:2::c4"] },
 };
 
 async function networks() {
@@ -928,6 +933,7 @@ async function networks() {
       }
       ip("link", "set", one.link, "up");
       ip("-6", "addr", "add", one.machine, "dev", one.link, "nodad");
+      if (one.route) ip("-6", "route", "add", one.route, "dev", one.link);
     }
     for (let i = 0; i < 200 && !printed.includes("ready"); i++) await new Promise((resolve) => setTimeout(resolve, 50));
     if (!printed.includes("ready")) throw new Error("the devices did not start");

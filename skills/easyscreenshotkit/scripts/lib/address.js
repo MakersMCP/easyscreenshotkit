@@ -216,9 +216,11 @@ function notPublicIp(address) {
 
 // Whether an IP address is this machine's own: "machine" for one of the
 // addresses it holds (see machineNow()), "network" for one of the IPv6
-// network of such an address, the prefix its interface gives it, /48 or
-// longer, else "". A machine on an IPv6 network holds global addresses of
-// its own (SLAAC), temporary ones among them that come and go, and a server
+// network of such an address on the public internet, the prefix its
+// interface gives it, held to /48 at the widest and /64 at the narrowest
+// (see machineNow()), else "". A machine on an IPv6 network holds global
+// addresses of its own (SLAAC, or DHCPv6), temporary ones among them that
+// come and go, and a server
 // can hold a public IPv4 address on an interface: such an address is on the
 // public internet by its range, so a site that read it off the run's own
 // connection had the browser load a frame, a picture or a fetch() from a
@@ -277,6 +279,22 @@ function ownIp(address) {
 // more routes it holds, so a machine of many, as a router that holds the
 // internet's a million, is read again only once a second has passed for each
 // ROUTES_A_SECOND of them, where that is longer.
+//
+// The IPv6 network of an address on the public internet is the prefix its
+// interface gives it, held to /48 at the widest, as a wider one would take
+// in other people's networks, and to /64 at the narrowest, as IPv6
+// networks are /64 (RFC 7421): a DHCPv6 client holds the address it gets
+// at /128, as NetworkManager, systemd-networkd and dhclient do, and the
+// network's /64 comes from the router's advertisement as a route alone,
+// which the run does not take for a network (of the kernel's routes it
+// takes the local ones alone, see kernelAddresses()), so with the
+// interface's prefix alone the router at the prefix's ::1 and every other
+// device of such a network counted as the public internet, and a device of
+// it given by its name, which answers with its private IPv4 address and
+// its global IPv6 one, was refused as a name whose answers mix. ::1 and the
+// other addresses that are not on the public internet give none: ::1 is
+// held at /128, and the /64 around it holds addresses the rule takes for
+// public by their range.
 const INTERFACES_MS = 1_000;
 const ROUTES_A_SECOND = 20_000;
 let machine = null;
@@ -314,25 +332,26 @@ function hexIpv6(hex) {
 }
 
 // The addresses the kernel takes a connection to for one to this machine,
-// as [address, prefix] pairs: in IPv4 every LOCAL entry of the tables every
-// connection is looked up in by the kernel's own rules, local, main and
-// default (the parts of /proc/net/fib_trie after "Local:", "Main:" and
-// "Id 253:"), an address of an interface, whatever its state, or a range
-// routed to the machine itself; in IPv6 every address of an interface,
-// whatever its state (/proc/net/if_inet6), with its prefix for the network
-// rule (networks), and every route of the kind local (RTF_LOCAL in
-// /proc/net/ipv6_route) of /48 or longer. A transparent proxy routes every
-// address to the machine itself in a table of its own, 0.0.0.0/0 and ::/0,
-// which only the packets it marks go by, as a rule of its own says: taken,
-// it made every address of the internet one of this machine's. In IPv4
-// such a table is a part of fib_trie of its own, as "Id 100:"; the kernel
-// names no table for an IPv6 route, so a local route shorter than /48 is
-// left out. The routes are listed only where the kernel's counts of them
-// (/proc/net/fib_triestat, /proc/net/rt6_stats) are KERNEL_ROUTES at most.
-// Empty where a file cannot be read, and on any other system; routes: how
-// many routes the kernel counted.
+// as [address, prefix] pairs: in IPv4 (four) every LOCAL entry of the
+// tables every connection is looked up in by the kernel's own rules, local,
+// main and default (the parts of /proc/net/fib_trie after "Local:", "Main:"
+// and "Id 253:"), an address of an interface, whatever its state, or a
+// range routed to the machine itself; in IPv6 (six) every address of an
+// interface, whatever its state (/proc/net/if_inet6), and every route of
+// the kind local (RTF_LOCAL in /proc/net/ipv6_route) of /48 or longer; and
+// each address of an interface with the prefix its interface gives it
+// (prefixes), for its network (see machineNow()). A transparent proxy
+// routes every address to the machine itself in a table of its own,
+// 0.0.0.0/0 and ::/0, which only the packets it marks go by, as a rule of
+// its own says: taken, it made every address of the internet one of this
+// machine's. In IPv4 such a table is a part of fib_trie of its own, as
+// "Id 100:"; the kernel names no table for an IPv6 route, so a local route
+// shorter than /48 is left out. The routes are listed only where the
+// kernel's counts of them (/proc/net/fib_triestat, /proc/net/rt6_stats) are
+// KERNEL_ROUTES at most. Empty where a file cannot be read, and on any
+// other system; routes: how many routes the kernel counted.
 function kernelAddresses() {
-  const found = { four: [], six: [], networks: [], routes: 0 };
+  const found = { four: [], six: [], prefixes: [], routes: 0 };
   if (process.platform !== "linux") return found;
   const text = (file) => {
     try {
@@ -374,9 +393,8 @@ function kernelAddresses() {
     const [hex, , bits] = line.trim().split(/\s+/);
     const at = hexIpv6(hex || "");
     if (!at) continue;
-    const prefix = parseInt(bits, 16);
     found.six.push([at, 128]);
-    if (prefix >= 48 && prefix < 128) found.networks.push([at, prefix]);
+    found.prefixes.push([at, parseInt(bits, 16)]);
   }
   for (const line of routes6 <= KERNEL_ROUTES ? text(KERNEL_FILES.route6).split("\n") : []) {
     const fields = line.trim().split(/\s+/);
@@ -400,20 +418,24 @@ function machineNow() {
   }
   const mine = new net.BlockList();
   const networks = new net.BlockList();
+  // The network of an IPv6 address on the public internet (see above); one
+  // whose prefix is not given is held alone, at /128.
+  const network = (at, bits) => {
+    if (!notPublicIp(at)) networks.addSubnet(at, Math.min(64, Math.max(48, bits || 128)), "ipv6");
+  };
   for (const list of Object.values(interfaces || {})) {
     for (const one of list || []) {
       const at = bareIp(one && one.address);
       const kind = net.isIP(at);
       if (!kind) continue;
       mine.addAddress(at, kind === 4 ? "ipv4" : "ipv6");
-      const bits = Number(String(one.cidr || "").split("/")[1]);
-      if (kind === 6 && bits >= 48 && bits < 128) networks.addSubnet(at, bits, "ipv6");
+      if (kind === 6) network(at, Number(String(one.cidr || "").split("/")[1]));
     }
   }
-  const { four, six, networks: nets, routes } = kernelAddresses();
+  const { four, six, prefixes, routes } = kernelAddresses();
   for (const [at, bits] of four) mine.addSubnet(at, bits, "ipv4");
   for (const [at, bits] of six) mine.addSubnet(at, bits, "ipv6");
-  for (const [at, bits] of nets) networks.addSubnet(at, bits, "ipv6");
+  for (const [at, bits] of prefixes) network(at, bits);
   // wait: how long this reading is kept.
   machine = { at: now, read, kernel: kernel.read, wait: Math.max(INTERFACES_MS, (routes / ROUTES_A_SECOND) * 1_000), mine, networks };
   return machine;

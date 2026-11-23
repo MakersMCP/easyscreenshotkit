@@ -273,6 +273,93 @@ test("an address of this machine's that holds an IPv4 address, as a 6to4 one, an
   }
 });
 
+// The IPv6 network of a global address of this machine's is the prefix its
+// interface gives it, held to /48 at the widest and /64 at the narrowest.
+// A DHCPv6 client holds the address it gets at /128, and the network's /64
+// comes from the router's advertisement as a route alone, which the run
+// does not take for a network: with no network for such an address, the
+// router at the prefix's ::1 and every other device of the user's own
+// network counted as the public internet, so a page's picture, frame and
+// fetch() reached them, and a device of that network given by its name,
+// which answers with its private IPv4 address and its global IPv6 one, was
+// refused as a name whose answers mix, where on a network that gives
+// addresses by SLAAC, at /64, it was taken. ::1, which every machine holds
+// at /128, is no global address and gives no network.
+test("the IPv6 network of an address of this machine's is the prefix its interface gives it, /48 at the widest and /64 at the narrowest, so the /64 around one held at /128, as DHCPv6 gives one", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 3_000_000 });
+  const os = require("node:os");
+  const { kernel } = require("../skills/easyscreenshotkit/scripts/lib/address");
+  const saved = os.networkInterfaces;
+  const savedRead = kernel.read;
+  const v6 = (address, bits) => ({ address, netmask: "", family: "IPv6", internal: false, cidr: `${address}/${bits}`, scopeid: 0 });
+  const lo = { lo: [{ address: "127.0.0.1", netmask: "255.0.0.0", family: "IPv4", internal: true, cidr: "127.0.0.1/8" }, { address: "::1", netmask: "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", family: "IPv6", internal: true, cidr: "::1/128", scopeid: 0 }] };
+  // An address whose prefix Node.js could not tell, with cidr null, as for
+  // a netmask that is not one, is held alone, at /128.
+  let interfaces = { ...lo, eth0: [{ address: "192.168.1.20", netmask: "255.255.255.0", family: "IPv4", internal: false, cidr: "192.168.1.20/24" }, v6("2001:470:1:2::5", 128), v6("fe80::5", 64)], tun0: [{ ...v6("2001:470:9:9::5", 0), cidr: null }] };
+  os.networkInterfaces = () => interfaces;
+  // The kernel's lists, none here.
+  kernel.read = () => "";
+  const network = (address) => `at ${address}, on a network of this machine`;
+  try {
+    await withNames({ "dhcp-site.example": "93.184.216.34", "dhcp-router.example": "2001:470:1:2::1", "dhcp-nas.example": ["192.168.1.50", "2001:470:1:2::50"] }, async () => {
+      const site = await guardFor("https://dhcp-site.example/");
+      for (const [url, why] of [
+        ["http://[2001:470:1:2::1]/pixel.png", network("2001:470:1:2::1")],
+        ["http://dhcp-router.example/api", network("2001:470:1:2::1")],
+        ["https://[2001:470:1:2:ffff:ffff:ffff:fffe]/", network("2001:470:1:2:ffff:ffff:ffff:fffe")],
+        ["http://[2001:470:1:2::5]/", "at 2001:470:1:2::5, an address of this machine"],
+        ["http://[2001:470:9:9::7]/", network("2001:470:9:9::7")],
+        // Held at /128, its network is the /64 around it, not the /48.
+        ["http://[2001:470:9:a::1]/", ""],
+        // Another /64 is another network.
+        ["http://[2001:470:1:3::1]/", ""],
+        ["http://[2001:470:1:1:ffff:ffff:ffff:ffff]/", ""],
+        // ::/64, around ::1, holds no network of this machine's.
+        ["http://[::1:0:0:1]/", ""],
+      ]) {
+        assert.equal(await site.refuses(url), why, url);
+      }
+      // A device of that network given by its name is the user's own, every
+      // address of it, as on a network that gives addresses by SLAAC; away
+      // from the address given it is refused by its first address that is
+      // not on the public internet.
+      const nas = await guardFor("http://dhcp-nas.example:5000/");
+      assert.deepEqual([nas.local, nas.refused], [true, ""]);
+      assert.equal(await nas.refuses("http://dhcp-nas.example:5000/files"), "");
+      assert.equal(await site.refuses("http://dhcp-nas.example/"), NOT_PUBLIC);
+      // A prefix from /48 to /64 is the network: from a /56, another address
+      // of it outside any /64 of the machine's is refused, and one past the
+      // /56 is not.
+      interfaces = { ...lo, eth0: [v6("2a02:1205:5000:ab00::5", 56)] };
+      t.mock.timers.tick(1_000);
+      assert.equal(await site.refuses("http://[2a02:1205:5000:abff::9]/"), network("2a02:1205:5000:abff::9"));
+      assert.equal(await site.refuses("http://[2a02:1205:5000:ac00::1]/"), "");
+      // A shorter prefix gives the /48 around the address, and no more of it.
+      interfaces = { ...lo, eth0: [v6("2a02:1205:5000::5", 40)] };
+      t.mock.timers.tick(1_000);
+      assert.equal(await site.refuses("http://[2a02:1205:5000:ffff::1]/"), network("2a02:1205:5000:ffff::1"));
+      assert.equal(await site.refuses("http://[2a02:1205:5001::1]/"), "");
+      // At /64, as SLAAC gives one, the /64 alone.
+      interfaces = { ...lo, eth0: [v6("2001:470:1:2::5", 64)] };
+      t.mock.timers.tick(1_000);
+      assert.equal(await site.refuses("http://[2001:470:1:2::1]/"), network("2001:470:1:2::1"));
+      assert.equal(await site.refuses("http://[2001:470:1:3::1]/"), "");
+    });
+  } finally {
+    os.networkInterfaces = saved;
+    kernel.read = savedRead;
+  }
+  // The README names the rule, and the route a router gives as one the run
+  // does not take for a network, as it reads the kernel's local routes
+  // alone.
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const readme = fs.readFileSync(path.join(__dirname, "..", "README.md"), "utf8");
+  const limits = readme.slice(readme.indexOf("\n## Limits\n")).replace(/\s+/g, " ");
+  assert.ok(limits.includes("The network of an IPv6 address is the prefix its interface gives it, held to /48 at the widest and /64 at the narrowest, so an address held at /128, as a DHCPv6 server gives one while the router gives its network as a route alone, which easyscreenshotkit does not take for a network of this machine, has the /64 around it."));
+  assert.ok(readme.includes("and the IPv6 network of each address of an interface, the prefix its interface gives it held to /48 at the widest and /64 at the narrowest,"));
+});
+
 // On the port given, the host given is its own name, wherever it is: a name
 // every address of which is one of the host given's is another host, as a
 // server's www name at its own address is, and so is that address itself.
@@ -401,7 +488,8 @@ test("this machine's network interfaces are read once a second at most, whatever
 // /40, and a transparent proxy's table 100, which routes every address to
 // the machine itself for the packets it marks alone, as a network namespace
 // of such a machine lists them (see the test in proxy.test.js that sets one
-// up); prefixes and routes6 stand for the counts of routes the kernel gives.
+// up), and an address held with a prefix shorter than /48 (w0); prefixes
+// and routes6 stand for the counts of routes the kernel gives.
 const KERNEL = {
   trieStats: (prefixes = [1, 3, 9]) => `Basic info: size of leaf: 48 bytes, size of tnode: 40 bytes.\n${["Id 100", "Main", "Local"].map((name, i) => `${name}:\n\tAver depth:     1.00\n\tMax depth:      1\n\tLeaves:         ${prefixes[i]}\n\tPrefixes:       ${prefixes[i]}\n\tInternal nodes: 1\n\tPointers: 8\nNull ptrs: 5\nTotal size: 1  kB\n\nCounters:\n---------\ngets = 0\n`).join("\n")}`,
   trie: `Id 100:
@@ -446,6 +534,7 @@ Local:
 00000000000000000000000000000001 01 80 10 80       lo
 2a022f0c800000010000000000000009 02 40 00 82       d0
 fe80000000000000acdbd3fffef59979 02 40 20 80       d0
+2a022f0c900000000000000000000005 06 28 00 80       w0
 `,
   routeStats6: (routes6 = 14) => `0012 000b 0002 ${routes6.toString(16).padStart(4, "0")} 0000 0000 0000\n`,
   route6: `00000000000000000000000000000000 00 00000000000000000000000000000000 00 00000000000000000000000000000000 00000400 00000001 00000000 80000001       lo
@@ -505,9 +594,15 @@ test("on Linux an address the kernel holds for this machine on an interface that
       ["93.184.216.77", at("93.184.216.77")],
       ["2a02:2f0c:8000:77::5", at("2a02:2f0c:8000:77::5")],
       ["2a02:2f0c:8000:77::99", "at 2a02:2f0c:8000:77::99, on a network of this machine"],
-      // An interface that is down.
+      // An interface that is down; its IPv6 address, held at /128, has the
+      // /64 around it as its network.
       ["93.184.216.88", at("93.184.216.88")],
       ["2a02:2f0c:8000:88::8", at("2a02:2f0c:8000:88::8")],
+      ["2a02:2f0c:8000:88::99", "at 2a02:2f0c:8000:88::99, on a network of this machine"],
+      // An address held at /40 has the /48 around it, and no more of it.
+      ["2a02:2f0c:9000::5", at("2a02:2f0c:9000::5")],
+      ["2a02:2f0c:9000:ffff::1", "at 2a02:2f0c:9000:ffff::1, on a network of this machine"],
+      ["2a02:2f0c:9001::1", ""],
       // Ranges routed to the machine itself.
       ["93.184.217.50", at("93.184.217.50")],
       ["::ffff:93.184.217.50", "at ::ffff:5db8:d932, an address of this machine"],

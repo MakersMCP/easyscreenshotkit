@@ -1713,10 +1713,14 @@ test("an address of this machine on an interface that is down or has no link, or
 // at the prefix's ::1 among them: judged by that IPv4 address alone, each
 // was taken for an address on the public internet, and a page's request
 // through the run's proxy and the kit's own request reached the machine's
-// own service there and the devices of its network. In network namespaces
-// of the test's own (see network.js), with the rest of the network in one
-// of its own, where the devices answer.
-test("an address of this machine on a network of its own, as a 6to4 one, and a device of that network are reached neither through the run's proxy nor by the kit's own request", { skip: noVeth, timeout: 60_000 }, async () => {
+// own service there and the devices of its network. Nor is a device of the
+// network of an address the machine holds at /128, as a DHCPv6 client
+// holds the address it gets, where the router gives the network's /64 as a
+// route alone: with no network for such an address, the router and every
+// other device there were reached. In network namespaces of the test's own
+// (see network.js), with the rest of each network in one of its own, where
+// the devices answer.
+test("an address of this machine on a network of its own, as a 6to4 one, and a device of that network, of one held at /128 too, are reached neither through the run's proxy nor by the kit's own request", { skip: noVeth, timeout: 60_000 }, async () => {
   const child = spawn("unshare", ["-rn", process.execPath, path.join(__dirname, "network.js"), "networks"], { stdio: ["ignore", "pipe", "pipe"] });
   let out = "";
   let err = "";
@@ -1738,6 +1742,9 @@ test("an address of this machine on a network of its own, as a 6to4 one, and a d
     "2002:5db8:d84d:1::5": machine("2002:5db8:d84d:1::5"),
     "2002:5db8:d84d:1::1": network("2002:5db8:d84d:1::1"),
     "2002:5db8:d84d:1::9": network("2002:5db8:d84d:1::9"),
+    "2001:470:1:2::5": machine("2001:470:1:2::5"),
+    "2001:470:1:2::1": network("2001:470:1:2::1"),
+    "2001:470:1:2::c4": network("2001:470:1:2::c4"),
   };
   assert.deepEqual(Object.keys(told.judged), Object.keys(want));
   for (const [address, why] of Object.entries(want)) {
