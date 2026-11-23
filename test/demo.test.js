@@ -1830,6 +1830,7 @@ test("a demo whose browser ends or whose tab crashes in the middle of it fails, 
   fs.writeFileSync(steps, "steps:\n  - visit: /\n  - wait: 6\n");
   const browser = /The browser ended in the middle of the demo \(it crashed, or was killed\), so no demo was saved\./;
   const tab = /The browser's tab crashed in the middle of the demo, so no demo was saved\./;
+  const tabOrBrowser = new RegExp(`(?:${tab.source})|(?:${browser.source})`);
   const renderers = (all) => all.filter(({ args }) => /--type=renderer/.test(args));
   // Whether the site has answered the home page since the case began: a
   // tab's page killed while the browser still waited for that answer ends
@@ -1857,8 +1858,13 @@ test("a demo whose browser ends or whose tab crashes in the middle of it fails, 
     // has renderers before it opens a tab, so a count of them alone had the
     // kill land whatever the frames page did. A page of the kit's own whose
     // process ends as it loads is a tab that crashed too (see navigate() in
-    // chrome.js), so the case holds wherever the kill lands.
-    { args: ["--steps", steps], line: /^Drawing \d+ frames/m, ready: (all, before) => renderers(all).length > before, delay: 300, kill: renderers, told: tab },
+    // chrome.js), so the case holds wherever the kill lands. The browser
+    // itself can end after every page's process of it is killed: of 600
+    // runs of the case alone, six at once on four cores, Chrome 155 ended
+    // with SIGSEGV after the tab had crashed in two, and the demo said the
+    // browser ended, which was true, where the case took the tab's words
+    // alone.
+    { args: ["--steps", steps], line: /^Drawing \d+ frames/m, ready: (all, before) => renderers(all).length > before, delay: 300, kill: renderers, told: tabOrBrowser },
   ];
   try {
     await makeDemo(origin, { dir, steps, gif: false, timeLimit: 200_000 });
