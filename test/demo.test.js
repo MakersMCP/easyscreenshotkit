@@ -1055,6 +1055,80 @@ test("a tour of a site given on this machine whose menu links its pages at its w
   }
 }));
 
+// The run opens https on port 443 of a site on the public internet given at
+// http on port 80, and a demo's tour counts a menu's link there as a link to
+// a page it takes on port 80, as the run's rule is handed to the tour for
+// that (see tour.js linkTo()): with no rule the tour looked on port 80
+// alone, and went on to the page with a crossfade, though the menu had its
+// link. Here the site's name answers with a public address, which the run's
+// proxy takes to this machine, to an http server for its port 80 and an
+// https server for its 443, whose certificate, made here, the browser is
+// told to take by the program CHROME_PATH names; the kit's own requests for
+// robots.txt and the sitemap go to the http server.
+const openssl = spawnSync("openssl", ["version"], { encoding: "utf8" });
+const noOpenssl = (openssl.error || openssl.status !== 0) && "no openssl to make the test's certificate";
+
+test("a tour of a site given at http on port 80 clicks the menu's link to a page it takes there where the link is at https on port 443", { skip: missing || noOpenssl || (process.platform === "win32" && "the browser's stand-in is a shell script"), timeout: 300_000 }, () => withNames({ "tls.example": "93.184.215.16", "www.tls.example": "ENOTFOUND" }, async () => {
+  const root = tempDir();
+  const key = path.join(root, "key.pem");
+  const cert = path.join(root, "cert.pem");
+  const made = spawnSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", cert, "-days", "1", "-subj", "/CN=tls.example", "-addext", "subjectAltName=DNS:tls.example"], { encoding: "utf8" });
+  if (made.status !== 0) fs.rmSync(root, { recursive: true, force: true });
+  assert.equal(made.status, 0, made.stderr);
+  const http = require("node:http");
+  const https = require("node:https");
+  const html = { "Content-Type": "text/html; charset=utf-8" };
+  const seen = [];
+  const handler = (scheme) => (req, res) => {
+    const path = req.url.split("?")[0];
+    seen.push(`${scheme} ${path}`);
+    if (path === "/") return res.writeHead(200, html).end(page("Tls | Tools for teams", `<header style="height:70px;font-size:22px;padding:20px"><nav><a href="https://tls.example/pricing">Pricing</a></nav></header><h1>Tls</h1><div style="height:1400px;background:rgb(0,160,0)"></div>`));
+    if (path === "/pricing") return res.writeHead(200, html).end(page("Pricing | Tls", `<h1>Pricing over ${scheme}</h1><div style="height:1400px;background:rgb(255,140,0)"></div>`));
+    res.writeHead(404).end("not found");
+  };
+  const plain = http.createServer(handler("http"));
+  const secure = https.createServer({ key: fs.readFileSync(key), cert: fs.readFileSync(cert) }, handler("https"));
+  await Promise.all([plain, secure].map((server) => new Promise((resolve) => server.listen(0, "127.0.0.1", resolve))));
+  const stand = reachAt({ "93.184.215.16:80": `127.0.0.1:${plain.address().port}`, "93.184.215.16:443": `127.0.0.1:${secure.address().port}` });
+  // The kit's own requests for the site's name go to the http server, once
+  // the lookup the kit gave them has handed back the name's one answer.
+  const get = http.get;
+  http.get = (url, options, done) => {
+    const where = new URL(String(url));
+    if (where.hostname !== "tls.example") return get(url, options, done);
+    const { lookup, ...rest } = options || {};
+    const judged = (host, opts, callback) => {
+      if (!lookup) return callback(Object.assign(new Error(`no lookup was given for ${host}`), { code: "ENOLOOKUP" }));
+      lookup(host, { ...opts, all: true }, (err, list) => {
+        if (err) return callback(err);
+        if (list.map((one) => one.address).join(",") !== "93.184.215.16") return callback(Object.assign(new Error("the kit's lookup handed back another address"), { code: "EWRONGANSWER" }));
+        if (opts && opts.all) callback(null, [{ address: "127.0.0.1", family: 4 }]);
+        else callback(null, "127.0.0.1", 4);
+      });
+    };
+    return get({ protocol: "http:", hostname: "tls.example", port: plain.address().port, path: `${where.pathname}${where.search}`, ...rest, lookup: judged, headers: { ...((rest && rest.headers) || {}), Host: "tls.example" } }, done);
+  };
+  const browser = path.join(root, "chrome");
+  fs.writeFileSync(browser, `#!/bin/sh\nexec ${sh(findChrome())} --ignore-certificate-errors "$@"\n`, { mode: 0o755 });
+  const saved = process.env.CHROME_PATH;
+  process.env.CHROME_PATH = browser;
+  try {
+    const { manifest } = await makeDemo("http://tls.example/", { dir: path.join(root, "demo"), pages: 2, extra: ["/pricing"], gif: false, timeLimit: 280_000 });
+    assert.deepEqual(manifest.steps.filter((s) => s.action === "click" || s.action === "visit").map((s) => [s.label, s.opened || s.url]), [["Open tls.example", "http://tls.example/"], ['Click "Pricing"', "https://tls.example/pricing"]]);
+    assert.ok(seen.includes("https /pricing"), seen.join(" "));
+  } finally {
+    if (saved === undefined) delete process.env.CHROME_PATH;
+    else process.env.CHROME_PATH = saved;
+    http.get = get;
+    stand.restore();
+    for (const server of [plain, secure]) {
+      server.close();
+      server.closeAllConnections();
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}));
+
 test("a #route in the address and in a steps file: each view opened on its route, a route clicked to is a page of its own", { skip: missing, timeout: 300_000 }, async () => {
   const { server, origin } = await fixture();
   const root = tempDir();
