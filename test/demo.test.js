@@ -1010,6 +1010,43 @@ test("a tour of a site given at 127.0.0.1 whose menu links its pages at localhos
   }
 });
 
+// A site given on this machine whose menu links its pages at its www name
+// on the port given, before its links at the host given: the run takes the
+// www name for another host there, as it does every other name but this
+// machine's own (see address.js guardFor()), and the screenshots take the
+// links at the host given. The tour read the hosts of links without www.,
+// so it clicked the first link, the run refused the click, the page stayed
+// where it was, and every page the tour picked was missing from the video.
+test("a tour of a site given on this machine whose menu links its pages at its www name clicks the links of the host given", { skip: missing, timeout: 300_000 }, () => withNames({ "site.test": "127.0.0.1", "www.site.test": "127.0.0.1" }, async () => {
+  const html = { "Content-Type": "text/html; charset=utf-8" };
+  let www = "";
+  const hosts = [];
+  const { server, origin } = await serve((req, res) => {
+    hosts.push(req.headers.host);
+    const page = (title, color) => `<!doctype html><html><head><meta charset="utf-8"><title>${title} | Site</title><style>body{margin:0;font-family:sans-serif} header{background:#c00;padding:20px} header a{color:#fff;margin-right:30px;font-size:22px} main{background:rgb(${color});height:2000px;padding:40px}</style></head><body><header><nav><a href="${www}/features">Features</a><a href="${www}/pricing">Pricing</a><a href="/features">Features</a><a href="/pricing">Pricing</a></nav></header><main><h1>${title}</h1><p>The ${title.toLowerCase()} page of a site on this machine.</p></main></body></html>`;
+    const path = req.url.split("?")[0];
+    if (path === "/") return res.writeHead(200, html).end(page("Tools for teams", GREEN.join(",")));
+    if (path === "/features") return res.writeHead(200, html).end(page("Features", TEAL.join(",")));
+    if (path === "/pricing") return res.writeHead(200, html).end(page("Pricing", ORANGE.join(",")));
+    res.writeHead(404).end("not found");
+  });
+  const port = new URL(origin).port;
+  www = `http://www.site.test:${port}`;
+  const root = tempDir();
+  try {
+    const { manifest } = await makeDemo(`http://site.test:${port}/`, { dir: path.join(root, "tour"), pages: 3, gif: false, timeLimit: 280_000 });
+    assert.deepEqual(manifest.pages.map((p) => p.url), [`http://site.test:${port}/`, `http://site.test:${port}/features`, `http://site.test:${port}/pricing`]);
+    assert.deepEqual(manifest.steps.filter((s) => s.action === "click" || s.action === "visit").map((s) => s.label), ["Open site.test", 'Click "Features"', 'Click "Pricing"']);
+    assert.deepEqual(manifest.steps.filter((s) => s.action === "click").map((s) => s.opened), [`http://site.test:${port}/features`, `http://site.test:${port}/pricing`]);
+    // No click went to the www name, which the run would refuse.
+    assert.deepEqual(manifest.notes.filter((note) => note.includes("www.site.test")), []);
+    assert.ok(!hosts.includes(`www.site.test:${port}`), hosts.join(" "));
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}));
+
 test("a #route in the address and in a steps file: each view opened on its route, a route clicked to is a page of its own", { skip: missing, timeout: 300_000 }, async () => {
   const { server, origin } = await fixture();
   const root = tempDir();
@@ -1339,9 +1376,11 @@ test("a tour clicks to a view by its link only when the view has the query of th
   const at = (url) => ({ url: `https://acme.com${url}` });
   assert.deepEqual(await moves([at("/spa/?mode=a#/one"), at("/spa/?mode=a#/two")]), ["visit", "click"]);
   // A link to a page is one at a host and port the run's rule opens for it
-  // (see LOCATE): at another of this machine's own names on the page's port
-  // for a site given at one of them, and on the other of 80 and 443 where
-  // the rule opens it; with no rule, on the page's own port alone.
+  // (see LOCATE), each host as written: at another of this machine's own
+  // names on the page's port for a site given at one of them, and on port 80
+  // or 443 at the other of 80 and 443, and at the other of its name with
+  // www. and without, where the rule opens it; with no rule, at the page's
+  // own host and port alone.
   const targets = async (pages, guard) => {
     const found = [];
     for await (const step of tourSteps(recorder, pages, { guard })) if (step.action === "click") found.push(step.target);
@@ -1358,8 +1397,20 @@ test("a tour clicks to a view by its link only when the view has the query of th
   const opens = (places) => ({ refuses: async (raw) => { const url = new URL(raw); return places.includes(`${url.hostname}:${url.port || (url.protocol === "https:" ? "443" : "80")}`) ? "" : "not on the public internet, and not on the host and port given"; } });
   assert.deepEqual(await targets([at("/"), at("/pricing")], opens(["acme.com:443"])), [{ href: "https://acme.com/pricing", places: ["acme.com:443"] }]);
   assert.deepEqual(await targets([at("/"), at("/pricing")], opens(["acme.com:443", "acme.com:80"])), [{ href: "https://acme.com/pricing", places: ["acme.com:443", "acme.com:80"] }]);
-  assert.deepEqual(await targets([{ url: "https://www.acme.com/" }, { url: "https://www.acme.com/pricing" }], opens(["www.acme.com:443"])), [{ href: "https://www.acme.com/pricing", places: ["acme.com:443"] }]);
+  assert.deepEqual(await targets([{ url: "https://www.acme.com/" }, { url: "https://www.acme.com/pricing" }], opens(["www.acme.com:443"])), [{ href: "https://www.acme.com/pricing", places: ["www.acme.com:443"] }]);
+  assert.deepEqual(await targets([at("/"), at("/pricing")], opens(["acme.com:443", "www.acme.com:443"])), [{ href: "https://acme.com/pricing", places: ["acme.com:443", "www.acme.com:443"] }]);
+  assert.deepEqual(await targets([{ url: "https://www.acme.com/" }, { url: "https://www.acme.com/pricing" }], opens(["www.acme.com:443", "acme.com:443", "acme.com:80"])), [{ href: "https://www.acme.com/pricing", places: ["www.acme.com:443", "acme.com:443", "acme.com:80"] }]);
+  // Off 80 and 443 a link on another port or at the other name is no link
+  // to the page, whatever the rule opens.
+  assert.deepEqual(await targets([{ url: "https://acme.com:8443/" }, { url: "https://acme.com:8443/pricing" }], { refuses: async () => "" }), [{ href: "https://acme.com:8443/pricing", places: ["acme.com:8443"] }]);
   assert.deepEqual(await targets([at("/"), at("/pricing")]), [{ href: "https://acme.com/pricing", places: ["acme.com:443"] }]);
+  // The rule is asked of every page's link before the first page opens: it
+  // can look a name up, and on camera the page would stand still meanwhile.
+  const asked = [];
+  const tour = tourSteps(recorder, [at("/"), at("/features"), at("/pricing")], { guard: { refuses: async (raw) => (asked.push(raw), "") } });
+  assert.equal((await tour.next()).value.action, "visit");
+  assert.deepEqual(asked.sort(), ["http://acme.com/features", "http://acme.com/pricing", "http://www.acme.com/features", "http://www.acme.com/pricing", "https://www.acme.com/features", "https://www.acme.com/pricing"]);
+  await tour.return();
   assert.deepEqual(await moves([at("/spa/?mode=a#/one"), at("/spa/?mode=b#/two")]), ["visit", "visit"]);
   // A page with no #route is the link's whatever query the page before has.
   assert.deepEqual(await moves([at("/spa/?mode=a#/one"), at("/pricing")]), ["visit", "click"]);

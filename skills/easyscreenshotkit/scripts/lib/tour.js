@@ -10,6 +10,7 @@
 // two, and on to the next page through the link in the site's own menu (a
 // cut when the menu has none).
 
+const net = require("net");
 const { openTab, closeTab, navigate } = require("./chrome");
 const { waitForContent, settle, walk, watchRequests } = require("./page");
 const { readInfo, readLinks, rejectAtOnce, rejectReason, slugOf, siteName, identity, pagesAsked, waitForView, notOpened, alternateNote, watchFailedMoves } = require("./shots");
@@ -314,29 +315,41 @@ function chooseStops({ max, tops }, height, cover = 0) {
 }
 
 // What a click on the link to url points at: its address, and the places,
-// each a host, without www., as the tour takes a site (see pick.js
-// siteOf()), and a port, at which a link to its path is a link to it: its
-// own host on its port, the other names of this machine that the run takes
-// for its host on its port (see pick.js sitesOf()), and its host on the
-// other of 80 and 443 where the run's rule opens that (guard, see
-// address.js guardFor()), as it does on a host on the public internet. A
-// link the run does not open is no link to the page: a menu's link to the
-// same path on another port of the site, which the rule refuses, was
-// clicked as the link to it, as the tour looked at the page's host alone,
-// the run refused the click, and the page stayed where it was (see LOCATE
-// in record.js). With no rule, the page's own port alone.
+// each a host as written and a port, at which a link to its path is a link
+// to it: its own host on its port, the other names of this machine that the
+// run takes for its host on its port (see pick.js sitesOf()), and on port
+// 80 or 443, where the run's rule opens it (guard, see address.js
+// guardFor()), its host on the other of 80 and 443, as it does on a host on
+// the public internet, and the other of its name with www. and without,
+// as www.acme.com of acme.com, on either. A link the run does not open is no
+// link to the page: a menu's link to the same path on another port of the
+// site, which the rule refuses, was clicked as the link to it, as the tour
+// looked at the page's host alone, the run refused the click, and the page
+// stayed where it was (see LOCATE in record.js); and so was a menu's link at
+// the site's www name, which the rule takes for another host on a port
+// other than 80 and 443, of a site given on this machine or its network,
+// or where that name does not answer. With no rule, the page's own host and
+// port alone.
 async function linkTo(url, guard) {
   const page = new URL(url);
   const portOf = (u) => u.port || (u.protocol === "https:" ? "443" : "80");
-  const host = page.hostname.toLowerCase().replace(/^www\./, "");
+  const host = page.hostname.toLowerCase();
   const port = portOf(page);
   const places = [`${host}:${port}`, ...sitesOf(url).slice(1).map((name) => `${name}:${port}`)];
-  const other = port === "80" ? "443" : port === "443" ? "80" : "";
-  if (guard && other) {
-    const there = new URL(url);
-    there.protocol = other === "443" ? "https:" : "http:";
-    there.port = "";
-    if (!(await guard.refuses(there.href).catch(() => NOT_WEB))) places.push(`${host}:${other}`);
+  // Off 80 and 443 a link on another port is to another program, and the
+  // rule opens no other name there.
+  if (!guard || (port !== "80" && port !== "443")) return { href: url, places };
+  const named = !net.isIP(host.replace(/^\[|\]$/g, ""));
+  const forms = [host, ...(named ? [host.startsWith("www.") ? host.slice(4) : `www.${host}`] : [])];
+  for (const form of forms) {
+    for (const at of [port, port === "80" ? "443" : "80"]) {
+      if (form === host && at === port) continue;
+      const there = new URL(url);
+      there.protocol = at === "443" ? "https:" : "http:";
+      there.hostname = form;
+      there.port = "";
+      if (!(await guard.refuses(there.href).catch(() => NOT_WEB))) places.push(`${form}:${at}`);
+    }
   }
   return { href: url, places };
 }
@@ -401,6 +414,11 @@ async function* tourSteps(recorder, pages, { reserve = 60_000, left = [], clock 
     if (pages.slice(from, to).some((page) => page.given)) throw new Error(RAN_OUT);
   };
   if (spare() < 0) throw new Error(RAN_OUT);
+  // The link to each page after the first, worked out before the first
+  // opens: the rule can look a name up for it (see linkTo()), which takes as
+  // long as the name's servers do, and on camera the page would stand still
+  // meanwhile.
+  const targets = await Promise.all(pages.map((page, i) => (i ? linkTo(page.url, guard) : null)));
   let longest = 0;
   let opened = clock();
   yield { action: "visit", url: pages[0].url, label: `Open ${pages[0].kind === "home" ? host : placeOf(pages[0].url)}` };
@@ -434,7 +452,7 @@ async function* tourSteps(recorder, pages, { reserve = 60_000, left = [], clock 
     // A link to a #route goes by the query of the page it is on: a view
     // asked for with a query of its own is visited.
     const linkable = !routeOf(next.url) || new URL(next.url).search === new URL(pages[i].url).search;
-    const target = linkable ? await linkTo(next.url, guard) : null;
+    const target = linkable ? targets[j] : null;
     let link = target ? await linkOnScreen(recorder, target) : null;
     if (!link && target && stops.length && (await linkAtTop(recorder, target))) {
       yield { action: "scroll", to: "top", label: "Back to the top" };
