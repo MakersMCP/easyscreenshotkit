@@ -241,6 +241,19 @@ function atHomeHost(raw, home) {
   }
 }
 
+// The sites a page of the tour may land on and stay a page of it (see
+// shots.js rejectAtOnce()): the site of an address, and where its host is
+// one of this machine's own names, the others of them that reach an
+// address of it, which the run's rule opens on its port. A page opened at
+// http://127.0.0.1:4000/about that moved on to http://localhost:4000/about/
+// was left out as redirected to localhost, though the rule had opened it
+// and the tour takes the site's links there. A move to another port of such
+// a name the rule refuses before the page lands there.
+function sitesOf(raw) {
+  const url = new URL(raw);
+  return [siteOf(url.href), ...["localhost", "127.0.0.1", "[::1]"].filter((host) => host !== url.hostname && sharedAddresses(url.hostname, host))];
+}
+
 function localeOf(pathname) {
   const first = String(pathname || "").split("/").filter(Boolean)[0] || "";
   return LOCALE.test(first) ? first.toLowerCase() : "";
@@ -744,6 +757,7 @@ module.exports = {
   siteOf,
   onHomeHost,
   atHomeHost,
+  sitesOf,
   excludedBecause,
   kindOf,
   rankLinks,

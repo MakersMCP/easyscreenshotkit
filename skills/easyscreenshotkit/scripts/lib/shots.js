@@ -25,7 +25,7 @@ const crypto = require("crypto");
 const { launch, browserProblem, openTab, closeTab, navigate, currentUrl, failedWords, CRASHED, BARRED, UNREACHED } = require("./chrome");
 const { AROUND, metrics, scrollTo, walk, showsContent, waitForContent, settle, watchRequests, networkQuiet, waitForDrawn, showsLoadingSign, looksEmpty, waitForFonts, clearHover, resetPictureWait, capture, captureScreen, capturePage } = require("./page");
 const { clean } = require("./clean");
-const { homeOf, pageKey, routeOf, viewKey, pathOf, pageUrl, anchorOf, siteOf, onHomeHost, atHomeHost, fold, wordsOf, kindOf, rankLinks, routeLinks, visitOrder, readSiteIndex, indexNotes, localeOf, alternateFor, oneLine, ROUTE_LINK } = require("./pick");
+const { homeOf, pageKey, routeOf, viewKey, pathOf, pageUrl, anchorOf, siteOf, onHomeHost, atHomeHost, sitesOf, fold, wordsOf, kindOf, rankLinks, routeLinks, visitOrder, readSiteIndex, indexNotes, localeOf, alternateFor, oneLine, ROUTE_LINK } = require("./pick");
 const { pngFileIsWhole, pngSize, tagPng } = require("./png");
 const { PWA_SHOTS, LOOKED_AT, planPwa, checkManifest } = require("./pwa");
 const { renderSheet } = require("./sheet");
@@ -1606,8 +1606,9 @@ async function takeShots(rawUrl, options = {}) {
 
     if (wanted > 1) {
       // The site given, and the one the home page landed on, whose links
-      // the tour takes (see rejectAtOnce()).
-      const sites = [siteOf(home), siteOf(kept[0].url)];
+      // the tour takes (see rejectAtOnce()), with this machine's other
+      // names on their port (see pick.js sitesOf()).
+      const sites = [...sitesOf(home), ...sitesOf(kept[0].url)];
       const homeKey = pageKey(kept[0].url);
       // Then the pages found on the home page and in the sitemap.
       const index = await indexing;

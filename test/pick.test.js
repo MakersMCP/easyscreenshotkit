@@ -201,6 +201,13 @@ test("a link of the site at another of this machine's own names on the home page
   assert.equal(pick.atHomeHost("http://localhost:4000/tr/", "http://127.0.0.1:4000/"), "http://127.0.0.1:4000/tr/");
   assert.equal(pick.atHomeHost("http://localhost:4001/tr/", "http://127.0.0.1:4000/"), "http://localhost:4001/tr/");
   assert.equal(pick.atHomeHost("https://acme.com/tr/", "https://acme.com/"), "https://acme.com/tr/");
+  // A page of the tour that lands at another of those names stays a page
+  // of the site; the rule judges its port.
+  assert.deepEqual(pick.sitesOf("http://127.0.0.1:4000/"), ["127.0.0.1", "localhost"]);
+  assert.deepEqual(pick.sitesOf("http://[::1]:4000/about"), ["[::1]", "localhost"]);
+  assert.deepEqual(pick.sitesOf("http://localhost:4000/"), ["localhost", "127.0.0.1", "[::1]"]);
+  assert.deepEqual(pick.sitesOf("https://www.acme.com/"), ["acme.com"]);
+  assert.deepEqual(pick.sitesOf("http://app.localhost:3000/"), ["app.localhost"]);
 });
 
 test("a #route is a view of its own; #/, #! and an anchor are not", () => {

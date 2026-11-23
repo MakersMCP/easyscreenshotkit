@@ -13,7 +13,7 @@
 const { openTab, closeTab, navigate } = require("./chrome");
 const { waitForContent, settle, walk, watchRequests } = require("./page");
 const { readInfo, readLinks, rejectAtOnce, rejectReason, slugOf, siteName, identity, pagesAsked, waitForView, notOpened, alternateNote, watchFailedMoves } = require("./shots");
-const { homeOf, pageKey, routeOf, viewKey, pathOf, readable, siteOf, atHomeHost, rankLinks, routeLinks, visitOrder, readSiteIndex, indexNotes, kindOf, alternateFor } = require("./pick");
+const { homeOf, pageKey, routeOf, viewKey, pathOf, readable, siteOf, atHomeHost, sitesOf, rankLinks, routeLinks, visitOrder, readSiteIndex, indexNotes, kindOf, alternateFor } = require("./pick");
 const { TOP_COVER } = require("./record");
 const { timeLeft } = require("./time");
 const { NOT_WEB } = require("./address");
@@ -179,8 +179,9 @@ async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = 
     log(`  ${pathOf(got.nav.url)} (${why})`);
   };
   // The site given, and the one the home page landed on, whose links the
-  // tour takes (see rejectAtOnce() in shots.js).
-  const check = { sites: [siteOf(home), siteOf(nav.url)], homeKey, kept };
+  // tour takes (see rejectAtOnce() in shots.js), with this machine's other
+  // names on their port (see pick.js sitesOf()).
+  const check = { sites: [...sitesOf(home), ...sitesOf(nav.url)], homeKey, kept };
   // The page given and the ones asked for come whatever they are, unless
   // they fail to open, as a link to a file does; one the tour has already
   // is said so. A page that fails because the browser ended fails the demo.

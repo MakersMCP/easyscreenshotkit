@@ -4108,39 +4108,46 @@ test("of a menu's link to a page on another port and the footer's on the site's 
 // rule opens them: the tour took the home page alone, with no page it could
 // take, none left out and no note. A --page there is taken at the address
 // given too, where the run stopped before any work, saying it was no page
-// of the site.
-test("a site given at 127.0.0.1 whose links and sitemap name its pages at localhost on its port has its tour take them at the address given", { skip: noBrowser, timeout: 200_000 }, async () => {
+// of the site. And a page that moves on to localhost on that port, as a
+// server sends a folder's address on to the one with a slash at its end by
+// the name it was made with, is a page of the site, where the tour left it
+// out as redirected to localhost.
+test("a site given at 127.0.0.1 whose links and sitemap name its pages at localhost on its port has its tour take them at the address given", { skip: noBrowser, timeout: 240_000 }, async () => {
   const html = { "Content-Type": "text/html; charset=utf-8" };
-  const pages = { "/pricing": "Pricing", "/features": "Features", "/how-it-works": "How it works", "/about": "About us" };
-  const hosts = new Set();
+  const pages = { "/pricing": "Pricing", "/features": "Features", "/how-it-works": "How it works", "/about": "About us", "/customers/": "Customers" };
+  const hosts = new Map();
   let at = "";
   const { server, origin } = await serve((req, res) => {
     const path = req.url.split("?")[0];
-    if (path !== "/robots.txt" && path !== "/sitemap.xml") hosts.add(req.headers.host);
+    hosts.set(path, req.headers.host);
     if (path === "/sitemap.xml") return res.writeHead(200, { "Content-Type": "application/xml" }).end(`<urlset><url><loc>${at}/how-it-works</loc></url><url><loc>${at}/features</loc></url></urlset>`);
-    if (path === "/") return res.writeHead(200, html).end(page("Jekyll | Tools for teams", `<header><nav><a href="${at}/pricing">Pricing</a> <a href="${at}/features">Features</a></nav></header><h1>Tools for teams</h1><div style="height:1400px"></div>`));
+    if (path === "/customers") return res.writeHead(301, { Location: `${at}/customers/` }).end();
+    if (path === "/") return res.writeHead(200, html).end(page("Jekyll | Tools for teams", `<header><nav><a href="${at}/pricing">Pricing</a> <a href="${at}/features">Features</a> <a href="${at}/customers">Customers</a></nav></header><h1>Tools for teams</h1><div style="height:1400px"></div>`));
     if (pages[path]) return res.writeHead(200, html).end(page(`${pages[path]} | Jekyll`, `<h1>${pages[path]}</h1><p>The ${pages[path].toLowerCase()} page of a site Jekyll serves.</p><div style="height:1400px"></div>`));
     res.writeHead(404).end("not found");
   });
   at = `http://localhost:${new URL(origin).port}`;
   const root = tempDir();
   try {
-    const { manifest } = await takeShots(`${origin}/`, { dir: path.join(root, "shots"), pages: 4, sizes: "desktop", extra: [`${at}/about`], timeLimit: 180_000 });
-    assert.deepEqual(manifest.pages.map((p) => p.url).sort(), [`${origin}/`, `${origin}/about`, `${origin}/features`, `${origin}/pricing`]);
-    assert.deepEqual(manifest.candidates.map((c) => c.url), [`${origin}/how-it-works`]);
+    const { manifest } = await takeShots(`${origin}/`, { dir: path.join(root, "shots"), pages: 6, sizes: "desktop", extra: [`${at}/about`], timeLimit: 200_000 });
+    assert.deepEqual(manifest.pages.map((p) => p.url).sort(), [`${origin}/`, `${origin}/about`, `${origin}/features`, `${origin}/how-it-works`, `${origin}/pricing`, `${at}/customers/`]);
     assert.deepEqual([manifest.skipped, manifest.notes], [[], []]);
     // The same of a demo's tour, which looks for pages while four minutes
     // of the demo are left.
     setTimeLimit(400_000);
     const chrome = await launch({ guard: await guardFor(`${origin}/`) });
     try {
-      const tour = await pickPages(chrome, `${origin}/`, { pages: 3 });
-      assert.deepEqual(tour.pages.map((p) => p.url).sort(), [`${origin}/`, `${origin}/features`, `${origin}/pricing`]);
+      const tour = await pickPages(chrome, `${origin}/`, { pages: 5 });
+      assert.deepEqual(tour.pages.map((p) => p.url).sort(), [`${origin}/`, `${origin}/features`, `${origin}/how-it-works`, `${origin}/pricing`, `${at}/customers/`]);
+      assert.deepEqual(tour.skipped, []);
     } finally {
       await chrome.close();
       setTimeLimit(120_000);
     }
-    assert.deepEqual([...hosts], [new URL(origin).host]);
+    // Each page was asked for at the address given, but the one the site
+    // sent on to localhost itself.
+    const own = new URL(origin).host;
+    assert.deepEqual(Object.fromEntries(["/", "/about", "/features", "/how-it-works", "/pricing", "/customers", "/customers/"].map((one) => [one, hosts.get(one)])), { "/": own, "/about": own, "/features": own, "/how-it-works": own, "/pricing": own, "/customers": own, "/customers/": new URL(at).host });
   } finally {
     server.close();
     fs.rmSync(root, { recursive: true, force: true });
