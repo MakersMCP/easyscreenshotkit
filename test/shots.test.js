@@ -1267,33 +1267,31 @@ test("the network wait: a request is done once it ends or its whole answer came,
   assert.equal(networkQuiet(cdp), true, "an EventSource and a video still sending");
 });
 
-// Judged by the work, not by the clock: the same views without the hit are
-// taken first, and the views with it may take no more than a few seconds
-// longer. Held for the whole wait, 10 s in a view's first window and 2 s in
-// its others, each view noted that a request was still open, and two views
-// on two sizes took about 20 s longer than without the hit; and a time of
-// its own, 22 s, failed this test on a busy machine, where the views took
-// 20 to 26 s with the hit and without it alike.
+// Judged by the work, not by the clock: held for the whole wait, 10 s in a
+// view's first window and 2 s in its others, each view noted that a request
+// was still open, "a request was still open after 10 s" and "mobile: a
+// request was still open after 2 s", and its notes are empty with the hit
+// as without it. A time of its own, 22 s, failed this test on a busy
+// machine, where the views took 20 to 26 s with the hit and without it
+// alike, and so did the time of the same views without the hit and 6 s
+// more: in a container held to 2 cores one take with the hit took 11 s
+// longer than the one without it, no view held.
 test("a view that sends a hit with keepalive is not held for the whole wait", { skip: noBrowser, timeout: 240_000 }, async () => {
   const { server, origin } = await appFixture({ delay: 300 });
   const root = tempDir();
   const take = async (at, folder) => {
-    const started = Date.now();
     const { manifest } = await takeShots(`${origin}${at}`, { dir: path.join(root, folder), pages: 1, sizes: "desktop,mobile", extra: ["#/light"], timeLimit: 100_000 });
-    return { took: Date.now() - started, pages: manifest.pages.map((p) => [p.slug, p.heading, p.notes]) };
+    return manifest.pages.map((p) => [p.slug, p.heading, p.notes]);
   };
   try {
-    const plain = await take("/app/#/plants", "plain");
-    assert.deepEqual(plain.pages, [
+    assert.deepEqual(await take("/app/#/plants", "plain"), [
       ["app-plants", "Your plants", []],
       ["app-light", "Light check", []],
     ]);
-    const hit = await take("/hit/#/plants", "hit");
-    assert.deepEqual(hit.pages, [
+    assert.deepEqual(await take("/hit/#/plants", "hit"), [
       ["hit-plants", "Your plants", []],
       ["hit-light", "Light check", []],
     ]);
-    assert.ok(hit.took - plain.took < 6_000, `took ${hit.took} ms, and ${plain.took} ms without the hit`);
   } finally {
     server.close();
     fs.rmSync(root, { recursive: true, force: true });
