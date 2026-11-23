@@ -349,8 +349,13 @@ test("--pwa-check reads a manifest file and its screenshots' files as regular fi
       const given = check(file);
       assert.deepEqual([given.status, JSON.parse(given.stdout).error], [1, `Could not read ${file}: ${why}`], `${given.signal || ""} ${given.stderr}`);
     }
+    // A folder given by its name and a slash, as the README quotes it.
+    fs.mkdirSync(path.join(dir, "public"));
+    const folder = spawnSync(process.execPath, [CLI, "--pwa-check", "public/"], { cwd: dir, encoding: "utf8", timeout: 30_000 });
+    assert.deepEqual([folder.status, folder.stderr], [1, "easyscreenshotkit: Could not read public/: it is a folder; give the manifest's file in it\n"]);
     const readme = fs.readFileSync(path.join(__dirname, "..", "README.md"), "utf8");
     assert.ok(readme.includes('It reads a manifest file, and each screenshot\'s file next to it, as a regular file of 30 MB at most, as it reads one from the web'));
+    assert.ok(readme.includes('a manifest file that is no regular file, as a device or a folder, or is larger, stops the check, as "Could not read public/: it is a folder; give the manifest\'s file in it"'));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
