@@ -517,7 +517,7 @@ test("on Linux an address the kernel holds for this machine on an interface that
   const readme = fs.readFileSync(path.join(__dirname, "..", "README.md"), "utf8");
   assert.ok(readme.includes("every address your machine holds as the run reads them (see [Limits](#limits)), on Linux those of an interface that is down or has no link and every address of a range routed to the machine itself too"));
   assert.ok(readme.includes("- The run knows your machine's own addresses as its system lists them. On macOS and Windows that is the addresses of the network interfaces that are up and have a link"));
-  assert.ok(fs.readFileSync(path.join(__dirname, "..", "skills", "easyscreenshotkit", "SKILL.md"), "utf8").includes("an address of the user's machine on the public internet, as its system lists them (the README's Limits say which)"));
+  assert.ok(fs.readFileSync(path.join(__dirname, "..", "skills", "easyscreenshotkit", "SKILL.md"), "utf8").includes("an address of the user's machine on the public internet that its system lists (the README's Limits say which)"));
   for (const args of [[], ["demo"]]) {
     const help = spawnSync(process.execPath, [cli, ...args, "--help"], { encoding: "utf8" }).stdout.replace(/\s+/g, " ");
     assert.ok(help.includes("address of this machine's own on the public internet, as its system lists them,"), `${args.join(" ")} --help`);
