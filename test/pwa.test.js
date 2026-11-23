@@ -307,6 +307,98 @@ test("--pwa-check: a manifest file and its screenshots next to it, on the comman
   }
 });
 
+// A manifest file and the screenshots' files next to it are read as
+// regular files of 30 MB at most, as from the web (kit lesson 3.2): a src
+// that named a named pipe beside the manifest, as a manifest file the user
+// did not write can, held the check for good, past its --timeout, and one
+// that named /dev/zero read until the memory was gone. Each is named, and
+// the check ends. Run on the command line, with a time of its own, as a
+// check held on a named pipe would hold this test's process with it.
+test("--pwa-check reads a manifest file and its screenshots' files as regular files of 30 MB at most, and names any other", { skip: process.platform === "win32" && "no named pipes of that kind on Windows" }, () => {
+  const dir = fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "easyscreenshotkit-pwa-files-"));
+  try {
+    const app = path.join(dir, "app");
+    fs.mkdirSync(path.join(app, "folder.png"), { recursive: true });
+    fs.writeFileSync(path.join(app, "wide.png"), pngHead(1920, 1080));
+    assert.equal(spawnSync("mkfifo", [path.join(dir, "pipe.png")]).status, 0);
+    assert.equal(spawnSync("mkfifo", [path.join(dir, "pipe.json")]).status, 0);
+    // A file of 30 MB and one byte, whose bytes the disk does not hold.
+    fs.writeFileSync(path.join(app, "large.png"), "");
+    fs.truncateSync(path.join(app, "large.png"), 30 * 1024 * 1024 + 1);
+    const climb = path.relative(app, "/").split(path.sep).join("/");
+    const wide = (src) => ({ src, sizes: "1920x1080", type: "image/png", form_factor: "wide", label: "Home" });
+    fs.writeFileSync(path.join(app, "manifest.json"), JSON.stringify({ name: "Acme", description: "Tools for teams.", screenshots: [wide("wide.png"), wide("../pipe.png"), wide(`${climb}/dev/null`), wide("folder.png"), wide("large.png")] }));
+    const check = (file) => spawnSync(process.execPath, [CLI, "--pwa-check", file, "--json"], { encoding: "utf8", timeout: 30_000 });
+    const run = check(path.join(app, "manifest.json"));
+    assert.equal(run.status, 1, `${run.signal || ""} ${run.stderr}`);
+    const report = JSON.parse(run.stdout);
+    assert.deepEqual(report.screenshots.map((shot) => [shot.n, shot.error]), [
+      [1, ""],
+      [2, "it is a named pipe, not a file"],
+      [3, "it is a device, not a file"],
+      [4, "it is a folder, not a file"],
+      [5, "over 30 MB"],
+    ]);
+    assert.deepEqual(report.desktop, [1]);
+    // The manifest file itself.
+    for (const [file, why] of [
+      [path.join(dir, "pipe.json"), "it is a named pipe, not a file"],
+      [app, "it is a folder; give the manifest's file in it"],
+      [path.join(app, "large.png"), "over 30 MB"],
+    ]) {
+      const given = check(file);
+      assert.deepEqual([given.status, JSON.parse(given.stdout).error], [1, `Could not read ${file}: ${why}`], `${given.signal || ""} ${given.stderr}`);
+    }
+    const readme = fs.readFileSync(path.join(__dirname, "..", "README.md"), "utf8");
+    assert.ok(readme.includes('It reads a manifest file, and each screenshot\'s file next to it, as a regular file of 30 MB at most, as it reads one from the web'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// What is no regular file is named before it is opened, as opening a
+// device can do something of its own; and what is opened is looked at
+// again before it is read, as a named pipe can take a regular file's place
+// between the two, which here a stand-in for the first look shows. In a
+// process of its own, with a time of its own, as a check that opened the
+// named pipe to read it would hold its process with it.
+test("--pwa-check opens no screenshot's file that is no regular file, and reads none that became one after it was looked at", { skip: process.platform === "win32" && "no named pipes of that kind on Windows" }, () => {
+  const dir = fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "easyscreenshotkit-pwa-open-"));
+  try {
+    const pipe = path.join(dir, "pipe.png");
+    assert.equal(spawnSync("mkfifo", [pipe]).status, 0);
+    const climb = path.relative(dir, "/").split(path.sep).join("/");
+    const wide = (src) => ({ src, sizes: "1920x1080", type: "image/png", form_factor: "wide", label: "Home" });
+    const manifest = path.join(dir, "manifest.json");
+    fs.writeFileSync(manifest, JSON.stringify({ name: "Acme", screenshots: [wide("pipe.png"), wide(`${climb}/dev/null`)] }));
+    const script = `
+const fs = require("fs");
+const { checkManifest } = require(${JSON.stringify(path.join(__dirname, "..", "skills", "easyscreenshotkit", "scripts", "lib", "pwa.js"))});
+const [manifest, pipe] = process.argv.slice(1);
+const { openSync, statSync } = fs;
+const opened = [];
+fs.openSync = (file, ...rest) => {
+  opened.push(String(file));
+  return openSync(file, ...rest);
+};
+(async () => {
+  const first = await checkManifest({ file: manifest });
+  const before = opened.filter((file) => file !== manifest);
+  // The first look sees a regular file where the named pipe is.
+  const regular = statSync(manifest);
+  fs.statSync = (file, ...rest) => (String(file) === pipe ? regular : statSync(file, ...rest));
+  const second = await checkManifest({ file: manifest });
+  process.stdout.write(JSON.stringify({ first: first.screenshots.map((shot) => shot.error), before, second: second.screenshots[0].error, openedPipe: opened.includes(pipe) }));
+})();
+`;
+    const run = spawnSync(process.execPath, ["-e", script, manifest, pipe], { encoding: "utf8", timeout: 30_000 });
+    assert.equal(run.status, 0, `${run.signal || ""} ${run.stderr}`);
+    assert.deepEqual(JSON.parse(run.stdout), { first: ["it is a named pipe, not a file", "it is a device, not a file"], before: [], second: "it is a named pipe, not a file", openedPipe: true });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("--pwa-check: a path is a file, also when nothing is there, and an address is read from the web", () => {
   const { manifestTarget } = require("../skills/easyscreenshotkit/scripts/easyscreenshotkit");
   const where = (value) => Object.entries(manifestTarget(value))[0];

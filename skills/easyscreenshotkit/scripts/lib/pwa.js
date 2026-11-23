@@ -370,6 +370,42 @@ function reasonOf(err) {
   return (err && err.message) || String(err);
 }
 
+// A file on this machine that --pwa-check reads, the manifest file it is
+// given or a screenshot's file next to it, read as a regular file and
+// MAX_BYTES at most, as one from the web is (kit lesson 3.2): what is no
+// regular file is named and not opened, and what is opened is looked at
+// again before it is read, as something else can have taken its place
+// meanwhile. A link is followed, as a server that serves the folder
+// follows it. Read as it was, a screenshot's src that named a named pipe
+// beside the manifest, as a manifest file the user did not write can, held
+// the check for good, past its --timeout, and one that named /dev/zero
+// read until the memory was gone.
+function readRegular(file) {
+  const kind = (stat) => (stat.isFIFO() ? "a named pipe" : stat.isSocket() ? "a socket" : stat.isDirectory() ? "a folder" : stat.isFile() ? "" : "a device");
+  const notRegular = (stat) => Object.assign(new Error(`it is ${kind(stat)}, not a file`), { kind: kind(stat) });
+  const tooLarge = () => new Error(`over ${MAX_BYTES / 1024 / 1024} MB`);
+  const stat = fs.statSync(file);
+  if (!stat.isFile()) throw notRegular(stat);
+  const fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK || 0));
+  try {
+    const opened = fs.fstatSync(fd);
+    if (!opened.isFile()) throw notRegular(opened);
+    const chunks = [];
+    let size = 0;
+    for (;;) {
+      const chunk = Buffer.alloc(Math.min(1024 * 1024, MAX_BYTES + 1 - size));
+      const read = fs.readSync(fd, chunk, 0, chunk.length, null);
+      if (!read) break;
+      chunks.push(chunk.subarray(0, read));
+      size += read;
+      if (size > MAX_BYTES) throw tooLarge();
+    }
+    return Buffer.concat(chunks);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 // A file from the web, every address on the way held to guard, the rule of
 // the check (see checkManifest).
 async function get(url, accept, guard) {
@@ -430,9 +466,9 @@ async function loadManifest(target, guard) {
   if (target.file) {
     let text;
     try {
-      text = fs.readFileSync(target.file, "utf8");
+      text = readRegular(target.file).toString("utf8");
     } catch (err) {
-      const why = err.code === "ENOENT" ? "there is no such file" : err.code === "EISDIR" ? "it is a folder; give the manifest's file in it" : reasonOf(err);
+      const why = err.code === "ENOENT" ? "there is no such file" : err.code === "EISDIR" || err.kind === "a folder" ? "it is a folder; give the manifest's file in it" : reasonOf(err);
       throw new Error(`Could not read ${target.file}: ${why}`);
     }
     return { where: target.file, base: { dir: path.dirname(path.resolve(target.file)) }, json: parseJson(text, target.file) };
@@ -475,7 +511,7 @@ async function loadImage(src, base, guard) {
   } catch {
     // Kept as written.
   }
-  return imageInfo(fs.readFileSync(path.join(base.dir, name.replace(/^\/+/, ""))));
+  return imageInfo(readRegular(path.join(base.dir, name.replace(/^\/+/, ""))));
 }
 
 // Whether a screenshot the check's rule refused is one it did not read, or

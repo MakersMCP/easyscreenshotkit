@@ -302,7 +302,7 @@ npx easyscreenshotkit@latest --pwa-check public/manifest.json
 npx easyscreenshotkit@latest --pwa-check yourapp.com
 ```
 
-It tells you which screenshots a desktop and a phone would show and what to fix. It needs no browser and exits with 1 when something needs fixing, or when it did not read a screenshot Chrome looks at, so it can run in CI.
+It tells you which screenshots a desktop and a phone would show and what to fix. It needs no browser and exits with 1 when something needs fixing, or when it did not read a screenshot Chrome looks at, so it can run in CI. It reads a manifest file, and each screenshot's file next to it, as a regular file of 30 MB at most, as it reads one from the web: a manifest file that is no regular file, as a named pipe, or is larger, stops the check, as "Could not read public/manifest.json: it is a named pipe, not a file", and a screenshot's src that names a named pipe, a device or a folder, or a file over 30 MB, is listed to fix as one that could not be loaded, as "could not be loaded (it is a named pipe, not a file)" or "(over 30 MB)".
 
 `--pwa` covers the pages anyone can open. Screens behind a sign-in are not reached yet: take those yourself at 1920x1080 and 1080x1920, then run `--pwa-check` on the manifest.
 
