@@ -1743,8 +1743,10 @@ test("the addresses MAKERSMCP_REFUSE_ADDRESSES names are refused wherever they c
         assert.equal(given.refused, here("185.137.215.163"));
         assert.equal(await given.refuses("https://vm.example/app/"), here("185.137.215.163"));
         assert.equal(refusedError("https://vm.example/app/", given).message, `Could not open https://vm.example/app/: it is ${here("185.137.215.163")}.`);
-        // A name that cannot be looked up is refused as such.
-        assert.equal(await guard.refuses("https://nowhere.example/"), UNRESOLVED);
+        // A name that cannot be looked up is refused as such. A name of its
+        // own: the run keeps each name's answer for the process, and the
+        // test of names that cannot be looked up asks for nowhere.example.
+        assert.equal(await guard.refuses("https://nowhere-refused.example/"), UNRESOLVED);
       });
       // A site on this machine or its network given, which the setting names.
       await withSetting("127.0.0.0/8", async () => {
