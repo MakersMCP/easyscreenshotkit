@@ -1672,6 +1672,41 @@ test("an address of this machine's own, a public one too, is not opened from a s
   }
 });
 
+// Nor is an address the kernel takes a connection to for one to this
+// machine on an interface that is up with no link, on one that is down, or
+// in a range routed to the machine itself: os.networkInterfaces() lists
+// none of them, so each was taken for an address on the public internet,
+// and a page's request through the run's proxy, a plain http request and a
+// tunnel alike, and the kit's own request read what a service of the
+// machine that listens on all its addresses answered there. In a network
+// namespace of the test's own (see network.js), beside a transparent
+// proxy's table, which routes every address to the machine itself for the
+// packets it marks alone.
+test("an address of this machine on an interface that is down or has no link, or in a range routed to it, is reached neither through the run's proxy nor by the kit's own request", { skip: noVeth, timeout: 60_000 }, async () => {
+  const child = spawn("unshare", ["-rn", process.execPath, path.join(__dirname, "network.js"), "downed"], { stdio: ["ignore", "pipe", "pipe"] });
+  let out = "";
+  let err = "";
+  child.stdout.on("data", (d) => (out += d));
+  child.stderr.on("data", (d) => (err += d));
+  const timer = setTimeout(() => child.kill("SIGKILL"), 50_000);
+  await new Promise((resolve) => child.on("close", resolve));
+  clearTimeout(timer);
+  let told = null;
+  try {
+    told = JSON.parse(out.trim().split("\n").pop());
+  } catch {
+    assert.fail(`network.js printed no result: ${(out + err).trim().slice(-600)}`);
+  }
+  assert.equal(told.failed, undefined);
+  assert.deepEqual(Object.keys(told.judged), ["93.184.216.77", "2a02:2f0c:8000:77::5", "93.184.216.88", "2a02:2f0c:8000:88::8", "93.184.217.50", "2a02:2f0c:8000:99::7"]);
+  for (const [address, judged] of Object.entries(told.judged)) {
+    const why = `at ${address}, an address of this machine`;
+    assert.deepEqual(judged, { refuses: why, http: "", tunnel: "HTTP/1.1 403 Forbidden", kit: `it is ${why}` }, address);
+  }
+  // Nothing reached the machine's own service.
+  assert.deepEqual(told.seen, []);
+});
+
 // The start's probe of WebRTC ends 1.5 s after its offer was set, where the
 // browser does not say it is done gathering: waited for, as on a machine
 // whose one network is its loopback, the probe ran to its 10 s and the

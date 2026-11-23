@@ -95,6 +95,22 @@
 // <folder>-0 and <folder>-1. It prints one line of JSON: { runs, seen }, for
 // each run { url, status, said, titles, notes }, then the requests the
 // server got, each as the name it was asked for and the path.
+//
+// Run as
+//
+//   unshare -rn node network.js downed
+//
+// it stands in for a machine whose kernel takes a connection to more of its
+// addresses for one to itself than its interfaces that are up and have a
+// link hold (see DOWNED), with a service of its own on port 80 and 443 of
+// all its addresses that notes each connection. With the run's rule for a
+// site on the public internet, it asks for each address of DOWNED by the
+// rule's refuses(), through the run's proxy as the browser asks, a plain
+// http request to port 80 and a tunnel to port 443, and as a request of the
+// kit's own (getChecked()). It prints one line of JSON: { judged, seen },
+// for each address { refuses, http, tunnel, kit }, the first line of what
+// the proxy answered ("" for none) and what the kit's request gave, and
+// the connections the service got.
 
 const { spawn, spawnSync } = require("node:child_process");
 const dgram = require("node:dgram");
@@ -772,6 +788,88 @@ async function routed(uid, gid, cli, folder) {
   process.stdout.write(`${JSON.stringify({ runs, seen })}\n`);
 }
 
+// The machine of downed(), each address on the public internet by its
+// range: an interface up with no link, eth9, a veth whose other end is
+// down; a dummy left down, kd0, as kube-proxy leaves kube-ipvs0 with every
+// Service's address on it; and ranges routed to the machine itself, as a
+// pool of addresses for a proxy is set up; beside a running dummy, d0, with
+// the default routes, and a transparent proxy's table 100, which routes
+// every address to the machine itself for the packets it marks alone.
+const DOWNED = { noLink4: "93.184.216.77", noLink6: "2a02:2f0c:8000:77::5", down4: "93.184.216.88", down6: "2a02:2f0c:8000:88::8", routed4: "93.184.217.50", routed6: "2a02:2f0c:8000:99::7" };
+
+async function downed() {
+  ip("link", "set", "lo", "up");
+  ip("link", "add", "d0", "type", "dummy");
+  ip("link", "set", "d0", "up");
+  ip("addr", "add", "198.51.100.9/24", "dev", "d0");
+  ip("-6", "addr", "add", "2a02:2f0c:8000:1::9/64", "dev", "d0", "nodad");
+  ip("route", "add", "default", "dev", "d0");
+  ip("-6", "route", "add", "default", "dev", "d0");
+  ip("link", "add", "eth9", "type", "veth", "peer", "name", "eth9p");
+  ip("link", "set", "eth9", "up");
+  ip("addr", "add", `${DOWNED.noLink4}/24`, "dev", "eth9");
+  ip("-6", "addr", "add", `${DOWNED.noLink6}/64`, "dev", "eth9", "nodad");
+  ip("link", "add", "kd0", "type", "dummy");
+  ip("addr", "add", `${DOWNED.down4}/32`, "dev", "kd0");
+  ip("-6", "addr", "add", `${DOWNED.down6}/128`, "dev", "kd0", "nodad");
+  ip("route", "add", "local", "93.184.217.0/24", "dev", "lo");
+  ip("-6", "route", "add", "local", "2a02:2f0c:8000:99::/64", "dev", "lo");
+  ip("rule", "add", "fwmark", "1", "table", "100");
+  ip("route", "add", "local", "0.0.0.0/0", "dev", "lo", "table", "100");
+  ip("-6", "rule", "add", "fwmark", "1", "table", "100");
+  ip("-6", "route", "add", "local", "::/0", "dev", "lo", "table", "100");
+  const { guardFor, getChecked } = require("../skills/easyscreenshotkit/scripts/lib/address");
+  const { startProxy } = require("../skills/easyscreenshotkit/scripts/lib/proxy");
+  const seen = [];
+  const web = http.createServer((req, res) => {
+    seen.push(`${req.socket.localAddress}:80 ${req.method} ${req.url}`);
+    res.end("this machine's own service: secret");
+  });
+  const tls = net.createServer((socket) => {
+    seen.push(`${socket.localAddress}:443`);
+    socket.destroy();
+  });
+  await new Promise((resolve) => web.listen(80, "::", resolve));
+  await new Promise((resolve) => tls.listen(443, "::", resolve));
+  const guard = await guardFor("https://93.184.215.14/");
+  const proxy = await startProxy(() => guard);
+  // What the proxy answers a request, its first line, or "" for none.
+  const ask = (request) =>
+    new Promise((resolve) => {
+      const socket = net.connect(proxy.port, "127.0.0.1", () => socket.write(request));
+      let got = "";
+      socket.on("data", (data) => (got += data));
+      socket.on("error", () => {});
+      socket.on("close", () => resolve(got.split("\r\n")[0]));
+      setTimeout(() => socket.destroy(), 5_000);
+    });
+  const judged = {};
+  try {
+    for (const address of Object.values(DOWNED)) {
+      const host = address.includes(":") ? `[${address}]` : address;
+      let kit;
+      try {
+        kit = String((await getChecked(`http://${host}/secret`, { guard, timeoutMs: 5_000 })).status);
+      } catch (err) {
+        kit = err.refused || err.code || err.message;
+      }
+      judged[address] = {
+        refuses: await guard.refuses(`http://${host}/secret`),
+        http: await ask(`GET http://${host}/secret HTTP/1.1\r\nHost: ${host}\r\n\r\n`),
+        tunnel: await ask(`CONNECT ${host}:443 HTTP/1.1\r\nHost: ${host}:443\r\n\r\n`),
+        kit,
+      };
+    }
+    // A moment for what is still on its way.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  } finally {
+    proxy.close();
+    web.close();
+    tls.close();
+  }
+  process.stdout.write(`${JSON.stringify({ judged, seen })}\n`);
+}
+
 // As the preload of the kit's command (see silent()): the kit's proxy
 // reaches 93.184.216.34 on port 80 at DIAL_TO, the page's own server.
 if (require.main !== module && process.env.DIAL_TO) {
@@ -782,7 +880,7 @@ if (require.main !== module && process.env.DIAL_TO) {
 }
 
 const [mode, ...rest] = process.argv.slice(2);
-const modes = { outer, alone, silent, own, site6, upgraded, lossy, mixed, siteMixed, routed };
+const modes = { outer, alone, silent, own, site6, upgraded, lossy, mixed, siteMixed, routed, downed };
 if (require.main === module) (modes[mode] || inner)(...rest).catch((err) => {
   process.stdout.write(JSON.stringify({ failed: String((err && err.message) || err) }));
   process.exitCode = 1;

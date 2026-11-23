@@ -330,6 +330,200 @@ test("this machine's network interfaces are read once a second at most, whatever
     }
   }));
 
+// The kernel's lists of a machine with an interface up with no link (eth9,
+// a veth whose other end is down), one that is down (kd0, as kube-proxy
+// leaves kube-ipvs0), ranges routed to the machine itself, /24, /64 and
+// /40, and a transparent proxy's table 100, which routes every address to
+// the machine itself for the packets it marks alone, as a network namespace
+// of such a machine lists them (see the test in proxy.test.js that sets one
+// up); prefixes and routes6 stand for the counts of routes the kernel gives.
+const KERNEL = {
+  trieStats: (prefixes = [1, 3, 9]) => `Basic info: size of leaf: 48 bytes, size of tnode: 40 bytes.\n${["Id 100", "Main", "Local"].map((name, i) => `${name}:\n\tAver depth:     1.00\n\tMax depth:      1\n\tLeaves:         ${prefixes[i]}\n\tPrefixes:       ${prefixes[i]}\n\tInternal nodes: 1\n\tPointers: 8\nNull ptrs: 5\nTotal size: 1  kB\n\nCounters:\n---------\ngets = 0\n`).join("\n")}`,
+  trie: `Id 100:
+  |-- 0.0.0.0
+     /0 host LOCAL
+Main:
+  +-- 0.0.0.0/0 3 0 5
+     |-- 0.0.0.0
+        /0 link UNICAST
+     |-- 93.184.216.0
+        /24 link UNICAST
+     |-- 198.51.100.0
+        /24 link UNICAST
+Local:
+  +-- 0.0.0.0/0 3 0 5
+     +-- 93.184.216.0/23 3 0 5
+        +-- 93.184.216.64/27 2 0 2
+           |-- 93.184.216.77
+              /32 host LOCAL
+           |-- 93.184.216.88
+              /32 host LOCAL
+        |-- 93.184.216.255
+           /32 link BROADCAST
+        |-- 93.184.217.0
+           /24 host LOCAL
+     +-- 127.0.0.0/8 2 0 2
+        +-- 127.0.0.0/31 1 0 0
+           |-- 127.0.0.0
+              /8 host LOCAL
+           |-- 127.0.0.1
+              /32 host LOCAL
+        |-- 127.255.255.255
+           /32 link BROADCAST
+     +-- 198.51.100.0/24 2 0 2
+        |-- 198.51.100.9
+           /32 host LOCAL
+        |-- 198.51.100.255
+           /32 link BROADCAST
+`,
+  inet6: `2a022f0c800000880000000000000008 05 80 00 82      kd0
+2a022f0c800000770000000000000005 04 40 00 82     eth9
+00000000000000000000000000000001 01 80 10 80       lo
+2a022f0c800000010000000000000009 02 40 00 82       d0
+fe80000000000000acdbd3fffef59979 02 40 20 80       d0
+`,
+  routeStats6: (routes6 = 14) => `0012 000b 0002 ${routes6.toString(16).padStart(4, "0")} 0000 0000 0000\n`,
+  route6: `00000000000000000000000000000000 00 00000000000000000000000000000000 00 00000000000000000000000000000000 00000400 00000001 00000000 80000001       lo
+2a022f0c800000010000000000000000 40 00000000000000000000000000000000 00 00000000000000000000000000000000 00000100 00000002 00000000 00000001       d0
+2a022f0c800000770000000000000000 40 00000000000000000000000000000000 00 00000000000000000000000000000000 00000100 00000001 00000000 00000001     eth9
+00000000000000000000000000000000 00 00000000000000000000000000000000 00 00000000000000000000000000000000 00000400 00000001 00000000 00000001       d0
+00000000000000000000000000000001 80 00000000000000000000000000000000 00 00000000000000000000000000000000 00000000 00000003 00000000 80200001       lo
+2a022f0c800000010000000000000009 80 00000000000000000000000000000000 00 00000000000000000000000000000000 00000000 00000005 00000000 80200001       d0
+2a022f0c800000770000000000000005 80 00000000000000000000000000000000 00 00000000000000000000000000000000 00000000 00000002 00000000 80200001     eth9
+2a022f0c800000880000000000000008 80 00000000000000000000000000000000 00 00000000000000000000000000000000 00000000 00000003 00000000 80200001      kd0
+2a022f0c800000990000000000000000 40 00000000000000000000000000000000 00 00000000000000000000000000000000 00000400 00000001 00000000 80000001       lo
+2a022f0c810000000000000000000000 28 00000000000000000000000000000000 00 00000000000000000000000000000000 00000400 00000001 00000000 80000001       lo
+ff000000000000000000000000000000 08 00000000000000000000000000000000 00 00000000000000000000000000000000 00000100 00000002 00000000 00000001       d0
+00000000000000000000000000000000 00 00000000000000000000000000000000 00 00000000000000000000000000000000 ffffffff 00000001 00000000 00200200       lo
+`,
+};
+
+// On Linux the kernel takes a connection to more of this machine's
+// addresses for one to itself than os.networkInterfaces() lists, which
+// leaves out each interface that is not up with a link: an address of an
+// interface up with no link, as a veth whose other end is down, of one
+// that is down, as kube-proxy's kube-ipvs0, and every address of a range
+// routed to the machine itself (ip route add local ... dev lo). Read from
+// the interfaces alone, each was taken for an address on the public
+// internet, and through the run's proxy a page reached this machine's
+// service there. A transparent proxy's table of its own is not this
+// machine's; nor, as the kernel names no table for an IPv6 route, is an
+// IPv6 range routed to the machine shorter than /48. And a machine of more
+// routes than the kernel lists in a few milliseconds is not read by them,
+// and read again only once a second has passed for each 20,000 of them.
+test("on Linux an address the kernel holds for this machine on an interface that is down or has no link, or in a range routed to it, is this machine's", { skip: process.platform !== "linux" && "the kernel's lists are read on Linux only" }, async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 7_000_000 });
+  const os = require("node:os");
+  const { kernel } = require("../skills/easyscreenshotkit/scripts/lib/address");
+  const savedInterfaces = os.networkInterfaces;
+  const savedRead = kernel.read;
+  // What libuv lists of such a machine: lo and the running dummy d0.
+  os.networkInterfaces = () => ({
+    lo: [{ address: "127.0.0.1", netmask: "255.0.0.0", family: "IPv4", internal: true, cidr: "127.0.0.1/8" }, { address: "::1", netmask: "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", family: "IPv6", internal: true, cidr: "::1/128", scopeid: 0 }],
+    d0: [{ address: "198.51.100.9", netmask: "255.255.255.0", family: "IPv4", internal: false, cidr: "198.51.100.9/24" }, { address: "2a02:2f0c:8000:1::9", netmask: "ffff:ffff:ffff:ffff::", family: "IPv6", internal: false, cidr: "2a02:2f0c:8000:1::9/64", scopeid: 0 }],
+  });
+  let prefixes = [1, 3, 9];
+  let routes6 = 14;
+  const reads = [];
+  const files = { "/proc/net/fib_triestat": () => KERNEL.trieStats(prefixes), "/proc/net/fib_trie": () => KERNEL.trie, "/proc/net/if_inet6": () => KERNEL.inet6, "/proc/net/rt6_stats": () => KERNEL.routeStats6(routes6), "/proc/net/ipv6_route": () => KERNEL.route6 };
+  kernel.read = (file) => {
+    reads.push(file.replace("/proc/net/", ""));
+    if (!files[file]) throw Object.assign(new Error(`ENOENT: ${file}`), { code: "ENOENT" });
+    return files[file]();
+  };
+  const at = (address) => `at ${address}, an address of this machine`;
+  const url = (address) => (address.includes(":") ? `http://[${address}]/secret` : `http://${address}/secret`);
+  try {
+    const guard = await guardFor("https://93.184.215.14/");
+    for (const [address, why] of [
+      // An interface up with no link, its IPv6 network too.
+      ["93.184.216.77", at("93.184.216.77")],
+      ["2a02:2f0c:8000:77::5", at("2a02:2f0c:8000:77::5")],
+      ["2a02:2f0c:8000:77::99", "at 2a02:2f0c:8000:77::99, on a network of this machine"],
+      // An interface that is down.
+      ["93.184.216.88", at("93.184.216.88")],
+      ["2a02:2f0c:8000:88::8", at("2a02:2f0c:8000:88::8")],
+      // Ranges routed to the machine itself.
+      ["93.184.217.50", at("93.184.217.50")],
+      ["::ffff:93.184.217.50", "at ::ffff:5db8:d932, an address of this machine"],
+      ["2a02:2f0c:8000:99::7", at("2a02:2f0c:8000:99::7")],
+      // The running interface, as before.
+      ["198.51.100.9", NOT_PUBLIC],
+      ["2a02:2f0c:8000:1::9", at("2a02:2f0c:8000:1::9")],
+      // Not this machine's: the rest of eth9's IPv4 range, the transparent
+      // proxy's table, and an IPv6 range routed to the machine shorter
+      // than /48.
+      ["93.184.216.99", ""],
+      ["93.184.215.14", ""],
+      ["2606:4700::1", ""],
+      ["2a02:2f0c:8100::7", ""],
+    ]) {
+      assert.equal(await guard.refuses(url(address)), why, address);
+    }
+    assert.deepEqual(reads.sort(), ["fib_trie", "fib_triestat", "if_inet6", "ipv6_route", "rt6_stats"]);
+    // A connection of the kit's or the proxy's is refused before it is made.
+    const answer = await new Promise((resolve) => guard.lookupFor(url("93.184.217.50"))("93.184.217.50", { all: true }, (err, list) => resolve(err || list)));
+    assert.deepEqual({ code: answer.code, refused: answer.refused }, { code: "ENOTPUBLIC", refused: `it is ${at("93.184.217.50")}` });
+    // More routes than the kernel lists in a few milliseconds: the lists of
+    // routes are not read, the addresses of the interfaces are.
+    prefixes = [1, 2_000, 2_000];
+    routes6 = 4_001;
+    reads.length = 0;
+    t.mock.timers.tick(1_000);
+    assert.equal(await guard.refuses(url("93.184.216.77")), "");
+    assert.equal(await guard.refuses(url("2a02:2f0c:8000:99::7")), "");
+    assert.equal(await guard.refuses(url("2a02:2f0c:8000:77::5")), at("2a02:2f0c:8000:77::5"));
+    assert.deepEqual(reads.sort(), ["fib_triestat", "if_inet6", "rt6_stats"]);
+    // At most as many as it may: read.
+    prefixes = [1, 1_000, 2_999];
+    routes6 = 4_000;
+    reads.length = 0;
+    t.mock.timers.tick(1_000);
+    assert.equal(await guard.refuses(url("93.184.216.77")), at("93.184.216.77"));
+    assert.equal(await guard.refuses(url("2a02:2f0c:8000:99::7")), at("2a02:2f0c:8000:99::7"));
+    assert.deepEqual(reads.sort(), ["fib_trie", "fib_triestat", "if_inet6", "ipv6_route", "rt6_stats"]);
+    // A machine of 100,000 routes is read again once 5 s have passed, where
+    // one of a few is read again each second.
+    prefixes = [0, 50_000, 50_000];
+    routes6 = 0;
+    t.mock.timers.tick(1_000);
+    await guard.refuses(url("93.184.216.77"));
+    reads.length = 0;
+    t.mock.timers.tick(4_999);
+    await guard.refuses(url("93.184.216.77"));
+    assert.deepEqual(reads, []);
+    t.mock.timers.tick(1);
+    await guard.refuses(url("93.184.216.77"));
+    assert.deepEqual(reads.sort(), ["fib_triestat", "if_inet6", "ipv6_route", "rt6_stats"]);
+    // Where the kernel's files cannot be read, the interfaces alone, read
+    // at once where the function that reads the files is another, as a
+    // test puts one in its place.
+    kernel.read = () => {
+      throw Object.assign(new Error("EACCES"), { code: "EACCES" });
+    };
+    assert.equal(await guard.refuses(url("2a02:2f0c:8000:77::5")), "");
+    assert.equal(await guard.refuses(url("93.184.216.77")), "");
+    assert.equal(await guard.refuses(url("2a02:2f0c:8000:1::9")), at("2a02:2f0c:8000:1::9"));
+  } finally {
+    os.networkInterfaces = savedInterfaces;
+    kernel.read = savedRead;
+  }
+  // The texts say whose addresses the run knows, where they said every
+  // address the network interfaces hold, which macOS and Windows list for
+  // the interfaces that are up and have a link alone.
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const cli = path.join(__dirname, "..", "skills", "easyscreenshotkit", "scripts", "easyscreenshotkit.js");
+  const readme = fs.readFileSync(path.join(__dirname, "..", "README.md"), "utf8");
+  assert.ok(readme.includes("every address your machine holds as the run reads them (see [Limits](#limits)), on Linux those of an interface that is down or has no link and every address of a range routed to the machine itself too"));
+  assert.ok(readme.includes("- The run knows your machine's own addresses as its system lists them. On macOS and Windows that is the addresses of the network interfaces that are up and have a link"));
+  assert.ok(fs.readFileSync(path.join(__dirname, "..", "skills", "easyscreenshotkit", "SKILL.md"), "utf8").includes("an address of the user's machine on the public internet, as its system lists them (the README's Limits say which)"));
+  for (const args of [[], ["demo"]]) {
+    const help = spawnSync(process.execPath, [cli, ...args, "--help"], { encoding: "utf8" }).stdout.replace(/\s+/g, " ");
+    assert.ok(help.includes("address of this machine's own on the public internet, as its system lists them,"), `${args.join(" ")} --help`);
+  }
+});
+
 test("from a public address a run opens web addresses on the public internet only, and from one on this machine that host and port too", async () => {
   const lookup = dns.lookup;
   // Names as a DNS server of the site's own would answer them.

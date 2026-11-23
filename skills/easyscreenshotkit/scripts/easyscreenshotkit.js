@@ -96,17 +96,17 @@ and from 127.0.0.1 or [::1] localhost. Any other name is another host, a
 name under localhost too, though it leads to the same address. Away from
 that host and port, a page, a redirect or a sitemap at localhost, 127.0.0.1,
 a private network or another address of that kind, or at an address of this
-machine's own on the public internet, is not opened, and the report names it
-with the reason, and neither is a frame or a window a page opens there, nor
-one on another port of a host on the public internet, nor a host whose name
-does not resolve here or gives no answer in 10 s; an address given on such a
-host stops the run. A host whose name answers both with an address on the
-public internet and with one the run does not open away from the address
-given is not opened wherever the run meets it, the address given included,
-which stops the run, with "on a host whose name answers with an address on
-the public internet, <address>, and with one ...": to take such a site, have
-the machine answer its name with the address you mean alone, as a line in
-its hosts file does.
+machine's own on the public internet, as its system lists them, is not
+opened, and the report names it with the reason, and neither is a frame or a
+window a page opens there, nor one on another port of a host on the public
+internet, nor a host whose name does not resolve here or gives no answer in
+10 s; an address given on such a host stops the run. A host whose name
+answers both with an address on the public internet and with one the run
+does not open away from the address given is not opened wherever the run
+meets it, the address given included, which stops the run, with "on a host
+whose name answers with an address on the public internet, <address>, and
+with one ...": to take such a site, have the machine answer its name with
+the address you mean alone, as a line in its hosts file does.
 A page that moves on to one before it has loaded is refused as a redirect
 there is. --pwa and --pwa-check read a manifest and its screenshots by the
 same rule, and from a manifest file no screenshot at such an address or on
