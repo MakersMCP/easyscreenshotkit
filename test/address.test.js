@@ -609,10 +609,13 @@ test("a reading of this machine's network interfaces that the system refuses kee
 // /40, and a transparent proxy's table 100, which routes every address to
 // the machine itself for the packets it marks alone, as a network namespace
 // of such a machine lists them (see the test in proxy.test.js that sets one
-// up), and an address held with a prefix shorter than /48 (w0); prefixes
-// and routes6 stand for the counts of routes the kernel gives.
+// up), and an address held with a prefix shorter than /48 (w0); and a
+// range routed to the machine itself in the main table, listed under
+// "Main:" alone, as where the machine has a rule of its own, and one in the
+// default table, under "Id 253:"; prefixes and routes6 stand for the counts
+// of routes the kernel gives.
 const KERNEL = {
-  trieStats: (prefixes = [1, 3, 9]) => `Basic info: size of leaf: 48 bytes, size of tnode: 40 bytes.\n${["Id 100", "Main", "Local"].map((name, i) => `${name}:\n\tAver depth:     1.00\n\tMax depth:      1\n\tLeaves:         ${prefixes[i]}\n\tPrefixes:       ${prefixes[i]}\n\tInternal nodes: 1\n\tPointers: 8\nNull ptrs: 5\nTotal size: 1  kB\n\nCounters:\n---------\ngets = 0\n`).join("\n")}`,
+  trieStats: (prefixes = [1, 4, 9, 1]) => `Basic info: size of leaf: 48 bytes, size of tnode: 40 bytes.\n${["Id 100", "Main", "Local", "Id 253"].map((name, i) => `${name}:\n\tAver depth:     1.00\n\tMax depth:      1\n\tLeaves:         ${prefixes[i]}\n\tPrefixes:       ${prefixes[i]}\n\tInternal nodes: 1\n\tPointers: 8\nNull ptrs: 5\nTotal size: 1  kB\n\nCounters:\n---------\ngets = 0\n`).join("\n")}`,
   trie: `Id 100:
   |-- 0.0.0.0
      /0 host LOCAL
@@ -624,6 +627,8 @@ Main:
         /24 link UNICAST
      |-- 198.51.100.0
         /24 link UNICAST
+     |-- 93.184.218.0
+        /24 host LOCAL
 Local:
   +-- 0.0.0.0/0 3 0 5
      +-- 93.184.216.0/23 3 0 5
@@ -649,6 +654,9 @@ Local:
            /32 host LOCAL
         |-- 198.51.100.255
            /32 link BROADCAST
+Id 253:
+  |-- 93.184.219.0
+     /24 host LOCAL
 `,
   inet6: `2a022f0c800000880000000000000008 05 80 00 82      kd0
 2a022f0c800000770000000000000005 04 40 00 82     eth9
@@ -697,7 +705,7 @@ test("on Linux an address the kernel holds for this machine on an interface that
     lo: [{ address: "127.0.0.1", netmask: "255.0.0.0", family: "IPv4", internal: true, cidr: "127.0.0.1/8" }, { address: "::1", netmask: "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", family: "IPv6", internal: true, cidr: "::1/128", scopeid: 0 }],
     d0: [{ address: "198.51.100.9", netmask: "255.255.255.0", family: "IPv4", internal: false, cidr: "198.51.100.9/24" }, { address: "2a02:2f0c:8000:1::9", netmask: "ffff:ffff:ffff:ffff::", family: "IPv6", internal: false, cidr: "2a02:2f0c:8000:1::9/64", scopeid: 0 }],
   });
-  let prefixes = [1, 3, 9];
+  let prefixes = [1, 4, 9, 1];
   let routes6 = 14;
   // The files that cannot be read for a while, as where this process has as
   // many files open as it may.
@@ -728,8 +736,12 @@ test("on Linux an address the kernel holds for this machine on an interface that
       ["2a02:2f0c:9000::5", at("2a02:2f0c:9000::5")],
       ["2a02:2f0c:9000:ffff::1", "at 2a02:2f0c:9000:ffff::1, on a network of this machine"],
       ["2a02:2f0c:9001::1", ""],
-      // Ranges routed to the machine itself.
+      // Ranges routed to the machine itself, in the local table, in the
+      // main table and in the default table, each of which every
+      // connection is looked up in.
       ["93.184.217.50", at("93.184.217.50")],
+      ["93.184.218.7", at("93.184.218.7")],
+      ["93.184.219.7", at("93.184.219.7")],
       ["::ffff:93.184.217.50", "at ::ffff:5db8:d932, an address of this machine"],
       ["2a02:2f0c:8000:99::7", at("2a02:2f0c:8000:99::7")],
     ];
@@ -760,9 +772,17 @@ test("on Linux an address the kernel holds for this machine on an interface that
     for (const [address, why] of kept) assert.equal(await guard.refuses(url(address)), why, address);
     assert.deepEqual(reads.sort(), ["fib_trie", "fib_triestat", "if_inet6", "ipv6_route", "rt6_stats"]);
     refusing = [];
+    // Where the interfaces list none, as on a machine whose interfaces are
+    // all down or have no link, the kernel's addresses are this machine's
+    // all the same.
+    const listed = os.networkInterfaces;
+    os.networkInterfaces = () => ({});
+    t.mock.timers.tick(1_000);
+    for (const [address, why] of kept) assert.equal(await guard.refuses(url(address)), why, address);
+    os.networkInterfaces = listed;
     // More routes than the kernel lists in a few milliseconds: the lists of
     // routes are not read, the addresses of the interfaces are.
-    prefixes = [1, 2_000, 2_000];
+    prefixes = [1, 2_000, 2_000, 0];
     routes6 = 4_001;
     reads.length = 0;
     t.mock.timers.tick(1_000);
@@ -771,7 +791,7 @@ test("on Linux an address the kernel holds for this machine on an interface that
     assert.equal(await guard.refuses(url("2a02:2f0c:8000:77::5")), at("2a02:2f0c:8000:77::5"));
     assert.deepEqual(reads.sort(), ["fib_triestat", "if_inet6", "rt6_stats"]);
     // At most as many as it may: read.
-    prefixes = [1, 1_000, 2_999];
+    prefixes = [1, 1_000, 2_998, 1];
     routes6 = 4_000;
     reads.length = 0;
     t.mock.timers.tick(1_000);
@@ -780,7 +800,7 @@ test("on Linux an address the kernel holds for this machine on an interface that
     assert.deepEqual(reads.sort(), ["fib_trie", "fib_triestat", "if_inet6", "ipv6_route", "rt6_stats"]);
     // A machine of 100,000 routes is read again once 5 s have passed, where
     // one of a few is read again each second.
-    prefixes = [0, 50_000, 50_000];
+    prefixes = [0, 50_000, 50_000, 0];
     routes6 = 0;
     t.mock.timers.tick(1_000);
     await guard.refuses(url("93.184.216.77"));
