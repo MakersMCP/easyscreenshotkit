@@ -321,7 +321,6 @@ test("--pwa-check reads a manifest file and its screenshots' files as regular fi
     fs.mkdirSync(path.join(app, "folder.png"), { recursive: true });
     fs.writeFileSync(path.join(app, "wide.png"), pngHead(1920, 1080));
     assert.equal(spawnSync("mkfifo", [path.join(dir, "pipe.png")]).status, 0);
-    assert.equal(spawnSync("mkfifo", [path.join(dir, "pipe.json")]).status, 0);
     // A file of 30 MB and one byte, whose bytes the disk does not hold.
     fs.writeFileSync(path.join(app, "large.png"), "");
     fs.truncateSync(path.join(app, "large.png"), 30 * 1024 * 1024 + 1);
@@ -340,9 +339,10 @@ test("--pwa-check reads a manifest file and its screenshots' files as regular fi
       [5, "over 30 MB"],
     ]);
     assert.deepEqual(report.desktop, [1]);
-    // The manifest file itself.
+    // The manifest file itself. A named pipe given as the manifest is read
+    // (see the test below).
     for (const [file, why] of [
-      [path.join(dir, "pipe.json"), "it is a named pipe, not a file"],
+      ["/dev/null", "it is a device, not a file"],
       [app, "it is a folder; give the manifest's file in it"],
       [path.join(app, "large.png"), "over 30 MB"],
     ]) {
@@ -351,6 +351,88 @@ test("--pwa-check reads a manifest file and its screenshots' files as regular fi
     }
     const readme = fs.readFileSync(path.join(__dirname, "..", "README.md"), "utf8");
     assert.ok(readme.includes('It reads a manifest file, and each screenshot\'s file next to it, as a regular file of 30 MB at most, as it reads one from the web'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// A named pipe given as the manifest, as a shell's <(...) or /dev/stdin with
+// a pipe behind it gives one, is the user's own choice, as the address
+// given is: it is read to its end, 30 MB at most, within --timeout, where
+// the check refused it as no regular file, so a CI step that gave the
+// manifest so stopped, though 0.1.3 read it. One that does not end in that
+// time, as one nothing writes to, stops the check, saying so. Run on the
+// command line, as a check held on a named pipe would hold this test's
+// process with it.
+test("--pwa-check reads a manifest given as a named pipe to its end within --timeout, and says so of one that does not end", { skip: process.platform === "win32" && "no named pipes of that kind on Windows", timeout: 120_000 }, async () => {
+  const dir = fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "easyscreenshotkit-pwa-pipe-"));
+  try {
+    const uri = (w, h) => `data:image/png;base64,${pngOf(w, h, () => [20, 120, 200]).toString("base64")}`;
+    const text = JSON.stringify({
+      name: "Acme",
+      short_name: "Acme",
+      start_url: "/",
+      description: "Tools for teams.",
+      icons: [],
+      screenshots: [
+        { src: uri(1280, 720), sizes: "1280x720", type: "image/png", form_factor: "wide", label: "The dashboard" },
+        { src: uri(720, 1280), sizes: "720x1280", type: "image/png", form_factor: "narrow", label: "The dashboard on a phone" },
+      ],
+    });
+    const file = path.join(dir, "manifest.json");
+    fs.writeFileSync(file, text);
+    const pipe = path.join(dir, "manifest.pipe");
+    assert.equal(spawnSync("mkfifo", [pipe]).status, 0);
+    const { spawn } = require("node:child_process");
+    // The check, as a promise of { status, stdout, stderr, took }, run in
+    // the test's folder.
+    const check = (args, input) =>
+      new Promise((resolve) => {
+        const started = Date.now();
+        const child = spawn(process.execPath, [CLI, "--pwa-check", ...args], { cwd: dir, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
+        let stdout = "";
+        let stderr = "";
+        child.stdout.on("data", (d) => (stdout += d));
+        child.stderr.on("data", (d) => (stderr += d));
+        if (input !== undefined) child.stdin.end(input);
+        const timer = setTimeout(() => child.kill("SIGKILL"), 90_000);
+        child.on("close", (status) => {
+          clearTimeout(timer);
+          resolve({ status, stdout, stderr, took: Date.now() - started });
+        });
+      });
+    // A named pipe a writer comes to a moment after the check opened it,
+    // given by its name alone, which would read as an address, as
+    // manifest.pipe would, were it not there.
+    const late = check(["manifest.pipe", "--json"]);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal(spawnSync("sh", ["-c", 'cat "$1" > "$2"', "sh", file, pipe], { timeout: 30_000 }).status, 0);
+    const read = await late;
+    assert.equal(read.status, 0, read.stderr);
+    assert.deepEqual([JSON.parse(read.stdout).desktop, JSON.parse(read.stdout).phone], [[1], [2]]);
+    // A pipe behind /dev/stdin, as a shell's | gives one, and a shell's
+    // <(...). A socket there, as a program that starts the check with a
+    // socket for its stdin gives, is no file to read, as 0.1.3 could not
+    // read one either (ENXIO).
+    const stdin = spawnSync("sh", ["-c", 'cat "$2" | "$0" "$1" --pwa-check /dev/stdin --json', process.execPath, CLI, file], { encoding: "utf8", timeout: 30_000 });
+    assert.equal(stdin.status, 0, stdin.stderr);
+    assert.deepEqual(JSON.parse(stdin.stdout).desktop, [1]);
+    const socket = await check(["/dev/stdin"], text);
+    assert.deepEqual([socket.status, socket.stderr], [1, "easyscreenshotkit: Could not read /dev/stdin: it is a socket, not a file\n"]);
+    const substituted = spawnSync("bash", ["-c", '"$0" "$1" --pwa-check <(cat "$2")', process.execPath, CLI, file], { encoding: "utf8", timeout: 30_000 });
+    assert.equal(substituted.status, 0, substituted.stderr);
+    assert.match(substituted.stdout, /Nothing to fix: Chrome shows them as they are\./);
+    // Past 30 MB.
+    const large = check([pipe]);
+    spawn("sh", ["-c", 'head -c 31457281 /dev/zero > "$1" 2>/dev/null', "sh", pipe], { stdio: "ignore" });
+    const over = await large;
+    assert.deepEqual([over.status, over.stderr], [1, `easyscreenshotkit: Could not read ${pipe}: over 30 MB\n`]);
+    // One nothing writes to stops the check at --timeout.
+    const none = await check([pipe, "--timeout", "30"]);
+    assert.deepEqual([none.status, none.stderr], [1, `easyscreenshotkit: Could not read ${pipe}: it is a named pipe that did not end in 30 s; give more with --timeout\n`]);
+    assert.ok(none.took >= 29_000 && none.took < 80_000, `took ${none.took} ms`);
+    const readme = fs.readFileSync(path.join(__dirname, "..", "README.md"), "utf8");
+    assert.ok(readme.includes("A named pipe given as the manifest, as a shell's `<(...)` or `/dev/stdin` with a pipe behind it gives one, is read to its end, 30 MB at most, within `--timeout`, and one that does not end in that time, as one nothing writes to, stops the check"));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

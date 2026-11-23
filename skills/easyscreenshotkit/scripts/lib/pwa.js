@@ -24,6 +24,7 @@
 // with no browser.
 
 const fs = require("fs");
+const net = require("net");
 const path = require("path");
 const { pngSize } = require("./png");
 const { oneLine } = require("./pick");
@@ -406,6 +407,55 @@ function readRegular(file) {
   }
 }
 
+// The manifest file given to --pwa-check, read as readRegular() reads one,
+// but for a named pipe, as a shell's <(...) or /dev/stdin with a pipe
+// behind it gives one: that is read to its end, MAX_BYTES at most, within
+// ms, the check's --timeout. It is opened without waiting for a writer and
+// read as it is written, so one that nothing writes to, or that does not
+// end, stops the check at that time. A named pipe a screenshot's src names
+// is still no file to read, as nothing may be writing to it; the manifest
+// given is the user's own choice, as the address given is. Refused as no
+// regular file, a check that took its manifest from a pipe, as a CI step
+// can, stopped, where 0.1.3 read it.
+function readGiven(file, ms) {
+  if (!fs.statSync(file).isFIFO()) return readRegular(file);
+  const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+  let opened;
+  try {
+    opened = fs.fstatSync(fd);
+  } catch (err) {
+    fs.closeSync(fd);
+    throw err;
+  }
+  // Something else took its place since it was looked at.
+  if (!opened.isFIFO()) {
+    fs.closeSync(fd);
+    return readRegular(file);
+  }
+  return new Promise((resolve, reject) => {
+    const pipe = new net.Socket({ fd, readable: true, writable: false });
+    const chunks = [];
+    let size = 0;
+    let over = false;
+    const end = (err, body) => {
+      if (over) return;
+      over = true;
+      clearTimeout(timer);
+      pipe.destroy();
+      if (err) reject(err);
+      else resolve(body);
+    };
+    const timer = setTimeout(() => end(new Error(`it is a named pipe that did not end in ${Math.round(ms / 1000)} s; give more with --timeout`)), ms);
+    pipe.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > MAX_BYTES) return end(new Error(`over ${MAX_BYTES / 1024 / 1024} MB`));
+      chunks.push(chunk);
+    });
+    pipe.on("end", () => end(null, Buffer.concat(chunks)));
+    pipe.on("error", (err) => end(err));
+  });
+}
+
 // A file from the web, every address on the way held to guard, the rule of
 // the check (see checkManifest).
 async function get(url, accept, guard) {
@@ -462,11 +512,13 @@ function readsAt(err, url) {
 
 // target: {file} or {url}. A web address may be the manifest itself or a
 // page that links it. guard: the rule for the addresses the check reads.
-async function loadManifest(target, guard) {
+// timeLimit: how long a manifest given as a named pipe may take to end, in
+// ms (see readGiven()).
+async function loadManifest(target, guard, timeLimit) {
   if (target.file) {
     let text;
     try {
-      text = readRegular(target.file).toString("utf8");
+      text = (await readGiven(target.file, timeLimit)).toString("utf8");
     } catch (err) {
       const why = err.code === "ENOENT" ? "there is no such file" : err.code === "EISDIR" || err.kind === "a folder" ? "it is a folder; give the manifest's file in it" : reasonOf(err);
       throw new Error(`Could not read ${target.file}: ${why}`);
@@ -543,10 +595,11 @@ async function unreadAs(err, guard, target) {
 // cannot send it to this machine or its network. A manifest read from a
 // file reads no such address at all. guard: the rule of a run that reads
 // the manifest its home page links (--pwa), by which that address is judged
-// too, as it is the page's and not the one the run was given.
-async function checkManifest(target, { guard: given = null } = {}) {
+// too, as it is the page's and not the one the run was given. timeLimit:
+// the check's --timeout, in ms, for a manifest given as a named pipe.
+async function checkManifest(target, { guard: given = null, timeLimit = 300_000 } = {}) {
   const guard = given || (await guardFor(target.url || ""));
-  const found = await loadManifest(target, guard);
+  const found = await loadManifest(target, guard, timeLimit);
   const json = found.json && typeof found.json === "object" && !Array.isArray(found.json) ? found.json : {};
   const list = Array.isArray(json.screenshots) ? json.screenshots : [];
   const images = await Promise.all(

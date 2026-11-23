@@ -223,15 +223,16 @@ function parse(argv) {
   return { ...options, url: rest[0] };
 }
 
-// What --pwa-check reads: a manifest file on this machine, else a web
-// address. A path whose file is not there is still a path, not an address
+// What --pwa-check reads: a manifest file on this machine, a named pipe
+// among them (see pwa.js readGiven()), else a web address. A path whose
+// file is not there is still a path, not an address
 // on a host named after its first folder: one that starts with /, ., ~ or
 // a drive letter, holds a backslash, starts with a folder name with no dot
 // in it (public/manifest.json), or is a file's name alone
 // (manifest.json). Any other value with no scheme, such as acme.com,
 // acme.com/manifest.json or localhost:3000, is an address.
 function manifestTarget(value) {
-  if (fs.existsSync(value) && fs.statSync(value).isFile()) return { file: value };
+  if (fs.existsSync(value) && (fs.statSync(value).isFile() || fs.statSync(value).isFIFO())) return { file: value };
   const text = String(value);
   let local = false;
   if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(text)) {
@@ -249,7 +250,7 @@ async function pwaCheck(options) {
   let target = null;
   try {
     target = manifestTarget(options.pwaCheck);
-    report = await checkManifest(target);
+    report = await checkManifest(target, { timeLimit: options.timeout * 1000 });
   } catch (caught) {
     const err = target && target.url ? schemeHint(caught, options.pwaCheck, target.url) : caught;
     const message = throughNoProxy(err.message);
