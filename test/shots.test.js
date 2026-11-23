@@ -4042,16 +4042,20 @@ test("over https, a page's speculation rules take the browser to no other port o
 // went on to such a page by the menu's link, as it looked at the page's
 // host alone, clicked that link, which the run refused, so the page stayed
 // where it was and the page was missing from the video: it now passes over
-// a link the run does not open. Here the run's proxy takes the site's
-// address on port 80 to a server of this machine, and the kit's own
-// requests for it, robots.txt and the sitemap, go to the same server.
+// a link the run does not open. The other pages' menus link both, the
+// site's own after: demo.yaml wrote the tour's click on the site's own
+// link by its words, which found the link on port 8443 first when it was
+// recorded again, and it writes such a link by its href now. Here the run's
+// proxy takes the site's address on port 80 to a server of this machine,
+// and the kit's own requests for it, robots.txt and the sitemap, go to the
+// same server.
 test("of a menu's link to a page on another port and the footer's on the site's own, the screenshots and a demo's tour take the footer's", { skip: noBrowser || (!findFfmpeg() && "no ffmpeg installed"), timeout: 600_000 }, () => withNames({ "dup.example": "93.184.215.14" }, async () => {
   const html = { "Content-Type": "text/html; charset=utf-8" };
   const pages = { "/pricing": "Pricing", "/features": "Features", "/customers": "Customers", "/about": "About us" };
   const { server, origin } = await serve((req, res) => {
     const path = req.url.split("?")[0];
     if (path === "/") return res.writeHead(200, html).end(page("Dup | Tools for teams", `<header><nav><a href="https://dup.example:8443/pricing">Pricing</a> <a href="https://dup.example:8443/features">Features</a> <a href="/customers">Customers</a></nav></header><h1>Dup</h1><div style="height:1400px"></div><footer><a href="/pricing">Pricing</a> <a href="/features">Features</a> <a href="/about">About</a></footer>`));
-    if (pages[path]) return res.writeHead(200, html).end(page(`${pages[path]} | Dup`, `<h1>${pages[path]}</h1><p>The ${pages[path].toLowerCase()} page of Dup, which makes tools for teams.</p><div style="height:1400px"></div>`));
+    if (pages[path]) return res.writeHead(200, html).end(page(`${pages[path]} | Dup`, `<header><nav><a href="https://dup.example:8443/pricing">Pricing</a> <a href="https://dup.example:8443/features">Features</a> <a href="/pricing">Pricing</a> <a href="/features">Features</a></nav></header><h1>${pages[path]}</h1><p>The ${pages[path].toLowerCase()} page of Dup, which makes tools for teams.</p><div style="height:1400px"></div>`));
     res.writeHead(404).end("not found");
   });
   const port = new URL(origin).port;
@@ -4101,6 +4105,11 @@ test("of a menu's link to a page on another port and the footer's on the site's 
     const { manifest: demo } = await makeDemo("http://dup.example/", { dir: path.join(root, "demo"), pages: 4, gif: false, timeLimit: 400_000 });
     assert.deepEqual(demo.pages.map((p) => p.url).sort(), ["http://dup.example/", "http://dup.example/customers", "http://dup.example/features", "http://dup.example/pricing"]);
     assert.deepEqual(demo.notes.filter((note) => note.includes(":8443")), []);
+    // Recorded again from its demo.yaml: the same pages, and no click on
+    // port 8443.
+    const { manifest: again } = await makeDemo("http://dup.example/", { dir: path.join(root, "again"), steps: path.join(root, "demo", "demo.yaml"), gif: false, timeLimit: 400_000 });
+    assert.deepEqual(again.pages.map((p) => p.url).sort(), ["http://dup.example/", "http://dup.example/customers", "http://dup.example/features", "http://dup.example/pricing"]);
+    assert.deepEqual(again.notes.filter((note) => note.includes(":8443")), []);
     // The name was asked for once, in all: by the rule, the browser's proxy
     // and the kit's own requests for robots.txt and the sitemap, which went
     // to its one answer through the kit's lookup.

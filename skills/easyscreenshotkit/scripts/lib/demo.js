@@ -426,10 +426,11 @@ function what(step) {
 }
 
 // A tour's internal steps as a steps file writes them: a click on a link by
-// its words when it has some, else by its href as the page wrote it
-// (a[href="#/plants"]), so a route in other letters is matched as the page
-// has it, not escaped as in the address. Without that, by its #route
-// (a[href$="#/plants"]), else by its path.
+// its words when it has some that find it first (see tour.js tourSteps()),
+// else by its href as the page wrote it (a[href="#/plants"]), so a route in
+// other letters is matched as the page has it, not escaped as in the
+// address. Without that, by its #route (a[href$="#/plants"]), else by its
+// path.
 function asWritten(step) {
   if (step.action !== "click" || !step.target.href) return step;
   const route = readable(routeOf(step.target.href));

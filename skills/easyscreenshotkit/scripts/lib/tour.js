@@ -459,8 +459,18 @@ async function* tourSteps(recorder, pages, { reserve = 60_000, left = [], clock 
       link = await linkOnScreen(recorder, target);
     }
     const where = placeOf(next.url);
-    if (link) yield { action: "click", target, label: link.text ? `Click ${quote(link.text)}` : `Open ${where}`, text: link.text, attribute: link.attribute, expect: next.url };
-    else yield { action: "visit", url: next.url, label: `Open ${where}` };
+    if (link) {
+      // demo.yaml writes the click by the link's words only where they find
+      // this link first, as a recording from it looks for them (see demo.js
+      // asWritten()), and by its href as the page wrote it otherwise: by its
+      // words, the click on a menu's link that came after one with the same
+      // words on another port, which the tour passed over, was recorded
+      // again on that one, the run refused it, and the page was missing
+      // from the new video.
+      const byWords = link.text ? await recorder.locate({ text: link.text }, { timeout: 0, scroll: false }) : null;
+      const words = byWords && byWords.attribute === link.attribute ? link.text : "";
+      yield { action: "click", target, label: link.text ? `Click ${quote(link.text)}` : `Open ${where}`, text: words, attribute: link.attribute, expect: next.url };
+    } else yield { action: "visit", url: next.url, label: `Open ${where}` };
     // The pages left out on the way are passed over.
     i = j - 1;
   }
