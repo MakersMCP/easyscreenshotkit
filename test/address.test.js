@@ -979,6 +979,7 @@ test("the texts say this machine's own names are the host given where they reach
     assert.match(flat, /from localhost the other two, and from 127\.0\.0\.1 or \[::1\] localhost\. Any other name is another host, a name under localhost too, though it leads to the same address\. Away from that host and port, a (?:page|visit step)\b/, where);
   }
   const flat = skill.replace(/\s+/g, " ");
+  assert.match(flat, /so a site given at `http:\/\/127\.0\.0\.1:4000\/` whose pages name their files and link their pages at `http:\/\/localhost:4000\/` comes with them, and the tour opens the pages linked there at the address given;/);
   assert.doesNotMatch(flat, /moves on to another address of its own/);
   assert.match(flat, /and the run stops with "it leads to <address>, which is \.\.\., and not on the host and port given", that site sends its visitors on to <address>, which the run does not open from there: it can be the same site at another of its names, [^;]*, or another site or program of the machine or its network, as another site the machine serves by its name, or a sign-in server on another port, where a local app sends a visitor who has not signed in\. Tell the user where it leads, and offer a run with <address> as the address, made only once they say it is that same site; a sign-in page there means the screens are behind a login, which a run does not reach\./);
 });
