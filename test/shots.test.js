@@ -1045,9 +1045,13 @@ test("a #route view whose sign has gone is kept, one that moved on is judged by 
     assert.deepEqual(words.pages[0].notes.slice(0, 2), ["still loading data after 10 s", "taken while it still showed a loading screen: time ran short; give more with --timeout"]);
     // Its phone's window for --pwa is taken too while the run's time allows
     // it, a run given 40 s keeping 9 s for a window, and is left out as the
-    // first one is.
+    // first one is, for its data: still loading it after its 2 s, or, on a
+    // machine too busy for the run's time, taken before it had come, as
+    // time ran short. Judged by the reason alone, the test failed in a
+    // container on a busy machine, where the run's time ran short first.
     assert.deepEqual(words.pwa.leftOut[0], UNREADY_LEFT_OUT[0]);
-    assert.ok(words.pwa.leftOut.slice(1).every((item) => item.form_factor === "narrow" && item.reason === UNREADY_LEFT_OUT[1].reason), JSON.stringify(words.pwa.leftOut));
+    const forData = [UNREADY_LEFT_OUT[1].reason, "taken before its data had come: time ran short; give more with --timeout"];
+    assert.ok(words.pwa.leftOut.slice(1).every((item) => item.form_factor === "narrow" && forData.includes(item.reason)), JSON.stringify(words.pwa.leftOut));
     assert.deepEqual(words.pwa.screenshots, []);
     const link = await take("link", { timeLimit: 40_000 });
     assert.deepEqual(link.pages[0].notes.slice(0, 1), ["a request was still open after 10 s"]);
