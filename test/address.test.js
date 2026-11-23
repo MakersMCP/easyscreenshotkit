@@ -400,6 +400,12 @@ test("the user's other networks at public addresses are taken for the public int
   assert.ok(readme.includes("nor is the rest of your network at public addresses outside the networks of your machine's interfaces, as a home router's guest network, and the run cannot tell them from any other on the public internet (see [Limits](#limits))."));
   const skill = fs.readFileSync(path.join(__dirname, "..", "skills", "easyscreenshotkit", "SKILL.md"), "utf8").replace(/\s+/g, " ");
   assert.match(skill, /The kit takes the rest of the user's own network for the public internet where it is at public addresses outside the networks of the machine's interfaces, [^.]*\. When the user says their network is such, tell them that `MAKERSMCP_REFUSE_ADDRESSES` can name its ranges, which are then refused as the address given too\./);
+  // So what they say a site of the user's network comes out without is
+  // what comes from a host of that network at a private address, where
+  // they said it of every other host of it, one taken at a public address
+  // too.
+  assert.ok(readme.includes("- A site on your network whose styles, scripts or pictures come from another host of that network at a private address, as an intranet's often do, or a company's own site where its DNS answers its names with internal addresses, is taken without them:"));
+  assert.ok(skill.includes("Before a run of a site on the user's network whose styles, scripts or pictures come from another host of that network at a private address, as an intranet's often do, tell the user it comes out without them too: the run opens the host and port given and no other such address."));
 });
 
 // On the port given, the host given is its own name, wherever it is: a name
