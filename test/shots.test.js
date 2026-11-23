@@ -19,6 +19,8 @@ const { setTimeLimit, sleep } = require("../skills/easyscreenshotkit/scripts/lib
 const { watchRequests, networkQuiet, showsLoadingSign, looksEmpty, waitForContent } = require("../skills/easyscreenshotkit/scripts/lib/page");
 const { LOCATE, Recorder } = require("../skills/easyscreenshotkit/scripts/lib/record");
 const { pickPages } = require("../skills/easyscreenshotkit/scripts/lib/tour");
+const { makeDemo } = require("../skills/easyscreenshotkit/scripts/lib/demo");
+const { findFfmpeg } = require("../skills/easyscreenshotkit/scripts/lib/ffmpeg");
 const { pngText } = require("../skills/easyscreenshotkit/scripts/lib/png");
 const { clean } = require("../skills/easyscreenshotkit/scripts/lib/clean");
 const { hideProblem } = require("../skills/easyscreenshotkit/scripts/lib/steps");
@@ -4032,10 +4034,14 @@ test("over https, a page's speculation rules take the browser to no other port o
 // footer's on its own port: the page's key has no port, the menu's link
 // outranked the footer's, the run refused it, and the page was lost though
 // the footer's was there to take, in the screenshots and in a demo's tour.
-// The link the run opens is the one kept now. Here the run's proxy takes the
-// site's address on port 80 to a server of this machine, and the kit's own
+// The link the run opens is the one kept now. And a demo's tour, which
+// went on to such a page by the menu's link, as it looked at the page's
+// host alone, clicked that link, which the run refused, so the page stayed
+// where it was and the page was missing from the video: it now passes over
+// a link the run does not open. Here the run's proxy takes the site's
+// address on port 80 to a server of this machine, and the kit's own
 // requests for it, robots.txt and the sitemap, go to the same server.
-test("of a menu's link to a page on another port and the footer's on the site's own, the screenshots and a demo's tour take the footer's", { skip: noBrowser, timeout: 200_000 }, () => withNames({ "dup.example": "93.184.215.14" }, async () => {
+test("of a menu's link to a page on another port and the footer's on the site's own, the screenshots and a demo's tour take the footer's", { skip: noBrowser || (!findFfmpeg() && "no ffmpeg installed"), timeout: 600_000 }, () => withNames({ "dup.example": "93.184.215.14" }, async () => {
   const html = { "Content-Type": "text/html; charset=utf-8" };
   const pages = { "/pricing": "Pricing", "/features": "Features", "/customers": "Customers", "/about": "About us" };
   const { server, origin } = await serve((req, res) => {
@@ -4086,6 +4092,11 @@ test("of a menu's link to a page on another port and the footer's on the site's 
       await chrome.close();
       setTimeLimit(120_000);
     }
+    // The demo itself: every page the tour picked is in it, and no click
+    // went to the menu's links on port 8443, which the run would refuse.
+    const { manifest: demo } = await makeDemo("http://dup.example/", { dir: path.join(root, "demo"), pages: 4, gif: false, timeLimit: 400_000 });
+    assert.deepEqual(demo.pages.map((p) => p.url).sort(), ["http://dup.example/", "http://dup.example/customers", "http://dup.example/features", "http://dup.example/pricing"]);
+    assert.deepEqual(demo.notes.filter((note) => note.includes(":8443")), []);
     // The name was asked for once, in all: by the rule, the browser's proxy
     // and the kit's own requests for robots.txt and the sitemap, which went
     // to its one answer through the kit's lookup.

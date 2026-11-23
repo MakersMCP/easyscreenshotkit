@@ -570,7 +570,7 @@ async function makeDemo(rawUrl, options = {}) {
       // A steps file that does not start somewhere starts at the address
       // given; its own steps keep their numbers in what goes wrong.
       const added = script && script.steps[0].action !== "visit" ? 1 : 0;
-      const steps = script ? [...(added ? [{ action: "visit", url: asked }] : []), ...script.steps] : tourSteps(recorder, tour.pages, { reserve, left: outOfTime });
+      const steps = script ? [...(added ? [{ action: "visit", url: asked }] : []), ...script.steps] : tourSteps(recorder, tour.pages, { reserve, left: outOfTime, guard });
       let n = 0;
       for await (const step of steps) {
         n++;

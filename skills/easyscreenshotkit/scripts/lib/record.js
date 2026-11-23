@@ -48,14 +48,20 @@ const WALK_SCREENS = 6;
 // an address. Interactive elements win over plain text, then the first in
 // the page's order. A link to an address with a #route is a link to that
 // view; for one without, a link to the page itself goes before a link to a
-// view of it. A link at one of spec.hosts on the address's port is a link
-// to it too: the other names of this machine that the run takes for the
-// address's host there (see pick.js sitesOf()), as a site given at
-// http://127.0.0.1:4000/ links its pages at http://localhost:4000/, as
-// Jekyll writes them, where the tour, which takes those pages at
-// 127.0.0.1, found no link to them and moved on to each with a crossfade,
-// though the menu had it. Returns its box on the screen, its words and,
-// for a link, its href as the page wrote it, or null.
+// view of it. A link to the address's path is a link to it at one of
+// spec.places alone, each a host, without www., and a port that the run
+// opens for it (see tour.js linkTo()), or at the address's own host and
+// port where spec names none: at another of this machine's names on the
+// address's port too, as a site given at http://127.0.0.1:4000/ links its
+// pages at http://localhost:4000/, as Jekyll writes them, where the tour,
+// which takes those pages at 127.0.0.1, found no link to them and moved on
+// to each with a crossfade, though the menu had it; and not on another port
+// of the address's own host, as a menu's https://acme.com:8443/pricing on a
+// site given at http://acme.com/, which the tour clicked first, as it
+// looked at the host alone, and the run refused, so the page stayed where
+// it was and the page the tour picked was missing from the video. Returns
+// its box on the screen, its words and, for a link, its href as the page
+// wrote it, or null.
 const LOCATE = `((spec) => {
   const norm = (s) => String(s || "").replace(/\\s+/g, " ").trim().toLowerCase();
   const shown = (el) => {
@@ -72,8 +78,8 @@ const LOCATE = `((spec) => {
     try { found = [...document.querySelectorAll(spec.css)].filter(shown); } catch (e) { return { error: "is not a CSS selector the browser can read" }; }
   } else if (spec.href) {
     const want = keyOf(spec.href);
-    const hosts = (spec.hosts || []).map((host) => String(host).toLowerCase());
-    const page = (key) => key.path === want.path && (key.host === want.host || (hosts.includes(key.host) && key.port === want.port));
+    const places = (spec.places || (want ? [want.host + ":" + want.port] : [])).map((place) => String(place).toLowerCase());
+    const page = (key) => key.path === want.path && places.includes(key.host + ":" + key.port);
     const links = [];
     for (const a of document.querySelectorAll("a[href]")) {
       const key = keyOf(a.href);

@@ -313,23 +313,46 @@ function chooseStops({ max, tops }, height, cover = 0) {
   return stops.filter((stop, i, all) => i === 0 || stop.y - all[i - 1].y > height * 0.3);
 }
 
-// What a click on the link to url points at: its address, and the other
-// names of this machine that the run takes for its host on its port, at
-// which the site may link it (see LOCATE in record.js).
-const linkTo = (url) => ({ href: url, hosts: sitesOf(url).slice(1) });
+// What a click on the link to url points at: its address, and the places,
+// each a host, without www., as the tour takes a site (see pick.js
+// siteOf()), and a port, at which a link to its path is a link to it: its
+// own host on its port, the other names of this machine that the run takes
+// for its host on its port (see pick.js sitesOf()), and its host on the
+// other of 80 and 443 where the run's rule opens that (guard, see
+// address.js guardFor()), as it does on a host on the public internet. A
+// link the run does not open is no link to the page: a menu's link to the
+// same path on another port of the site, which the rule refuses, was
+// clicked as the link to it, as the tour looked at the page's host alone,
+// the run refused the click, and the page stayed where it was (see LOCATE
+// in record.js). With no rule, the page's own port alone.
+async function linkTo(url, guard) {
+  const page = new URL(url);
+  const portOf = (u) => u.port || (u.protocol === "https:" ? "443" : "80");
+  const host = page.hostname.toLowerCase().replace(/^www\./, "");
+  const port = portOf(page);
+  const places = [`${host}:${port}`, ...sitesOf(url).slice(1).map((name) => `${name}:${port}`)];
+  const other = port === "80" ? "443" : port === "443" ? "80" : "";
+  if (guard && other) {
+    const there = new URL(url);
+    there.protocol = other === "443" ? "https:" : "http:";
+    there.port = "";
+    if (!(await guard.refuses(there.href).catch(() => NOT_WEB))) places.push(`${host}:${other}`);
+  }
+  return { href: url, places };
+}
 
-// The link to url on the screen as it is, or null.
-async function linkOnScreen(recorder, url) {
-  const found = await recorder.locate(linkTo(url), { timeout: 0, scroll: false });
+// The link a target points at on the screen as it is, or null.
+async function linkOnScreen(recorder, target) {
+  const found = await recorder.locate(target, { timeout: 0, scroll: false });
   if (!found || found.covered) return null;
   const inside = found.top >= 0 && found.top + found.height <= recorder.viewport.height && found.left >= 0 && found.left + found.width <= recorder.viewport.width;
   return inside ? found : null;
 }
 
-// Whether a link to url shows on the page's first screen: a menu that
-// scrolled away with the page is there again at the top.
-async function linkAtTop(recorder, url) {
-  const found = await recorder.locate(linkTo(url), { timeout: 0, scroll: false });
+// Whether the link a target points at shows on the page's first screen: a
+// menu that scrolled away with the page is there again at the top.
+async function linkAtTop(recorder, target) {
+  const found = await recorder.locate(target, { timeout: 0, scroll: false });
   if (!found) return false;
   const { y } = await recorder.scrollState();
   return found.top + y >= 0 && found.top + y + found.height <= recorder.viewport.height;
@@ -365,8 +388,9 @@ const STOP_SECONDS = 2.5;
 // a page's scrolls are left out when they would leave no room for the ones
 // still to come, and so is a page it picked itself. Each page it does not
 // show goes in left, with why, and a tour that cannot show the address
-// given fails. clock: what the time is, in ms.
-async function* tourSteps(recorder, pages, { reserve = 60_000, left = [], clock = Date.now } = {}) {
+// given fails. clock: what the time is, in ms. guard: the run's rule, by
+// which a link to the next page is one the run opens (see linkTo()).
+async function* tourSteps(recorder, pages, { reserve = 60_000, left = [], clock = Date.now, guard = null } = {}) {
   const host = new URL(pages[0].url).hostname.replace(/^www\./, "");
   const placeOf = (url) => readable(`${new URL(url).pathname}${routeOf(url)}`);
   const spare = () => timeLeft() - reserve;
@@ -410,13 +434,14 @@ async function* tourSteps(recorder, pages, { reserve = 60_000, left = [], clock 
     // A link to a #route goes by the query of the page it is on: a view
     // asked for with a query of its own is visited.
     const linkable = !routeOf(next.url) || new URL(next.url).search === new URL(pages[i].url).search;
-    let link = linkable ? await linkOnScreen(recorder, next.url) : null;
-    if (!link && linkable && stops.length && (await linkAtTop(recorder, next.url))) {
+    const target = linkable ? await linkTo(next.url, guard) : null;
+    let link = target ? await linkOnScreen(recorder, target) : null;
+    if (!link && target && stops.length && (await linkAtTop(recorder, target))) {
       yield { action: "scroll", to: "top", label: "Back to the top" };
-      link = await linkOnScreen(recorder, next.url);
+      link = await linkOnScreen(recorder, target);
     }
     const where = placeOf(next.url);
-    if (link) yield { action: "click", target: linkTo(next.url), label: link.text ? `Click ${quote(link.text)}` : `Open ${where}`, text: link.text, attribute: link.attribute, expect: next.url };
+    if (link) yield { action: "click", target, label: link.text ? `Click ${quote(link.text)}` : `Open ${where}`, text: link.text, attribute: link.attribute, expect: next.url };
     else yield { action: "visit", url: next.url, label: `Open ${where}` };
     // The pages left out on the way are passed over.
     i = j - 1;
