@@ -383,7 +383,9 @@ fs.openSync = (file, ...rest) => {
 };
 (async () => {
   const first = await checkManifest({ file: manifest });
-  const before = opened.filter((file) => file !== manifest);
+  // Past the manifest and the kernel's lists of this machine's addresses,
+  // which the check's rule reads as it is made (see address.js).
+  const before = opened.filter((file) => file !== manifest && !file.startsWith("/proc/net/"));
   // The first look sees a regular file where the named pipe is.
   const regular = statSync(manifest);
   fs.statSync = (file, ...rest) => (String(file) === pipe ? regular : statSync(file, ...rest));

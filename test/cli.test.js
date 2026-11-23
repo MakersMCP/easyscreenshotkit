@@ -196,6 +196,64 @@ test("a MAKERSMCP_REFUSE_ADDRESSES that does not parse stops every command befor
   }
 });
 
+// A system that does not let a program read this machine's network
+// interfaces, as a Linux service whose RestrictAddressFamilies leaves out
+// AF_NETLINK, has Node.js throw where the run reads them. Let go, the
+// machine was taken for one with no addresses but those the kernel's lists
+// hold, and its own addresses and their networks were opened away from the
+// address given. Here a preload stands in for such a system: each command
+// stops before any work, says why and what to do, makes no folder and
+// starts no browser.
+test("a run whose system does not let it read this machine's network interfaces stops before any work in each command, saying why and what to do", { skip: process.platform === "win32" && "the stand-ins are shell scripts", timeout: 60_000 }, () => {
+  const root = fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "easyscreenshotkit-unread-"));
+  const { CHROME_PATH, FFMPEG_PATH, MAKERSMCP_REFUSE_ADDRESSES, ...base } = process.env;
+  try {
+    const started = path.join(root, "started");
+    const quoted = sh(started);
+    const ffmpeg = path.join(root, "ffmpeg");
+    fs.writeFileSync(ffmpeg, `#!/bin/sh\necho ffmpeg >> ${quoted}\ncase "$*" in *-version*) echo 'ffmpeg version 4.4.2-stand-in';; *) printf '%s\\n' ' V....D libx264  libx264 H.264';; esac\n`, { mode: 0o755 });
+    const chrome = path.join(root, "chrome");
+    fs.writeFileSync(chrome, `#!/bin/sh\necho chrome >> ${quoted}\nexit 1\n`, { mode: 0o755 });
+    const manifest = path.join(root, "manifest.json");
+    fs.writeFileSync(manifest, JSON.stringify({ screenshots: [] }));
+    // As Node.js throws it, the error's number given as it is.
+    const preload = path.join(root, "unread.js");
+    fs.writeFileSync(preload, `const os = require("os");\nconst errno = Number(process.env.UNREAD_ERRNO);\nos.networkInterfaces = () => { throw Object.assign(new Error("A system error occurred: uv_interface_addresses returned Unknown system error " + errno + " (Unknown system error " + errno + ")"), { code: "ERR_SYSTEM_ERROR", errno, syscall: "uv_interface_addresses" }); };\n`);
+    const run = (errno, ...args) => spawnSync(process.execPath, ["--require", preload, CLI, ...args], { env: { ...base, CHROME_PATH: chrome, FFMPEG_PATH: ffmpeg, UNREAD_ERRNO: String(errno) }, encoding: "utf8", timeout: 30_000 });
+    const out = path.join(root, "out");
+    const said = (words, then) => `This machine's network interfaces could not be read: ${words}. Without them easyscreenshotkit cannot tell this machine's own addresses from those on the public internet, so it opened nothing. ${then}`;
+    const netlink = said("address family not supported (EAFNOSUPPORT)", "Run it where the system lets a program read them: on Linux, a service needs AF_NETLINK among its RestrictAddressFamilies.");
+    const files = said("too many open files (EMFILE)", "This process has as many files open as it may: raise that limit, as ulimit -n does, and run again.");
+    for (const [name, args] of [
+      ["easyscreenshotkit", ["https://acme.com/", "--out", out]],
+      ["easyscreenshotkit", ["http://localhost:9/", "--out", out]],
+      ["easyscreenshotkit demo", ["demo", "https://acme.com/", "--out", out]],
+      ["easyscreenshotkit", ["--pwa-check", manifest]],
+      ["easyscreenshotkit", ["--pwa-check", "https://acme.com/"]],
+    ]) {
+      const unread = run(97, ...args);
+      assert.deepEqual([unread.status, unread.stdout, unread.stderr.trim().split("\n").pop()], [1, "", `${name}: ${netlink}`], args.join(" "));
+      const json = run(97, ...args, "--json");
+      assert.deepEqual([json.status, JSON.parse(json.stdout)], [1, { ok: false, error: netlink }], args.join(" "));
+      const emfile = run(24, ...args);
+      assert.deepEqual([emfile.status, emfile.stderr.trim().split("\n").pop()], [1, `${name}: ${files}`], args.join(" "));
+      assert.equal(fs.existsSync(out), false, args.join(" "));
+    }
+    // The demo asks ffmpeg its version and encoders before the address is
+    // judged, as before; no browser started at all.
+    assert.ok(fs.existsSync(started) && fs.readFileSync(started, "utf8").split("\n").includes("ffmpeg"), "the stand-in ffmpeg wrote where the test reads");
+    assert.equal(fs.readFileSync(started, "utf8").split("\n").filter((line) => line === "chrome").length, 0);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+  // The README's Requirements and Limits, and SKILL.md, say so.
+  const readme = fs.readFileSync(path.join(__dirname, "..", "README.md"), "utf8");
+  assert.ok(readme.includes("- A system that lets a program read this machine's network interfaces: on Linux, a service needs AF_NETLINK among its RestrictAddressFamilies. Where they cannot be read, a run stops before any work and says so (see [Limits](#limits))."));
+  assert.ok(readme.includes("Where the system does not let easyscreenshotkit read the network interfaces, as a Linux service whose RestrictAddressFamilies leaves out AF_NETLINK, the run stops before any work and says so, as it could not tell your machine's own addresses, as in `This machine's network interfaces could not be read: address family not supported (EAFNOSUPPORT). ...`; a reading that fails later in the run, as where this process has as many files open as it may, leaves the last one in its place."));
+  assert.ok(readme.includes("A list of the kernel's that the run read and cannot read again a moment later, as where this process has as many files open as it may, is taken as it was, and where it cannot read the kernel's lists at all, as where `/proc` is not there, it takes the addresses of the interfaces that are up and have a link alone."));
+  assert.ok(fs.readFileSync(path.join(__dirname, "..", "skills", "easyscreenshotkit", "SKILL.md"), "utf8").includes("- When a run says this machine's network interfaces could not be read, the system did not let the kit read them, so it could not tell the machine's own addresses from the public internet and opened nothing: do what the line says, or tell the user that the kit has to run where the system lets a program read them."));
+});
+
 // A selector to hide that could reach past its own rule in the page, as one
 // that opens a comment, is refused as an argument is, by both commands,
 // before any work: no folder is made and no browser is looked for. So is

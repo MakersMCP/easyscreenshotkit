@@ -482,6 +482,85 @@ test("this machine's network interfaces are read once a second at most, whatever
     }
   }));
 
+// A reading of the interfaces that the system refuses, as where a Linux
+// service's RestrictAddressFamilies leaves out AF_NETLINK, or where this
+// process has as many files open as it may, throws, and Node.js names its
+// error by its number alone. Let go, it left this machine with no address
+// of its own but those the kernel's lists hold, so each of them was opened
+// away from the address given. The last reading holds; with none, why not
+// is told, and the run's rule is not made, so a run stops before any work.
+test("a reading of this machine's network interfaces that the system refuses keeps the last one, and with none says why and makes no rule", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 7_000_000 });
+  const os = require("node:os");
+  const { kernel, interfacesUnread } = require("../skills/easyscreenshotkit/scripts/lib/address");
+  const saved = os.networkInterfaces;
+  const savedRead = kernel.read;
+  // The kernel's lists, none here.
+  kernel.read = () => "";
+  // As Node.js throws it, the error's number given as it is, with no code.
+  const refusal = (errno) => Object.assign(new Error(`A system error occurred: uv_interface_addresses returned Unknown system error ${errno} (Unknown system error ${errno})`), { code: "ERR_SYSTEM_ERROR", errno, syscall: "uv_interface_addresses" });
+  const server = {
+    lo: [{ address: "127.0.0.1", netmask: "255.0.0.0", family: "IPv4", internal: true, cidr: "127.0.0.1/8" }],
+    eth0: [
+      { address: "81.2.69.160", netmask: "255.255.255.0", family: "IPv4", internal: false, cidr: "81.2.69.160/24" },
+      { address: "2a02:1205:5000::1", netmask: "ffff:ffff:ffff:ffff::", family: "IPv6", internal: false, cidr: "2a02:1205:5000::1/64", scopeid: 0 },
+    ],
+  };
+  let errno = 0;
+  let reads = 0;
+  os.networkInterfaces = () => {
+    reads++;
+    if (errno) throw refusal(errno);
+    return server;
+  };
+  try {
+    const guard = await guardFor("https://93.184.216.34/");
+    assert.equal(await guard.refuses("http://81.2.69.160/"), "at 81.2.69.160, an address of this machine");
+    errno = 24;
+    for (let n = 1; n <= 3; n++) {
+      t.mock.timers.tick(1_000);
+      assert.equal(await guard.refuses("http://81.2.69.160/"), "at 81.2.69.160, an address of this machine");
+      assert.equal(await guard.refuses("http://[2a02:1205:5000::77]/"), "at 2a02:1205:5000::77, on a network of this machine");
+      assert.equal(interfacesUnread(), null);
+      // Tried again once a second at most.
+      assert.equal(reads, 1 + n);
+    }
+    // A rule made meanwhile is made from the last reading.
+    assert.equal(await (await guardFor("https://93.184.216.34/")).refuses("http://81.2.69.160/"), "at 81.2.69.160, an address of this machine");
+    // Read again once the system lets it.
+    errno = 0;
+    t.mock.timers.tick(1_000);
+    assert.equal(interfacesUnread(), null);
+    assert.equal(reads, 5);
+    // With no reading before it, why not, in the system's words for its
+    // number, or its message where it has none; and the rule is not made,
+    // for the address given or for a manifest file.
+    const advice = "Run it where the system lets a program read them: on Linux, a service needs AF_NETLINK among its RestrictAddressFamilies.";
+    for (const [error, why, then] of [
+      [refusal(24), { code: "EMFILE", words: "too many open files (EMFILE)" }, "This process has as many files open as it may: raise that limit, as ulimit -n does, and run again."],
+      [refusal(23), { code: "ENFILE", words: "file table overflow (ENFILE)" }, "The system has as many files open as it may: run fewer jobs at once."],
+      [refusal(97), { code: "EAFNOSUPPORT", words: "address family not supported (EAFNOSUPPORT)" }, advice],
+      [Object.assign(new Error("A system error occurred:\nuv_interface_addresses returned nothing"), { code: "ERR_SYSTEM_ERROR" }), { code: "", words: "A system error occurred: uv_interface_addresses returned nothing" }, advice],
+      [new Error("x".repeat(300)), { code: "", words: "x".repeat(200) }, advice],
+    ]) {
+      let tries = 0;
+      os.networkInterfaces = () => {
+        tries++;
+        throw error;
+      };
+      assert.deepEqual(interfacesUnread(), why);
+      // Within the second, from the same reading.
+      assert.deepEqual(interfacesUnread(), why);
+      assert.equal(tries, 1);
+      const words = `This machine's network interfaces could not be read: ${why.words}. Without them easyscreenshotkit cannot tell this machine's own addresses from those on the public internet, so it opened nothing. ${then}`;
+      for (const start of ["https://93.184.216.34/", "http://localhost:3000/", ""]) await assert.rejects(guardFor(start), (err) => err.message === words, start);
+    }
+  } finally {
+    os.networkInterfaces = saved;
+    kernel.read = savedRead;
+  }
+});
+
 // The kernel's lists of a machine with an interface up with no link (eth9,
 // a veth whose other end is down), one that is down (kd0, as kube-proxy
 // leaves kube-ipvs0), ranges routed to the machine itself, /24, /64 and
@@ -578,10 +657,14 @@ test("on Linux an address the kernel holds for this machine on an interface that
   });
   let prefixes = [1, 3, 9];
   let routes6 = 14;
+  // The files that cannot be read for a while, as where this process has as
+  // many files open as it may.
+  let refusing = [];
   const reads = [];
   const files = { "/proc/net/fib_triestat": () => KERNEL.trieStats(prefixes), "/proc/net/fib_trie": () => KERNEL.trie, "/proc/net/if_inet6": () => KERNEL.inet6, "/proc/net/rt6_stats": () => KERNEL.routeStats6(routes6), "/proc/net/ipv6_route": () => KERNEL.route6 };
   kernel.read = (file) => {
     reads.push(file.replace("/proc/net/", ""));
+    if (refusing.includes(file)) throw Object.assign(new Error(`EMFILE: too many open files, open '${file}'`), { code: "EMFILE" });
     if (!files[file]) throw Object.assign(new Error(`ENOENT: ${file}`), { code: "ENOENT" });
     return files[file]();
   };
@@ -589,7 +672,7 @@ test("on Linux an address the kernel holds for this machine on an interface that
   const url = (address) => (address.includes(":") ? `http://[${address}]/secret` : `http://${address}/secret`);
   try {
     const guard = await guardFor("https://93.184.215.14/");
-    for (const [address, why] of [
+    const kept = [
       // An interface up with no link, its IPv6 network too.
       ["93.184.216.77", at("93.184.216.77")],
       ["2a02:2f0c:8000:77::5", at("2a02:2f0c:8000:77::5")],
@@ -607,6 +690,9 @@ test("on Linux an address the kernel holds for this machine on an interface that
       ["93.184.217.50", at("93.184.217.50")],
       ["::ffff:93.184.217.50", "at ::ffff:5db8:d932, an address of this machine"],
       ["2a02:2f0c:8000:99::7", at("2a02:2f0c:8000:99::7")],
+    ];
+    for (const [address, why] of [
+      ...kept,
       // The running interface, as before.
       ["198.51.100.9", NOT_PUBLIC],
       ["2a02:2f0c:8000:1::9", at("2a02:2f0c:8000:1::9")],
@@ -624,6 +710,14 @@ test("on Linux an address the kernel holds for this machine on an interface that
     // A connection of the kit's or the proxy's is refused before it is made.
     const answer = await new Promise((resolve) => guard.lookupFor(url("93.184.217.50"))("93.184.217.50", { all: true }, (err, list) => resolve(err || list)));
     assert.deepEqual({ code: answer.code, refused: answer.refused }, { code: "ENOTPUBLIC", refused: `it is ${at("93.184.217.50")}` });
+    // Files that cannot be read a moment later are taken as they were last
+    // read.
+    refusing = ["/proc/net/fib_trie", "/proc/net/if_inet6", "/proc/net/ipv6_route"];
+    reads.length = 0;
+    t.mock.timers.tick(1_000);
+    for (const [address, why] of kept) assert.equal(await guard.refuses(url(address)), why, address);
+    assert.deepEqual(reads.sort(), ["fib_trie", "fib_triestat", "if_inet6", "ipv6_route", "rt6_stats"]);
+    refusing = [];
     // More routes than the kernel lists in a few milliseconds: the lists of
     // routes are not read, the addresses of the interfaces are.
     prefixes = [1, 2_000, 2_000];

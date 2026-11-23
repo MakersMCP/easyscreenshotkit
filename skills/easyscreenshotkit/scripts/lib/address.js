@@ -61,6 +61,7 @@ const net = require("net");
 const os = require("os");
 const http = require("http");
 const https = require("https");
+const util = require("util");
 const zlib = require("zlib");
 const { TLDS } = require("./tlds");
 
@@ -295,6 +296,20 @@ function ownIp(address) {
 // other addresses that are not on the public internet give none: ::1 is
 // held at /128, and the /64 around it holds addresses the rule takes for
 // public by their range.
+//
+// A reading of the interfaces that the system refuses, as where a Linux
+// service's RestrictAddressFamilies leaves out AF_NETLINK, or where this
+// process has as many files open as it may, leaves the last one of the same
+// functions in its place, as this machine's addresses seldom change while a
+// run goes, and is tried again once a second has passed. With none, it
+// gives why not (unread, see interfacesUnread()), and a run stops before
+// any work (see guardFor()): where the error was let go, the machine was
+// taken for one with no addresses but those the kernel's lists hold, so on
+// macOS and Windows every address of this machine and of its IPv6
+// networks, and on Linux those of a machine whose IPv4 routes are too many
+// to list, were opened away from the address given, and a name that
+// answered with one of them beside an address on the public internet was
+// no name whose answers mix, with no word.
 const INTERFACES_MS = 1_000;
 const ROUTES_A_SECOND = 20_000;
 let machine = null;
@@ -310,6 +325,16 @@ const KERNEL_FILES = {
   route6: "/proc/net/ipv6_route",
 };
 const kernel = { read: (file) => fs.readFileSync(file, "latin1") };
+
+// The text each of the kernel's files last gave, for the function that read
+// it: a file that cannot be read is taken as it was last read, as a reading
+// of the interfaces that the system refuses is (see machineNow()), so a
+// moment where this process has as many files open as it may does not have
+// the addresses it lists taken for the public internet until it is read
+// again. A file never read, as where /proc is not there or the system does
+// not let it be read, is taken as empty, and the interfaces stand alone for
+// what it lists.
+let kernelTexts = { read: null, texts: {} };
 
 // The most routes the kernel's list of them is read with: it lists them a
 // page at a time, each page counted from the first route again, so the time
@@ -348,17 +373,20 @@ function hexIpv6(hex) {
 // "Id 100:"; the kernel names no table for an IPv6 route, so a local route
 // shorter than /48 is left out. The routes are listed only where the
 // kernel's counts of them (/proc/net/fib_triestat, /proc/net/rt6_stats) are
-// KERNEL_ROUTES at most. Empty where a file cannot be read, and on any
-// other system; routes: how many routes the kernel counted.
+// KERNEL_ROUTES at most. Empty on any other system; routes: how many
+// routes the kernel counted.
 function kernelAddresses() {
   const found = { four: [], six: [], prefixes: [], routes: 0 };
   if (process.platform !== "linux") return found;
+  if (kernelTexts.read !== kernel.read) kernelTexts = { read: kernel.read, texts: {} };
+  const { texts } = kernelTexts;
   const text = (file) => {
     try {
-      return String(kernel.read(file));
+      texts[file] = String(kernel.read(file));
     } catch {
-      return "";
+      // As it was last read, or empty (see kernelTexts).
     }
+    return texts[file] || "";
   };
   // fib_triestat names each table and its count of prefixes, the routes
   // fib_trie lists for it.
@@ -413,8 +441,10 @@ function machineNow() {
   let interfaces = {};
   try {
     interfaces = read.call(os);
-  } catch {
-    // None to read.
+  } catch (err) {
+    const last = machine && machine.read === read && machine.kernel === kernel.read ? machine : null;
+    machine = last ? { ...last, at: now } : { at: now, read, kernel: kernel.read, wait: INTERFACES_MS, mine: new net.BlockList(), networks: new net.BlockList(), unread: unreadWhy(err) };
+    return machine;
   }
   const mine = new net.BlockList();
   const networks = new net.BlockList();
@@ -440,6 +470,34 @@ function machineNow() {
   machine = { at: now, read, kernel: kernel.read, wait: Math.max(INTERFACES_MS, (routes / ROUTES_A_SECOND) * 1_000), mine, networks };
   return machine;
 }
+
+// Why this machine's network interfaces could not be read, as
+// { code, words }: the system's words for the error by its code, as "too
+// many open files (EMFILE)", where Node.js names it by its number alone, as
+// "Unknown system error 24", or its message cut to 200 characters, its
+// control characters made spaces, when it has no number.
+function unreadWhy(err) {
+  const number = err && Number.isInteger(err.errno) ? -Math.abs(err.errno) : 0;
+  const known = number ? util.getSystemErrorMap().get(number) : null;
+  if (known) return { code: known[0], words: `${known[1]} (${known[0]})` };
+  return { code: "", words: String((err && err.message) || err).replace(/[\u0000-\u001f\u007f]+/g, " ").slice(0, 200) };
+}
+
+// Why this machine's network interfaces cannot be read, as { code, words },
+// or null where they could be read, now or earlier in the run (see
+// machineNow()): a run stops before any work then, as it could not tell
+// this machine's own addresses from those on the public internet (see
+// guardFor()).
+const interfacesUnread = () => machineNow().unread || null;
+
+// What a run that stops so says, and what to do: with as many files open
+// as this process or the system may, what the start of a program says
+// then; else to run where the system lets a program read them.
+const UNREAD_ADVICE = {
+  EMFILE: "This process has as many files open as it may: raise that limit, as ulimit -n does, and run again.",
+  ENFILE: "The system has as many files open as it may: run fewer jobs at once.",
+};
+const unreadText = (unread) => `This machine's network interfaces could not be read: ${unread.words}. Without them easyscreenshotkit cannot tell this machine's own addresses from those on the public internet, so it opened nothing. ${UNREAD_ADVICE[unread.code] || "Run it where the system lets a program read them: on Linux, a service needs AF_NETLINK among its RestrictAddressFamilies."}`;
 
 // Whether the run takes an IP address for one it does not open away from
 // the address given: one not on the public internet, or this machine's own
@@ -830,9 +888,12 @@ function addressesFor(hostname) {
 // MAKERSMCP_REFUSE_ADDRESSES refuses the address given, or why a name of it
 // that answers both on the public internet and off it is not opened (see
 // standing()), or "" likewise. Throws when MAKERSMCP_REFUSE_ADDRESSES does
-// not parse.
+// not parse, and when this machine's network interfaces cannot be read (see
+// interfacesUnread()), so a run stops before any work.
 async function guardFor(start) {
   const refusals = hostRefusals();
+  const unread = interfacesUnread();
+  if (unread) throw new Error(unreadText(unread));
   let from = null;
   try {
     from = start ? new URL(start) : null;
@@ -1103,4 +1164,4 @@ function throughNoProxy(message) {
   return `${text}${/[.!?]$/.test(text) ? "" : "."} easyscreenshotkit does not use the proxy ${name} names: its browser and its own requests connect to each site themselves, so on a network that reaches the web only through that proxy, it reaches no site.`;
 }
 
-module.exports = { guardFor, getChecked, hostOf, sharedAddresses, notPublicIp, ownIp, kernel, hostRefusals, refusalsProblem, unresolvedError, refusedError, otherPort, refusedHere, stopLookups, throughNoProxy, NOT_WEB, NOT_PUBLIC, NOT_GIVEN, UNRESOLVED, REFUSE_SETTING };
+module.exports = { guardFor, getChecked, hostOf, sharedAddresses, notPublicIp, ownIp, kernel, interfacesUnread, hostRefusals, refusalsProblem, unresolvedError, refusedError, otherPort, refusedHere, stopLookups, throughNoProxy, NOT_WEB, NOT_PUBLIC, NOT_GIVEN, UNRESOLVED, REFUSE_SETTING };
