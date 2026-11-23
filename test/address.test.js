@@ -141,6 +141,12 @@ test("an address this machine's network interfaces hold, a public one included, 
   };
   let interfaces = server;
   os.networkInterfaces = () => interfaces;
+  // The kernel's lists of this machine's own, which on a machine of many
+  // routes are read less often than once a second (see the test of them
+  // below), are none here.
+  const { kernel } = require("../skills/easyscreenshotkit/scripts/lib/address");
+  const savedRead = kernel.read;
+  kernel.read = () => "";
   try {
     await withNames({ "own-machine.example": "81.2.69.160", "own-machine.acme.com": "81.2.69.160", "own-machine6.example": "2a02:1205:5000::1", "own-lan6.example": ["93.184.215.14", "2a02:1205:5000::77"], "own-site.example": "93.184.215.14" }, async () => {
       const guard = await guardFor("https://own-site.example/");
@@ -210,6 +216,7 @@ test("an address this machine's network interfaces hold, a public one included, 
     });
   } finally {
     os.networkInterfaces = saved;
+    kernel.read = savedRead;
   }
 });
 
@@ -297,6 +304,10 @@ test("this machine's network interfaces are read once a second at most, whatever
       reads++;
       return interfaces;
     };
+    // The kernel's lists, none here, as above.
+    const { kernel } = require("../skills/easyscreenshotkit/scripts/lib/address");
+    const savedRead = kernel.read;
+    kernel.read = () => "";
     t.mock.timers.enable({ apis: ["Date"], now: 5_000_000 });
     const lookup = (guard, raw) => new Promise((resolve) => guard.lookupFor(raw)(new URL(raw).hostname, { all: true }, (err, list) => resolve(err || list)));
     try {
@@ -327,6 +338,7 @@ test("this machine's network interfaces are read once a second at most, whatever
       assert.equal(reads, 4);
     } finally {
       os.networkInterfaces = saved;
+      kernel.read = savedRead;
     }
   }));
 
