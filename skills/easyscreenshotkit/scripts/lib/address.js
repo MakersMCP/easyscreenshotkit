@@ -556,7 +556,12 @@ const LOOPBACK = [
 // by how long each refusal took which devices of the user's network answer
 // to them, a device that is there in a few milliseconds and a name no
 // device holds after the system's wait, and send that to its own server.
-const networkName = (host) => !net.isIP(host) && (/\.local$/i.test(host) || !host.includes("."));
+// localhost is none: the run takes it for this machine without asking
+// anything (see LOOPBACK), so MAKERSMCP_REFUSE_ADDRESSES judges it by the
+// addresses it stands for, as it judges 127.0.0.1, where a page's
+// http://localhost:3000/ with 127.0.0.0/8 refused was named not on the
+// public internet, not in the setting's words.
+const networkName = (host) => !net.isIP(host) && !localName(host) && (/\.local$/i.test(host) || !host.includes("."));
 
 // The addresses of this machine one of its own names stands for: localhost
 // both of them, and 127.0.0.1 and ::1 themselves; null for any other host,

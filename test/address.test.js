@@ -1288,6 +1288,18 @@ test("away from the address given, a name under .local or of one label is refuse
       const refusing = await guardFor("https://lookups-site.example/");
       for (const url of away) assert.equal(await refusing.refuses(url), NOT_PUBLIC, url);
     });
+    // localhost is no such name: the run takes it for this machine without
+    // asking anything, so the setting judges it by the addresses it stands
+    // for, as it judges 127.0.0.1, where it was named not on the public
+    // internet whatever the setting named.
+    assert.equal(await fromPublic.refuses("http://localhost:3000/"), NOT_PUBLIC);
+    await withSetting("127.0.0.0/8", async () => {
+      const refusing = await guardFor("https://lookups-site.example/");
+      for (const url of ["http://localhost:3000/", "http://LOCALHOST./app.js"]) assert.equal(await refusing.refuses(url), here("127.0.0.1"), url);
+      for (const url of away) assert.equal(await refusing.refuses(url), NOT_PUBLIC, url);
+    });
+    const readme = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "README.md"), "utf8");
+    assert.ok(readme.includes('`localhost` is judged by the addresses it stands for, ::1 and 127.0.0.1, without being looked up. Away from the address given, a name under `.local` or of one label is named "not on the public internet" whatever the setting names'));
     assert.deepEqual(asked, ["lookups-site.example", "printer.lan"]);
     // Given as the address, such a name is the user's own, and its pages
     // are its own: from it, another such name is still not asked for.
