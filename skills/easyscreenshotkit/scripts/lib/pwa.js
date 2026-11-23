@@ -546,13 +546,20 @@ async function loadManifest(target, guard, timeLimit) {
   return { where: manifest.url, page: got.url, base: { url: manifest.url }, json: parseJson(manifest.body.toString("utf8"), manifest.url) };
 }
 
+// A screenshot's src written as a data: address, whose picture it holds.
+const DATA = /^data:([^,]*?)(;base64)?,(.*)$/is;
+
+// Whether a screenshot's src is read from the web: one of a manifest read
+// from the web, or a web address, but for a data: address.
+const fromWeb = (src, base) => !DATA.test(src) && Boolean(base.url || /^https?:\/\//i.test(src));
+
 // A screenshot's file, from the web or next to a manifest file. Next to a
 // file, a src that starts with "/" is taken from the manifest's folder: a
 // manifest usually sits at the site's root.
 async function loadImage(src, base, guard) {
-  const data = /^data:([^,]*?)(;base64)?,(.*)$/is.exec(src);
+  const data = DATA.exec(src);
   if (data) return imageInfo(data[2] ? Buffer.from(data[3], "base64") : Buffer.from(decodeURIComponent(data[3]), "utf8"));
-  if (base.url || /^https?:\/\//i.test(src)) {
+  if (fromWeb(src, base)) {
     const url = new URL(src, base.url).href;
     if (!/^https?:/i.test(url)) throw new Error(`${url} is not a web address`);
     return imageInfo((await get(url, "image/png,image/jpeg;q=0.9,image/*;q=0.8,*/*;q=0.5", guard)).body);
@@ -597,17 +604,23 @@ async function unreadAs(err, guard, target) {
 // the manifest its home page links (--pwa), by which that address is judged
 // too, as it is the page's and not the one the run was given. timeLimit:
 // the check's --timeout, in ms, for a manifest given as a named pipe.
+//
+// A manifest file and the screenshots' files next to it are read from the
+// disk with no rule, and the rule is made only for a manifest file that
+// names a screenshot at a web address, of those Chrome looks at: where this
+// machine's network interfaces cannot be read, the rule is not made and
+// the check stops before it reads one (see address.js guardFor()). Made up
+// front, it stopped the check of every manifest file there, one whose
+// screenshots are all files too, as in a container whose seccomp profile
+// refuses a netlink socket, where 0.1.3 checked it.
 async function checkManifest(target, { guard: given = null, timeLimit = 300_000 } = {}) {
-  const guard = given || (await guardFor(target.url || ""));
+  let guard = given || (target.file ? null : await guardFor(target.url || ""));
   const found = await loadManifest(target, guard, timeLimit);
   const json = found.json && typeof found.json === "object" && !Array.isArray(found.json) ? found.json : {};
   const list = Array.isArray(json.screenshots) ? json.screenshots : [];
-  const images = await Promise.all(
-    list.slice(0, LOOKED_AT).map((entry) => {
-      const src = entry && typeof entry.src === "string" ? entry.src.trim() : "";
-      return src ? loadImage(src, found.base, guard).catch(async (err) => ((await unreadAs(err, guard, target)) ? { unread: reasonOf(err) } : { error: reasonOf(err) })) : undefined;
-    }),
-  );
+  const srcs = list.slice(0, LOOKED_AT).map((entry) => (entry && typeof entry.src === "string" ? entry.src.trim() : ""));
+  if (!guard && srcs.some((src) => src && fromWeb(src, found.base))) guard = await guardFor("");
+  const images = await Promise.all(srcs.map((src) => (src ? loadImage(src, found.base, guard).catch(async (err) => ((await unreadAs(err, guard, target)) ? { unread: reasonOf(err) } : { error: reasonOf(err) })) : undefined)));
   // A file with screenshots and nothing else, such as the
   // manifest-screenshots.json of a run, is a part of a manifest: its
   // description is not looked for.
