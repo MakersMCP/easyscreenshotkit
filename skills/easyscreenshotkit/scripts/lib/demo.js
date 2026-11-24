@@ -453,13 +453,42 @@ const placeOf = (url) => `${new URL(url).pathname}${routeOf(url)}`;
 
 const clock = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
 
-// The #route links a tour left out, in one note: their paths and routes,
-// the first 12 of them, and how many more.
-function routesNote(routes) {
-  const shown = routes.slice(0, 12).map((route) => pathOf(route.url));
-  const more = routes.length - shown.length;
-  const list = more ? `${shown.join(", ")} and ${more} more` : shown.length > 1 ? `${shown.slice(0, -1).join(", ")} and ${shown[shown.length - 1]}` : shown[0];
+// The first 12 of names, as a sentence lists them, and how many more.
+function listOf(names) {
+  const shown = names.slice(0, 12);
+  const more = names.length - shown.length;
+  return more ? `${shown.join(", ")} and ${more} more` : shown.length > 1 ? `${shown.slice(0, -1).join(", ")} and ${shown[shown.length - 1]}` : shown[0];
+}
+
+// The #route links a tour left out, in one note: the first 12 of them, and
+// how many more. Each is named by its path and route where it is on the
+// scheme, host and port of the home page as the tour opened it (home), as
+// --page reads a path against the address given, which went there. Any
+// other, as one at the site's www name, or on port 443 of a site given on
+// another port, by its whole address: named by its path, it had an agent
+// give --page that path, which opens it at the host and port given,
+// another page or another program.
+function routesNote(routes, { home = "" } = {}) {
+  const name = (url) => (!home || new URL(url).origin === new URL(home).origin ? pathOf(url) : readable(url));
+  const list = listOf(routes.map((route) => name(route.url)));
   return routes.length === 1 ? `Left out ${list}: a #route, which the tour does not follow: give it with --page.` : `Left out ${list}: #routes, which the tour does not follow: give one with --page.`;
+}
+
+// The notes a tour adds to steps.json (see tour.js pickPages()): the pages
+// it left out with why, what else it noted, the #route links the run's
+// rule refuses, in a note for each reason, as a site can link many views
+// of its app on another port of its host and a note for each link would
+// fill steps.json and the summary, the #route links it does not follow,
+// and whether time ran short.
+function tourNotes(tour) {
+  const notes = tour.skipped.map((skip) => `Left out ${skip.url}: ${skip.reason}.`);
+  notes.push(...tour.notes);
+  const refused = new Map();
+  for (const route of tour.refused) refused.set(route.reason, [...(refused.get(route.reason) || []), route.url]);
+  for (const [reason, urls] of refused) notes.push(`Left out ${listOf(urls)}: ${reason}.`);
+  if (tour.routes.length) notes.push(routesNote(tour.routes, { home: tour.home }));
+  if (tour.short) notes.push(`Time ran out after ${tour.pages.length === 1 ? "1 page" : `${tour.pages.length} pages`}: a tour looks for more only while 4 minutes of the run are left; give more with --timeout.`);
+  return notes;
 }
 
 async function makeDemo(rawUrl, options = {}) {
@@ -559,10 +588,7 @@ async function makeDemo(rawUrl, options = {}) {
         tour = await pickPages(chrome, asked, { pages: wanted, extra, lang, theme, reducedMotion, log });
         alive();
         name = tour.site;
-        for (const skip of tour.skipped) notes.push(`Left out ${skip.url}: ${skip.reason}.`);
-        notes.push(...tour.notes);
-        if (tour.routes.length) notes.push(routesNote(tour.routes));
-        if (tour.short) notes.push(`Time ran out after ${tour.pages.length === 1 ? "1 page" : `${tour.pages.length} pages`}: a tour looks for more only while 4 minutes of the run are left; give more with --timeout.`);
+        notes.push(...tourNotes(tour));
       }
       await recorder.open();
       log("Recording");
@@ -773,4 +799,4 @@ async function main(argv) {
   }
 }
 
-module.exports = { main, makeDemo, parseDemo, prepareDemoDir, openDemo, routesNote, barredNote, refusalNotes, what, frameAt, stepEntries, pageEntries, summary, USAGE };
+module.exports = { main, makeDemo, parseDemo, prepareDemoDir, openDemo, routesNote, tourNotes, barredNote, refusalNotes, what, frameAt, stepEntries, pageEntries, summary, USAGE };

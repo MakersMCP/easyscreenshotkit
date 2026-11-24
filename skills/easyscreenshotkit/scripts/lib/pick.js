@@ -567,19 +567,43 @@ function rankLinks(links, sitemap, { home, robots = null, alternates = [], exclu
 // The links to views of a single page app (#routes) of the site among
 // links, the ones the tour does not follow, to be listed with the pages
 // left out: one for each view, none for a view taken already (keys: the
-// keys of the pages taken) or for the home page's own.
-function routeLinks(links, { home, keys = [] }) {
+// keys of the pages taken) or for the home page's own. Each is judged by
+// the run's rule first, refuses(url) resolving to "" for an address the
+// run opens and else to why it does not (see address.js guardFor()). Of
+// the links to one view, the one the rule opens is listed, with the words
+// to give it with --page, the one at the home page's host as written where
+// two are opened, as rankLinks() keeps one; where the rule opens none, the
+// first is listed with the reason the rule gives, as "on port 8443, not 80
+// or 443, and not on the scheme, host and port given". Listed with those
+// words, a view of an app on another port of the site's host, as a home
+// page links a dashboard of its own on :8443, had an agent run again with
+// it as --page, which the run then refused. Resolves to [{url, reason}].
+async function routeLinks(links, { home, keys = [], refuses = async () => "" }) {
   const site = siteOf(home);
   const homeUrl = new URL(home);
   const taken = new Set([viewKey(home), ...keys]);
-  const routes = new Map();
+  const views = new Map();
   for (const link of links) {
     const url = onHomeHost(pageUrl(link.href, home), homeUrl);
     if (!url || siteOf(url.href) !== site || !routeOf(url.href)) continue;
     const key = viewKey(url.href);
-    if (!taken.has(key) && !routes.has(key)) routes.set(key, { url: url.href, reason: ROUTE_LINK });
+    if (taken.has(key)) continue;
+    const seen = views.get(key) || [];
+    if (!seen.includes(url.href)) views.set(key, [...seen, url.href]);
   }
-  return [...routes.values()];
+  const own = (url) => hostOf(new URL(url)) === hostOf(homeUrl);
+  const routes = [];
+  for (const urls of views.values()) {
+    let opened = "";
+    let refused = null;
+    for (const url of urls) {
+      const why = await refuses(url);
+      if (why) refused = refused || { url, reason: why };
+      else if (!opened || (own(url) && !own(opened))) opened = url;
+    }
+    routes.push(opened ? { url: opened, reason: ROUTE_LINK } : refused);
+  }
+  return routes;
 }
 
 // The order to visit candidates in: the best of each kind first (two for

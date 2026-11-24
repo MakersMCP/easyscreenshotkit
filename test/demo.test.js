@@ -12,7 +12,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const test = require("node:test");
-const { parseDemo, prepareDemoDir, openDemo, makeDemo, routesNote, what, frameAt, stepEntries, pageEntries } = require("../skills/easyscreenshotkit/scripts/lib/demo");
+const { parseDemo, prepareDemoDir, openDemo, makeDemo, routesNote, tourNotes, what, frameAt, stepEntries, pageEntries } = require("../skills/easyscreenshotkit/scripts/lib/demo");
 const { pickPages, tourSteps, SECTIONS } = require("../skills/easyscreenshotkit/scripts/lib/tour");
 const { setTimeLimit } = require("../skills/easyscreenshotkit/scripts/lib/time");
 const { readSteps } = require("../skills/easyscreenshotkit/scripts/lib/steps");
@@ -1392,6 +1392,48 @@ test("a tour lists the #route links of the home page and the address given, and 
     routesNote(Array.from({ length: 15 }, (_, i) => route(`item/${i + 1}`))),
     `Left out ${Array.from({ length: 12 }, (_, i) => `/app/#/item/${i + 1}`).join(", ")} and 3 more: #routes, which the tour does not follow: give one with --page.`,
   );
+});
+
+// A demo's note names a #route the tour does not follow by its path where
+// --page with that path opens it: at the scheme, host and port of the home
+// page as the tour opened it, as --page reads a path against the address
+// given, which went there. Any other by its whole address, as one at the
+// site's www name or at https on port 443 of a site given at http on
+// another port: named by its path, it had an agent give --page that path,
+// which opens it at the host and port given, another page or another
+// program. The #route links the run's rule refuses are in a note for each
+// reason.
+test("a demo's notes name a #route the tour does not follow by its path at its home page's host and port and by its whole address elsewhere, and those the run refuses in a note for each reason", () => {
+  const ROUTE = "a #route, which the tour does not follow: give it with --page";
+  const routes = ["http://acme.com:8080/app/#/plants", "https://acme.com:8080/app/#/light", "https://acme.com/app/#/beds", "http://www.acme.com:8080/app/#/%D1%80%D0%B0%D1%81%D1%82%D0%B5%D0%BD%D0%B8%D1%8F"].map((url) => ({ url, reason: ROUTE }));
+  const after = ": #routes, which the tour does not follow: give one with --page.";
+  assert.equal(routesNote(routes, { home: "http://acme.com:8080/" }), `Left out /app/#/plants, https://acme.com:8080/app/#/light, https://acme.com/app/#/beds and http://www.acme.com:8080/app/#/растения${after}`);
+  // Where the home page went on to https on that port, a path given with
+  // --page goes there too.
+  assert.equal(routesNote(routes, { home: "https://acme.com:8080/" }), `Left out http://acme.com:8080/app/#/plants, /app/#/light, https://acme.com/app/#/beds and http://www.acme.com:8080/app/#/растения${after}`);
+  // A tour's notes: the pages left out, what else it noted, the #route
+  // links the run refuses, in a note for each reason, the first 12 of them
+  // and how many more, then the #route links to give with --page, named
+  // against the home page the tour opened.
+  const PORT = "on port 9443, not 80 or 443, and not on the scheme, host and port given";
+  const stock = Array.from({ length: 14 }, (_, i) => `https://acme.com:9443/app/#/stock/${i + 1}`);
+  const tour = {
+    pages: [{ url: "https://acme.com:8080/" }],
+    skipped: [{ url: "https://acme.com:8080/start", reason: "redirected to a sign-in page" }],
+    notes: ["The sitemap at https://acme.com:8080/sitemap.xml could not be read."],
+    refused: [...stock.slice(0, 7).map((url) => ({ url, reason: PORT })), { url: "http://www.acme.com:8080/app/#/vault", reason: "at 93.184.215.99, an address MAKERSMCP_REFUSE_ADDRESSES refuses" }, ...stock.slice(7).map((url) => ({ url, reason: PORT }))],
+    routes,
+    home: "https://acme.com:8080/",
+    short: false,
+  };
+  assert.deepEqual(tourNotes(tour), [
+    "Left out https://acme.com:8080/start: redirected to a sign-in page.",
+    "The sitemap at https://acme.com:8080/sitemap.xml could not be read.",
+    `Left out ${stock.slice(0, 12).join(", ")} and 2 more: ${PORT}.`,
+    "Left out http://www.acme.com:8080/app/#/vault: at 93.184.215.99, an address MAKERSMCP_REFUSE_ADDRESSES refuses.",
+    `Left out http://acme.com:8080/app/#/plants, /app/#/light, https://acme.com/app/#/beds and http://www.acme.com:8080/app/#/растения${after}`,
+  ]);
+  assert.deepEqual(tourNotes({ ...tour, routes: [], short: true }).slice(-1), ["Time ran out after 1 page: a tour looks for more only while 4 minutes of the run are left; give more with --timeout."]);
 });
 
 // A --page the browser cannot open, here one that answers with nothing, is

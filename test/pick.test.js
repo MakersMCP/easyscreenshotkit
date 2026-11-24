@@ -210,7 +210,7 @@ test("the host given is the site's with or without the one dot that can end a na
 // site's home page alone, with no candidate, no page left out and no note.
 // A name that reaches no address of the home page's host, as [::1] from
 // 127.0.0.1, or another port, is another site's, as before.
-test("a link of the site at another of this machine's own names on the home page's port is a page of the site, at the home page's host", () => {
+test("a link of the site at another of this machine's own names on the home page's port is a page of the site, at the home page's host", async () => {
   const links = [
     { href: "http://localhost:4000/pricing", text: "Pricing", where: "header" },
     { href: "http://localhost:4000/features", text: "Features", where: "header" },
@@ -233,7 +233,7 @@ test("a link of the site at another of this machine's own names on the home page
   assert.deepEqual(pick.rankLinks([{ href: "https://localhost:4443/pricing", text: "Pricing", where: "header" }, { href: "https://app.localhost:4443/features", text: "Features", where: "header" }], [], { home: "https://127.0.0.1:4443/" }).candidates.map((c) => c.url), ["https://127.0.0.1:4443/pricing"]);
   // A #route there is listed at the home page's host, and a page's version
   // in another language there is taken at it.
-  assert.deepEqual(pick.routeLinks([{ href: "http://localhost:4000/app/#/plants" }, { href: "http://[::1]:4000/app/#/light" }], { home: "http://127.0.0.1:4000/" }).map((r) => r.url), ["http://127.0.0.1:4000/app/#/plants"]);
+  assert.deepEqual((await pick.routeLinks([{ href: "http://localhost:4000/app/#/plants" }, { href: "http://[::1]:4000/app/#/light" }], { home: "http://127.0.0.1:4000/" })).map((r) => r.url), ["http://127.0.0.1:4000/app/#/plants"]);
   assert.equal(pick.atHomeHost("http://localhost:4000/tr/", "http://127.0.0.1:4000/"), "http://127.0.0.1:4000/tr/");
   // The home page's version in another language there, at a path that does
   // not read as a language, is left out as one, as from its own host.
@@ -284,7 +284,7 @@ test("a #route is a view of its own; #/, #! and an anchor are not", () => {
   for (const none of ["https://acme.com/app/#/plants", "https://acme.com/#!inbox", "https://acme.com/#/", "https://acme.com/#!", "https://acme.com/#!/", "https://acme.com/#//", "https://acme.com/#", "https://acme.com/"]) assert.equal(anchor(none), "", none);
 });
 
-test("ranking: a link to a #route offers its page to the tour; routeLinks lists each view once, unless it is taken", () => {
+test("ranking: a link to a #route offers its page to the tour; routeLinks lists each view once, unless it is taken", async () => {
   const links = [
     { href: "#/plants", text: "Plants", where: "header" },
     { href: "/#features", text: "Features", where: "header" },
@@ -305,7 +305,7 @@ test("ranking: a link to a #route offers its page to the tour; routeLinks lists 
   assert.deepEqual(candidates.map((c) => [new URL(c.url).pathname, c.kind, c.why]), [["/pricing", "pricing", 'menu link "Pricing"'], ["/docs/", "docs", 'menu link "Docs"']]);
   assert.deepEqual(skipped.map((s) => [s.url, s.reason]), [["https://acme.com/app/", "the app itself or an account page, which often needs a sign-in"], ["https://acme.com/login", "sign-in or sign-up page"]]);
   assert.deepEqual(
-    pick.routeLinks(links, { home: HOME, keys: ["acme.com/app#/today"] }).map((s) => [s.url, s.reason]),
+    (await pick.routeLinks(links, { home: HOME, keys: ["acme.com/app#/today"] })).map((s) => [s.url, s.reason]),
     [
       ["https://acme.com/#/plants", "a #route, which the tour does not follow: give it with --page"],
       ["https://acme.com/app/#/light", "a #route, which the tour does not follow: give it with --page"],
@@ -313,13 +313,50 @@ test("ranking: a link to a #route offers its page to the tour; routeLinks lists 
     ],
   );
   // The route the home page opened on is the home page.
-  const app = pick.routeLinks([{ href: "#/dashboard" }, { href: "#/plants" }], { home: "https://acme.com/#/dashboard" });
+  const app = await pick.routeLinks([{ href: "#/dashboard" }, { href: "#/plants" }], { home: "https://acme.com/#/dashboard" });
   assert.deepEqual(app.map((s) => s.url), ["https://acme.com/#/plants"]);
   // Links read on another page of the site come as the browser wrote them.
-  assert.deepEqual(pick.routeLinks([{ href: "https://acme.com/app/#/settings" }], { home: HOME }).map((s) => s.url), ["https://acme.com/app/#/settings"]);
+  assert.deepEqual((await pick.routeLinks([{ href: "https://acme.com/app/#/settings" }], { home: HOME })).map((s) => s.url), ["https://acme.com/app/#/settings"]);
   // A page with a route taken leaves its path to the tour.
   const docs = pick.rankLinks([{ href: "/docs/", text: "Docs", where: "header" }], [], { home: HOME, exclude: ["https://acme.com/docs/#/intro"] });
   assert.deepEqual(docs.candidates.map((c) => new URL(c.url).pathname), ["/docs/"]);
+});
+
+// The #route links listed for --page are ones the run's rule opens: of the
+// links to one view, the one it opens, the one at the home page's host
+// where it opens two, and where it opens none, the first, with the reason
+// the rule gives. A view on another port of the site's host was listed
+// with the words to give it with --page, and given so, the run refused it.
+test("routeLinks lists a #route link the run's rule refuses with the rule's reason, and of the links to one view the one it opens", async () => {
+  const ROUTE = "a #route, which the tour does not follow: give it with --page";
+  const PORT = "on port 8443, not 80 or 443, and not on the scheme, host and port given";
+  const judged = [];
+  const refuses = async (url) => {
+    judged.push(url);
+    return new URL(url).port === "8443" ? PORT : "";
+  };
+  const links = [
+    { href: "https://acme.com:8443/app/#/plants" },
+    { href: "/app/#/light" },
+    { href: "https://acme.com:8443/app/#/beds" },
+    { href: "https://www.acme.com/app/#/beds" },
+    { href: "/app/#/beds" },
+    { href: "https://www.acme.com/app/#/deck" },
+    { href: "https://acme.com:8443/app/#/plants/" },
+    { href: "https://acme.com:8443/app/#/light" },
+  ];
+  assert.deepEqual(
+    (await pick.routeLinks(links, { home: HOME, refuses })).map((s) => [s.url, s.reason]),
+    [
+      ["https://acme.com:8443/app/#/plants", PORT],
+      ["https://acme.com/app/#/light", ROUTE],
+      ["https://acme.com/app/#/beds", ROUTE],
+      ["https://www.acme.com/app/#/deck", ROUTE],
+    ],
+  );
+  // Each address once, and none of a view taken.
+  assert.equal(new Set(judged).size, judged.length);
+  assert.deepEqual(await pick.routeLinks(links, { home: HOME, keys: ["acme.com/app#/plants", "acme.com/app#/light", "acme.com/app#/beds", "acme.com/app#/deck"], refuses }), []);
 });
 
 test("visit order: the best of each kind first, two product pages, then the rest", () => {

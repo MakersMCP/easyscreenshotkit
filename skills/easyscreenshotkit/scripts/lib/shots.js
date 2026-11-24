@@ -1677,11 +1677,16 @@ async function takeShots(rawUrl, options = {}) {
       }
       // The views of an app that the home page, the address given and each
       // --page link to by #route, and those the sitemap lists: the tour
-      // does not follow them, so they are listed for --page. A page the
-      // user named is not one of them, taken or not: one left out for want
-      // of time was listed so, with the words to give it with --page.
+      // does not follow them, so they are listed for --page, each one the
+      // run's rule opens; one it refuses, as a view on another port of the
+      // site's host, is listed with the links left out, with the reason
+      // (see pick.js routeLinks()). A page the user named is not one of
+      // them, taken or not: one left out for want of time was listed so,
+      // with the words to give it with --page.
       const listed = (index.urls || []).map((href) => ({ href }));
-      routes = routeLinks([...(result.links || []), ...namedLinks, ...listed], { home: kept[0].url, keys: [...kept.flatMap((page) => [...page.keys]), ...named.map(([url]) => viewKey(url))] });
+      const views = await routeLinks([...(result.links || []), ...namedLinks, ...listed], { home: kept[0].url, keys: [...kept.flatMap((page) => [...page.keys]), ...named.map(([url]) => viewKey(url))], refuses: (url) => chrome.guard.refuses(url) });
+      routes = views.filter((view) => view.reason === ROUTE_LINK);
+      skipped.push(...views.filter((view) => view.reason !== ROUTE_LINK));
     }
 
     await pool.drain();

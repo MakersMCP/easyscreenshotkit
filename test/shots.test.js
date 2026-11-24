@@ -19,7 +19,7 @@ const { setTimeLimit, sleep } = require("../skills/easyscreenshotkit/scripts/lib
 const { watchRequests, networkQuiet, showsLoadingSign, looksEmpty, waitForContent } = require("../skills/easyscreenshotkit/scripts/lib/page");
 const { LOCATE, Recorder } = require("../skills/easyscreenshotkit/scripts/lib/record");
 const { pickPages } = require("../skills/easyscreenshotkit/scripts/lib/tour");
-const { makeDemo } = require("../skills/easyscreenshotkit/scripts/lib/demo");
+const { makeDemo, tourNotes } = require("../skills/easyscreenshotkit/scripts/lib/demo");
 const { findFfmpeg } = require("../skills/easyscreenshotkit/scripts/lib/ffmpeg");
 const { pngText } = require("../skills/easyscreenshotkit/scripts/lib/png");
 const { clean } = require("../skills/easyscreenshotkit/scripts/lib/clean");
@@ -4413,6 +4413,106 @@ test("the pages a run could take besides are ones its rule opens: a link it refu
       assert.doesNotMatch(md, /Other pages it could take/);
     }
     assert.deepEqual(seen, []);
+  } finally {
+    http.get = get;
+    stand.restore();
+    server.close();
+    other.server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}));
+
+// The #route links a run lists for --page, which the tour does not follow,
+// are judged by the run's rule first, in the screenshots and in a demo's
+// tour: a view on another port of the site's own host on the public
+// internet, a link's or the sitemap's, and from a site on this machine one
+// on another program of it, are listed with the pages left out, with the
+// reason, in a demo's notes in one note for each reason, and of two links
+// to one view the one the run opens is listed.
+// They were listed as #routes to give with --page, and given so, the run
+// refused them. A demo's note names a view the run opens at another host
+// or port than its home page's, here at the site's www name, by its whole
+// address, as --page with its path opens the host and port given.
+// Here the run's proxy takes the site on the public internet, and the
+// kit's own requests for it, to a server of this machine, and the other
+// program is a server that notes what it is asked.
+test("the #route links a run lists for --page are ones its rule opens: one it refuses is listed as left out, with the reason, in the screenshots and a demo's tour", { skip: noBrowser, timeout: 300_000 }, () => withNames({ "public.example": "93.184.215.14", "www.public.example": "93.184.215.14" }, async () => {
+  const seen = [];
+  const other = await serve((req, res) => {
+    seen.push(req.url);
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Inside", "<h1>Inside</h1>"));
+  });
+  const otherPort = new URL(other.origin).port;
+  const html = { "Content-Type": "text/html; charset=utf-8" };
+  const { server, origin } = await serve((req, res) => {
+    const host = String(req.headers.host || "").replace(/:\d+$/, "");
+    const footer =
+      host === "public.example"
+        ? ["http://public.example:8443/garden/#/plants", "/garden/#/light", "http://public.example:8443/garden/#/beds", "/garden/#/beds", "http://www.public.example/garden/#/deck"]
+        : [`http://127.0.0.1:${otherPort}/console/#/orders`, "/garden/#/light"];
+    const links = footer.map((href, i) => `<a href="${href}">View ${i + 1}</a>`).join(" ");
+    if (req.url === "/") return res.writeHead(200, html).end(page("Acme | Tools for teams", `<header><nav><a href="/pricing">Pricing</a></nav></header><h1>Acme</h1><div style="height:1400px"></div><footer>${links}</footer>`));
+    if (req.url === "/pricing") return res.writeHead(200, html).end(page("Pricing | Acme", "<h1>Pricing</h1><p>The plans of Acme.</p><div style=\"height:1400px\"></div>"));
+    if (host === "public.example" && req.url === "/robots.txt") return res.end("Sitemap: http://public.example/sitemap.xml\n");
+    if (host === "public.example" && req.url === "/sitemap.xml") return res.end("<urlset><url><loc>http://public.example:8443/console/#/stock</loc></url></urlset>");
+    res.writeHead(404).end("not found");
+  });
+  const port = new URL(origin).port;
+  const http = require("node:http");
+  const get = http.get;
+  // The kit's own requests for the site's name go to the site's server.
+  http.get = (url, options, done) => {
+    const where = new URL(String(url));
+    if (where.hostname !== "public.example") return get(url, options, done);
+    const { lookup, ...rest } = options || {};
+    return get(`http://127.0.0.1:${port}${where.pathname}${where.search}`, { ...rest, headers: { ...((rest && rest.headers) || {}), Host: "public.example" } }, done);
+  };
+  const root = tempDir();
+  const stand = reachAt({ "93.184.215.14:80": `127.0.0.1:${port}` });
+  const ROUTE = "a #route, which the tour does not follow: give it with --page";
+  const PORT = "on port 8443, not 80 or 443, and not on the scheme, host and port given";
+  try {
+    const cases = [
+      {
+        given: "http://public.example/",
+        left: [["http://public.example:8443/garden/#/plants", PORT], ["http://public.example:8443/console/#/stock", PORT]],
+        routes: ["http://public.example/garden/#/light", "http://public.example/garden/#/beds", "http://www.public.example/garden/#/deck"],
+        notes: [`Left out http://public.example:8443/garden/#/plants and http://public.example:8443/console/#/stock: ${PORT}.`, "Left out /garden/#/light, /garden/#/beds and http://www.public.example/garden/#/deck: #routes, which the tour does not follow: give one with --page."],
+      },
+      {
+        given: `${origin}/`,
+        left: [[`http://127.0.0.1:${otherPort}/console/#/orders`, "not on the public internet, and not on the host and port given"]],
+        routes: [`${origin}/garden/#/light`],
+        notes: [`Left out http://127.0.0.1:${otherPort}/console/#/orders: not on the public internet, and not on the host and port given.`, "Left out /garden/#/light: a #route, which the tour does not follow: give it with --page."],
+      },
+    ];
+    for (const [i, { given, left, routes, notes }] of cases.entries()) {
+      const dir = path.join(root, `shots-${i}`);
+      const { manifest } = await takeShots(given, { dir, pages: 2, sizes: "desktop", timeLimit: 120_000 });
+      assert.deepEqual(manifest.pages.map((p) => p.slug), ["home", "pricing"]);
+      assert.deepEqual(manifest.skipped.map((skip) => [skip.url, skip.reason]), [...routes.map((url) => [url, ROUTE]), ...left]);
+      const md = fs.readFileSync(path.join(dir, "SCREENSHOTS.md"), "utf8");
+      for (const [url, reason] of left) assert.ok(md.includes(`\n- ${url}: ${reason}\n`), md);
+      // A tour looks for pages of its own while 4 minutes of the run are
+      // left.
+      setTimeLimit(400_000);
+      const chrome = await launch({ guard: await guardFor(given) });
+      try {
+        const tour = await pickPages(chrome, given, { pages: 2 });
+        assert.deepEqual(tour.pages.map((p) => new URL(p.url).pathname), ["/", "/pricing"]);
+        assert.equal(tour.home, tour.pages[0].url);
+        assert.deepEqual(tour.skipped, []);
+        assert.deepEqual(tour.refused.map((route) => [route.url, route.reason]), left);
+        assert.deepEqual(tour.routes.map((route) => route.url), routes);
+        assert.deepEqual(tourNotes(tour), notes);
+      } finally {
+        await chrome.close();
+        setTimeLimit(120_000);
+      }
+    }
+    assert.deepEqual(seen, []);
+    const readme = fs.readFileSync(path.join(__dirname, "..", "README.md"), "utf8");
+    assert.ok(readme.includes("With the pages left out they list the #route links the tour does not follow, each an address the run opens, to give with `--page`, and a link of the site it does not open, as one to another port, a #route link among them, with the reason."), "README");
   } finally {
     http.get = get;
     stand.restore();

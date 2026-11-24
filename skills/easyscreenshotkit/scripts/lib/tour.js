@@ -14,7 +14,7 @@ const net = require("net");
 const { openTab, closeTab, navigate } = require("./chrome");
 const { waitForContent, settle, walk, watchRequests } = require("./page");
 const { readInfo, readLinks, rejectAtOnce, rejectReason, slugOf, siteName, identity, pagesAsked, waitForView, notOpened, alternateNote, watchFailedMoves } = require("./shots");
-const { homeOf, pageKey, routeOf, viewKey, pathOf, readable, siteOf, atHomeHost, sitesOf, rankLinks, routeLinks, visitOrder, readSiteIndex, indexNotes, kindOf, alternateFor } = require("./pick");
+const { homeOf, pageKey, routeOf, viewKey, pathOf, readable, siteOf, atHomeHost, sitesOf, rankLinks, routeLinks, visitOrder, readSiteIndex, indexNotes, kindOf, alternateFor, ROUTE_LINK } = require("./pick");
 const { TOP_COVER } = require("./record");
 const { timeLeft } = require("./time");
 const { NOT_WEB, hostOf } = require("./address");
@@ -59,9 +59,11 @@ async function probe(chrome, url, check, ctx, { links = false } = {}) {
 // The pages of the tour, the home page first: [{url, kind, why, title}],
 // with the ones opened and left out and why (skipped), the #route links on
 // the home page, the address given and each --page, and the #routes the
-// sitemap lists, which the tour does not follow (routes), and what else the
-// demo's notes say (notes): a version of the home page in the language
-// asked for that was not taken, robots.txt and the sitemaps not read.
+// sitemap lists, which the tour does not follow (routes), those of them
+// the run's rule refuses, with the reason (refused), the home page as it
+// was opened (home), and what else the demo's notes say (notes): a version
+// of the home page in the language asked for that was not taken,
+// robots.txt and the sitemaps not read.
 async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = "", theme = "light", reducedMotion = false, log = () => {} } = {}) {
   const ctx = { lang, theme, reducedMotion };
   let home = homeOf(asked);
@@ -262,15 +264,20 @@ async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = 
   }
   // The views of an app that the home page, the address given and each
   // --page link to by #route, and those the sitemap lists, whether the
-  // tour still needed pages or not. A page the user named is not one of
-  // them, taken or not: one left out was named twice, the second time with
-  // the words to give it with --page.
+  // tour still needed pages or not, each one the run's rule opens; one it
+  // refuses, as a view on another port of the site's host, is listed apart
+  // with the reason (see pick.js routeLinks()). A page the user named is
+  // not one of them, taken or not: one left out was named twice, the second
+  // time with the words to give it with --page.
   const listed = (index.urls || []).map((href) => ({ href }));
-  const routes = wanted > 1 ? routeLinks([...links, ...namedLinks, ...listed], { home: nav.url, keys: [...kept.flatMap((page) => [...page.keys]), ...named.map(([url]) => viewKey(url))] }) : [];
+  const refuses = chrome.guard ? (url) => chrome.guard.refuses(url).catch(() => NOT_WEB) : undefined;
+  const views = wanted > 1 ? await routeLinks([...links, ...namedLinks, ...listed], { home: nav.url, keys: [...kept.flatMap((page) => [...page.keys]), ...named.map(([url]) => viewKey(url))], refuses }) : [];
+  const routes = views.filter((view) => view.reason === ROUTE_LINK);
+  const refused = views.filter((view) => view.reason !== ROUTE_LINK);
   // A visitor's order: what the product is first, what it costs last.
   const [first, ...rest] = kept;
   const ordered = [first, ...rest.filter((page) => page.kind !== "pricing"), ...rest.filter((page) => page.kind === "pricing")];
-  return { pages: ordered.map(({ url, kind, why, title, slug, asked, given }) => ({ url, kind, why, title, slug, asked, given })), skipped, routes, notes, site: siteName(info, nav.url), short };
+  return { pages: ordered.map(({ url, kind, why, title, slug, asked, given }) => ({ url, kind, why, title, slug, asked, given })), skipped, routes, refused, home: nav.url, notes, site: siteName(info, nav.url), short };
 }
 
 // Where a page is worth stopping on the way down: the tops of its first
