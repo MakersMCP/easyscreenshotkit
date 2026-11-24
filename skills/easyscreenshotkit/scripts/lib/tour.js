@@ -17,7 +17,7 @@ const { readInfo, readLinks, rejectAtOnce, rejectReason, slugOf, siteName, ident
 const { homeOf, pageKey, routeOf, viewKey, pathOf, readable, siteOf, atHomeHost, sitesOf, rankLinks, routeLinks, visitOrder, readSiteIndex, indexNotes, kindOf, alternateFor } = require("./pick");
 const { TOP_COVER } = require("./record");
 const { timeLeft } = require("./time");
-const { NOT_WEB } = require("./address");
+const { NOT_WEB, hostOf } = require("./address");
 
 const PROBE = { width: 1600, height: 900, scale: 1, mobile: false, touch: false, agent: "desktop" };
 
@@ -315,25 +315,30 @@ function chooseStops({ max, tops }, height, cover = 0) {
 }
 
 // What a click on the link to url points at: its address, and the places,
-// each a host as written and a port, at which a link to its path is a link
-// to it: its own host on its port, the other names of this machine that the
-// run takes for its host on its port (see pick.js sitesOf()), and on port
-// 80 or 443, where the run's rule opens it (guard, see address.js
-// guardFor()), its host on the other of 80 and 443, as it does on a host on
-// the public internet, and the other of its name with www. and without,
-// as www.acme.com of acme.com, on either. A link the run does not open is no
-// link to the page: a menu's link to the same path on another port of the
-// site, which the rule refuses, was clicked as the link to it, as the tour
-// looked at the page's host alone, the run refused the click, and the page
-// stayed where it was (see LOCATE in record.js); and so was a menu's link at
-// the site's www name, which the rule takes for another host on a port
-// other than 80 and 443, of a site given on this machine or its network,
-// or where that name does not answer. With no rule, the page's own host and
-// port alone.
+// each a host as written, without the one dot that can end a name, as the
+// run's rule reads it (see address.js hostOf()), and a port, at which a link
+// to its path is a link to it: its own host on its port, the other names of
+// this machine that the run takes for its host on its port (see pick.js
+// sitesOf()), and on port 80 or 443, where the run's rule opens it (guard,
+// see address.js guardFor()), its host on the other of 80 and 443, as it
+// does on a host on the public internet, and the other of its name with www.
+// and without, as www.acme.com of acme.com, on either. A link the run does
+// not open is no link to the page: a menu's link to the same path on another
+// port of the site, which the rule refuses, was clicked as the link to it,
+// as the tour looked at the page's host alone, the run refused the click,
+// and the page stayed where it was (see LOCATE in record.js); and so was a
+// menu's link at the site's www name, which the rule takes for another host
+// on a port other than 80 and 443, of a site given on this machine or its
+// network, or where that name does not answer. With no rule, the page's own
+// host and port alone. Read with the dot, the place of a page the tour took
+// at http://site.test.:4000/pricing, from a relative link on the home page
+// of a site given there, was site.test.:4000 alone, so on a page it reached
+// at http://site.test:4000/ by an absolute link the menu's /pricing was no
+// link to it, and the tour went on with a crossfade.
 async function linkTo(url, guard) {
   const page = new URL(url);
   const portOf = (u) => u.port || (u.protocol === "https:" ? "443" : "80");
-  const host = page.hostname.toLowerCase();
+  const host = hostOf(page).toLowerCase();
   const port = portOf(page);
   const places = [`${host}:${port}`, ...sitesOf(url).slice(1).map((name) => `${name}:${port}`)];
   // Off 80 and 443 a link on another port is to another program, and the

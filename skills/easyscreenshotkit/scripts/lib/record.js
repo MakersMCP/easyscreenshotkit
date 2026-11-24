@@ -49,25 +49,32 @@ const WALK_SCREENS = 6;
 // the page's order. A link to an address with a #route is a link to that
 // view; for one without, a link to the page itself goes before a link to a
 // view of it. A link to the address's path is a link to it at one of
-// spec.places alone, each a host as written and a port that the run opens
-// for it (see tour.js linkTo()), or at the address's own host and port
-// where spec names none: at another of this machine's names on the
-// address's port too, as a site given at http://127.0.0.1:4000/ links its
-// pages at http://localhost:4000/, as Jekyll writes them, where the tour,
-// which takes those pages at 127.0.0.1, found no link to them and moved on
-// to each with a crossfade, though the menu had it; and not on another port
-// of the address's own host, as a menu's https://acme.com:8443/pricing on a
-// site given at http://acme.com/, which the tour clicked first, as it
-// looked at the host alone, and the run refused, so the page stayed where
-// it was and the page the tour picked was missing from the video; nor at
-// its www name where the run does not open that, as a menu's
-// http://www.site.test:4000/features on a site given at
+// spec.places alone, each a host as written, without the one dot that can
+// end a name, and a port that the run opens for it (see tour.js linkTo()),
+// or at the address's own host and port where spec names none: at another of
+// this machine's names on the address's port too, as a site given at
+// http://127.0.0.1:4000/ links its pages at http://localhost:4000/, as
+// Jekyll writes them, where the tour, which takes those pages at 127.0.0.1,
+// found no link to them and moved on to each with a crossfade, though the
+// menu had it; and not on another port of the address's own host, as a
+// menu's https://acme.com:8443/pricing on a site given at http://acme.com/,
+// which the tour clicked first, as it looked at the host alone, and the run
+// refused, so the page stayed where it was and the page the tour picked was
+// missing from the video; nor at its www name where the run does not open
+// that, as a menu's http://www.site.test:4000/features on a site given at
 // http://site.test:4000/, which the tour clicked first as it read hosts
 // without www.; nor by another scheme than http and https, as a menu's
 // news://acme.com/pricing, which the tour clicked first as it read the host,
 // the port and the path of a link of any scheme, the browser did not open
-// it, and the page stayed where it was. Returns its box on the screen, its
-// words and, for a link, its href as the page wrote it, or null.
+// it, and the page stayed where it was. A link's host is read without that
+// dot too, as the rule for the addresses a run opens reads it (see
+// address.js hostOf()): on a site given at http://site.test.:4000/, the
+// menu's /pricing on the page the tour reached at
+// http://site.test.:4000/features, by a relative link of the home page, is a
+// link to the page it took at http://site.test:4000/pricing, from an
+// absolute one, where the tour found none and went on to it with a
+// crossfade. Returns its box on the screen, its words and, for a link, its
+// href as the page wrote it, or null.
 const LOCATE = `((spec) => {
   const norm = (s) => String(s || "").replace(/\\s+/g, " ").trim().toLowerCase();
   const shown = (el) => {
@@ -77,7 +84,7 @@ const LOCATE = `((spec) => {
   };
   const routeOf = (u) => { const m = /^#(?:\\/|!\\/?)(.*)$/.exec(u.hash); return m && m[1].replace(/^\\/+/, "") ? u.hash.replace(/\\/+$/, "") : ""; };
   const keyOf = (href) => {
-    try { const u = new URL(href, location.href); if (u.protocol !== "http:" && u.protocol !== "https:") return null; return { host: u.hostname.toLowerCase(), port: u.port || (u.protocol === "https:" ? "443" : "80"), path: u.pathname.replace(/\\/+$/, "").toLowerCase() || "/", route: routeOf(u) }; } catch (e) { return null; }
+    try { const u = new URL(href, location.href); if (u.protocol !== "http:" && u.protocol !== "https:") return null; return { host: u.hostname.toLowerCase().replace(/\\.$/, ""), port: u.port || (u.protocol === "https:" ? "443" : "80"), path: u.pathname.replace(/\\/+$/, "").toLowerCase() || "/", route: routeOf(u) }; } catch (e) { return null; }
   };
   let found = [];
   if (spec.css) {
