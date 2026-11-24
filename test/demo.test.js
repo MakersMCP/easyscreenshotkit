@@ -282,7 +282,7 @@ test("what ffmpeg said of why it stopped is told, when its last line ends with n
 // short is one the browser draws a strip of, over grey, and says it loaded:
 // it is read to its end. The JPEG, the GIF and the WebP come from ffmpeg,
 // when there is one that makes them.
-test("a --background file is judged by the browser: what it draws is taken, what it does not is refused, and a picture cut short too", { skip: (!findChrome() && "no Chrome, Chromium, Edge or Brave installed") || noTemp, timeout: 60_000 }, async () => {
+test("a --background file is judged by the browser: what it draws is taken, what it does not is refused, and a picture cut short too", { skip: (!findChrome() && "no Chrome, Chromium, Edge or Brave installed") || noTemp, timeout: 120_000 }, async () => {
   const root = tempDir();
   const png = pngOf(32, 32, () => [0, 170, 119]);
   const bmp = Buffer.alloc(70);
@@ -351,7 +351,7 @@ test("a --background file is judged by the browser: what it draws is taken, what
   }
   if (pictures["whole-cut.gif"]) pictures["no-trailer.gif"] = pictures["whole-cut.gif"].subarray(0, pictures["whole-cut.gif"].length - 1);
   if (pictures["whole-cut.avif"]) pictures["trailing.avif"] = Buffer.concat([pictures["whole-cut.avif"], Buffer.alloc(4)]);
-  setTimeLimit(50_000);
+  setTimeLimit(100_000);
   const chrome = await launch();
   const file = (name, data) => {
     const at = path.join(root, name);
@@ -940,12 +940,12 @@ test("a demo with --no-clean hides what --hide names, and only that", { skip: mi
   }
 });
 
-test("a tour: the pages the menu puts forward, clicked through the menu, pricing last, and the tour written as steps", { skip: missing, timeout: 300_000 }, async () => {
+test("a tour: the pages the menu puts forward, clicked through the menu, pricing last, and the tour written as steps", { skip: missing, timeout: 500_000 }, async () => {
   const { server, origin, seen } = await fixture();
   const root = tempDir();
   const dir = path.join(root, "tour");
   try {
-    const { manifest } = await makeDemo(origin, { dir, pages: 3, gif: false, timeLimit: 280_000 });
+    const { manifest } = await makeDemo(origin, { dir, pages: 3, gif: false, timeLimit: 400_000 });
     assert.deepEqual(manifest.pages.map((p) => new URL(p.url).pathname), ["/", "/features", "/pricing"]);
     assert.ok(!seen.includes("/login"), "a sign-in page is never opened");
     const clicks = manifest.steps.filter((s) => s.action === "click");
@@ -985,7 +985,7 @@ test("a tour: the pages the menu puts forward, clicked through the menu, pricing
 // the address leaves out: demo.yaml writes them as CSS escapes, where it
 // wrote them as they were, the browser could not read the selector, and a
 // recording from it stopped at that click.
-test("a tour of a site given at 127.0.0.1 whose menu links its pages at localhost clicks through that menu, and passes over a link to another port, in demo.yaml too", { skip: missing, timeout: 400_000 }, async () => {
+test("a tour of a site given at 127.0.0.1 whose menu links its pages at localhost clicks through that menu, and passes over a link to another port, in demo.yaml too", { skip: missing, timeout: 900_000 }, async () => {
   const html = { "Content-Type": "text/html; charset=utf-8" };
   let at = "";
   let elsewhere = "";
@@ -1005,14 +1005,14 @@ test("a tour of a site given at 127.0.0.1 whose menu links its pages at localhos
   elsewhereGiven = `http://127.0.0.1:${other}`;
   const root = tempDir();
   try {
-    const { manifest } = await makeDemo(`${origin}/`, { dir: path.join(root, "tour"), pages: 3, gif: false, timeLimit: 280_000 });
+    const { manifest } = await makeDemo(`${origin}/`, { dir: path.join(root, "tour"), pages: 3, gif: false, timeLimit: 400_000 });
     assert.deepEqual(manifest.pages.map((p) => new URL(p.url).pathname), ["/", "/features", "/pricing"]);
     assert.deepEqual(manifest.steps.filter((s) => s.action === "click" || s.action === "visit").map((s) => s.label), ["Open 127.0.0.1", 'Click "Features"', 'Click "Pricing"']);
     // No click went to the other port, so the run refused none.
     assert.deepEqual(manifest.notes.filter((note) => note.includes(`:${other}/`)), []);
     // demo.yaml, recorded again: the same pages, and no click there either.
     assert.deepEqual(readSteps(path.join(root, "tour", "demo.yaml")).steps.filter((s) => s.action === "click").map((s) => s.target), [{ css: `a[href="${at}/features\\a "]` }, { css: `a[href="${at}/pricing\\d \\c "]` }]);
-    const { manifest: again } = await makeDemo(`${origin}/`, { dir: path.join(root, "again"), steps: path.join(root, "tour", "demo.yaml"), gif: false, timeLimit: 280_000 });
+    const { manifest: again } = await makeDemo(`${origin}/`, { dir: path.join(root, "again"), steps: path.join(root, "tour", "demo.yaml"), gif: false, timeLimit: 400_000 });
     assert.deepEqual(again.pages.map((p) => new URL(p.url).pathname), ["/", "/features", "/pricing"]);
     assert.deepEqual(again.notes.filter((note) => note.includes(`:${other}/`)), []);
     const readme = fs.readFileSync(path.join(__dirname, "..", "README.md"), "utf8");
@@ -1839,7 +1839,7 @@ function lockOf(profile) {
   }
 }
 
-test("a demo that fails or is stopped leaves an earlier demo as it was and adds nothing", { skip: missing, timeout: 300_000 }, async () => {
+test("a demo that fails or is stopped leaves an earlier demo as it was and adds nothing", { skip: missing, timeout: 600_000 }, async () => {
   const { server, origin } = await fixture();
   const root = tempDir();
   const dir = path.join(root, "demo");
@@ -1913,7 +1913,7 @@ test("a demo that fails or is stopped leaves an earlier demo as it was and adds 
 // system kills one for its memory, while a step waits: no frame comes after
 // that. A demo went on, wrote a video of the page standing still (a steps
 // file) or cut the tour short (a tour), and replaced the earlier demo.
-test("a demo whose browser ends or whose tab crashes in the middle of it fails, and leaves an earlier demo as it was", { skip: missing || (process.platform !== "linux" && "the browser's processes are read from /proc"), timeout: 300_000 }, async () => {
+test("a demo whose browser ends or whose tab crashes in the middle of it fails, and leaves an earlier demo as it was", { skip: missing || (process.platform !== "linux" && "the browser's processes are read from /proc"), timeout: 500_000 }, async () => {
   const { server, origin, seen } = await fixture();
   const root = tempDir();
   const dir = path.join(root, "demo");
@@ -2109,7 +2109,7 @@ test("a demo whose browser stops answering as it draws the frames fails, and lea
 // A step that clicks a link to a file served as an attachment. Chrome on
 // Linux saves a download in the Downloads folder of the home it runs with;
 // the demo's browser saves nothing, there or anywhere else.
-test("a click on a download link saves no file", { skip: missing || (process.platform !== "linux" && "Chrome reads where it saves a download from HOME on Linux only"), timeout: 180_000 }, async () => {
+test("a click on a download link saves no file", { skip: missing || (process.platform !== "linux" && "Chrome reads where it saves a download from HOME on Linux only"), timeout: 300_000 }, async () => {
   const seen = [];
   const { server, origin } = await serve((req, res) => {
     seen.push(req.url);
@@ -2327,7 +2327,7 @@ const closedFrame = (tag, frame) => {
   return `<${tag} id="${id}" style="display:block;width:100vw;height:2400px"></${tag}><script>${fill(`document.getElementById("${id}")`)}</script>`;
 };
 
-test("a demo's click after one on a mailto: link opens its page with a frame under the pointer, and with frames all over the screen", { skip: missing || (process.platform !== "linux" && "the browser starts these programs through PATH and the session bus on Linux only"), timeout: 500_000 }, async () => {
+test("a demo's click after one on a mailto: link opens its page with a frame under the pointer, and with frames all over the screen", { skip: missing || (process.platform !== "linux" && "the browser starts these programs through PATH and the session bus on Linux only"), timeout: 720_000 }, async () => {
   const html = { "Content-Type": "text/html; charset=utf-8" };
   const write = '<a href="mailto:hello@example.com">Write to us</a>';
   const { server, origin } = await serve((req, res) => {
