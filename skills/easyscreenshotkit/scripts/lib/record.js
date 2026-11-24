@@ -63,8 +63,11 @@ const WALK_SCREENS = 6;
 // its www name where the run does not open that, as a menu's
 // http://www.site.test:4000/features on a site given at
 // http://site.test:4000/, which the tour clicked first as it read hosts
-// without www. Returns its box on the screen, its words and, for a link,
-// its href as the page wrote it, or null.
+// without www.; nor by another scheme than http and https, as a menu's
+// news://acme.com/pricing, which the tour clicked first as it read the host,
+// the port and the path of a link of any scheme, the browser did not open
+// it, and the page stayed where it was. Returns its box on the screen, its
+// words and, for a link, its href as the page wrote it, or null.
 const LOCATE = `((spec) => {
   const norm = (s) => String(s || "").replace(/\\s+/g, " ").trim().toLowerCase();
   const shown = (el) => {
@@ -74,7 +77,7 @@ const LOCATE = `((spec) => {
   };
   const routeOf = (u) => { const m = /^#(?:\\/|!\\/?)(.*)$/.exec(u.hash); return m && m[1].replace(/^\\/+/, "") ? u.hash.replace(/\\/+$/, "") : ""; };
   const keyOf = (href) => {
-    try { const u = new URL(href, location.href); return { host: u.hostname.toLowerCase(), port: u.port || (u.protocol === "https:" ? "443" : "80"), path: u.pathname.replace(/\\/+$/, "").toLowerCase() || "/", route: routeOf(u) }; } catch (e) { return null; }
+    try { const u = new URL(href, location.href); if (u.protocol !== "http:" && u.protocol !== "https:") return null; return { host: u.hostname.toLowerCase(), port: u.port || (u.protocol === "https:" ? "443" : "80"), path: u.pathname.replace(/\\/+$/, "").toLowerCase() || "/", route: routeOf(u) }; } catch (e) { return null; }
   };
   let found = [];
   if (spec.css) {

@@ -1030,13 +1030,18 @@ test("a tour of a site given at 127.0.0.1 whose menu links its pages at localhos
 // links at the host given. The tour read the hosts of links without www.,
 // so it clicked the first link, the run refused the click, the page stayed
 // where it was, and every page the tour picked was missing from the video.
-test("a tour of a site given on this machine whose menu links its pages at its www name clicks the links of the host given", { skip: missing, timeout: 300_000 }, () => withNames({ "site.test": "127.0.0.1", "www.site.test": "127.0.0.1" }, async () => {
+// So it did with a link of another scheme at the host given, the port and
+// the path of the page, as news://site.test:<port>/pricing, which the
+// browser does not open, as it read a link of any scheme by its host, its
+// port and its path.
+test("a tour of a site given on this machine whose menu links its pages at its www name, or by another scheme, clicks the links of the host given", { skip: missing, timeout: 300_000 }, () => withNames({ "site.test": "127.0.0.1", "www.site.test": "127.0.0.1" }, async () => {
   const html = { "Content-Type": "text/html; charset=utf-8" };
   let www = "";
+  let news = "";
   const hosts = [];
   const { server, origin } = await serve((req, res) => {
     hosts.push(req.headers.host);
-    const page = (title, color) => `<!doctype html><html><head><meta charset="utf-8"><title>${title} | Site</title><style>body{margin:0;font-family:sans-serif} header{background:#c00;padding:20px} header a{color:#fff;margin-right:30px;font-size:22px} main{background:rgb(${color});height:2000px;padding:40px}</style></head><body><header><nav><a href="${www}/features">Features</a><a href="${www}/pricing">Pricing</a><a href="/features">Features</a><a href="/pricing">Pricing</a></nav></header><main><h1>${title}</h1><p>The ${title.toLowerCase()} page of a site on this machine.</p></main></body></html>`;
+    const page = (title, color) => `<!doctype html><html><head><meta charset="utf-8"><title>${title} | Site</title><style>body{margin:0;font-family:sans-serif} header{background:#c00;padding:20px} header a{color:#fff;margin-right:30px;font-size:22px} main{background:rgb(${color});height:2000px;padding:40px}</style></head><body><header><nav><a href="${www}/features">Features</a><a href="${www}/pricing">Pricing</a><a href="${news}/features">Features</a><a href="${news}/pricing">Pricing</a><a href="/features">Features</a><a href="/pricing">Pricing</a></nav></header><main><h1>${title}</h1><p>The ${title.toLowerCase()} page of a site on this machine.</p></main></body></html>`;
     const path = req.url.split("?")[0];
     if (path === "/") return res.writeHead(200, html).end(page("Tools for teams", GREEN.join(",")));
     if (path === "/features") return res.writeHead(200, html).end(page("Features", TEAL.join(",")));
@@ -1045,14 +1050,16 @@ test("a tour of a site given on this machine whose menu links its pages at its w
   });
   const port = new URL(origin).port;
   www = `http://www.site.test:${port}`;
+  news = `news://site.test:${port}`;
   const root = tempDir();
   try {
     const { manifest } = await makeDemo(`http://site.test:${port}/`, { dir: path.join(root, "tour"), pages: 3, gif: false, timeLimit: 280_000 });
     assert.deepEqual(manifest.pages.map((p) => p.url), [`http://site.test:${port}/`, `http://site.test:${port}/features`, `http://site.test:${port}/pricing`]);
     assert.deepEqual(manifest.steps.filter((s) => s.action === "click" || s.action === "visit").map((s) => s.label), ["Open site.test", 'Click "Features"', 'Click "Pricing"']);
     assert.deepEqual(manifest.steps.filter((s) => s.action === "click").map((s) => s.opened), [`http://site.test:${port}/features`, `http://site.test:${port}/pricing`]);
-    // No click went to the www name, which the run would refuse.
-    assert.deepEqual(manifest.notes.filter((note) => note.includes("www.site.test")), []);
+    // No click went to the www name, which the run would refuse, or to
+    // news:, which the browser does not open.
+    assert.deepEqual(manifest.notes.filter((note) => note.includes("www.site.test") || note.includes("news:")), []);
     assert.ok(!hosts.includes(`www.site.test:${port}`), hosts.join(" "));
   } finally {
     server.close();
