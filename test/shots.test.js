@@ -1581,6 +1581,38 @@ function lockOf(profile) {
   }
 }
 
+// The processes that have not ended whose command line names a profile
+// anywhere, as a helper of its browser names it, from /proc: Linux only.
+function naming(profile) {
+  if (process.platform !== "linux") return [];
+  return fs.readdirSync("/proc").filter((pid) => {
+    try {
+      return /^\d+$/.test(pid) && running(Number(pid)) && fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").includes(profile);
+    } catch {
+      return false;
+    }
+  });
+}
+
+// Whether a process runs: on Linux one that has ended and waits to be
+// reaped has ended too.
+function running(pid) {
+  if (process.platform === "linux") {
+    try {
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+      return !/^[ZX]/.test(stat.slice(stat.lastIndexOf(")") + 2));
+    } catch {
+      return false;
+    }
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // The processes whose command line names a profile, from /proc.
 function runningWith(profile) {
   if (process.platform !== "linux") return [];
@@ -1699,6 +1731,8 @@ test("a run that fails or is stopped leaves the earlier run's files as they were
       // the lock folder that a browser killed outright cannot remove.
       if (process.platform === "linux") assert.equal(stopped.locks.length, 1, "a lock folder to look for");
       for (const left of [...stopped.profiles, ...stopped.locks]) assert.equal(fs.existsSync(left), false, left);
+      // Nor any process of the browser, which could make its profile again.
+      for (const profile of stopped.profiles) assert.deepEqual(naming(profile), [], profile);
     }
   } finally {
     server.close();
@@ -2213,8 +2247,9 @@ test("a program that starts the browser without the kit's pipe is named so, befo
 // A program that CHROME_PATH names and that starts the browser can leave a
 // program of its own running, which holds the other ends of the browser's
 // pipes: the run's process waited for it to end before it exited, its
-// files saved and its summary printed, where 0.1.1 exited at once.
-test("a run exits once it is over, while a program the browser's wrapper left running goes on", { skip: noBrowser || (process.platform === "win32" && "the wrapper is a shell script"), timeout: 120_000 }, async () => {
+// files saved and its summary printed, where 0.1.1 exited at once. On
+// Linux it is a process of the browser's, which ends with it.
+test("a run exits once it is over, though a program the browser's wrapper left running holds its pipes", { skip: noBrowser || (process.platform === "win32" && "the wrapper is a shell script"), timeout: 120_000 }, async () => {
   const { server, origin } = await serve((req, res) => res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Acme | Tools", "<h1>Acme</h1>")));
   const root = tempDir();
   const pid = path.join(root, "leftover.pid");
@@ -2225,8 +2260,10 @@ test("a run exits once it is over, while a program the browser's wrapper left ru
     assert.equal(run.held, undefined, `the run printed its manifest and had not exited 20 s later\n${run.stderr}`);
     assert.equal(run.status, 0, run.stderr);
     assert.equal(JSON.parse(run.stdout).pages.length, 1);
-    // Not waited for: it is still running.
-    assert.doesNotThrow(() => process.kill(Number(fs.readFileSync(pid, "utf8")), 0));
+    // Not waited for: on Linux it ended with the browser, as every process
+    // of the browser does (see chrome.js endAll()), and elsewhere it is
+    // still running.
+    assert.equal(running(Number(fs.readFileSync(pid, "utf8"))), process.platform !== "linux");
   } finally {
     try {
       process.kill(Number(fs.readFileSync(pid, "utf8")), "SIGKILL");
@@ -3145,7 +3182,78 @@ test("a run that ends in its first seconds leaves nothing in the temp folder", {
     assert.ok(stopped.sent, stopped.stderr);
     assert.equal(stopped.signal, "SIGTERM", stopped.stderr);
     assert.deepEqual(fs.readdirSync(tmp), []);
+    // And a moment later: a helper of the browser that outlived the run, as
+    // its network service did, made part of the profile again then.
+    await sleep(1_000);
+    assert.deepEqual(fs.readdirSync(tmp), []);
+    for (const profile of stopped.profiles) assert.deepEqual(naming(profile), [], profile);
   } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// Every process of a browser has ended before its profile goes, as a run
+// ends and as it is stopped: those that descend from it, as a program its
+// CHROME_PATH's wrapper left running, and those whose command line names
+// its profile, as Chrome's helpers and its crash handler, which belong to
+// no one once the browser has ended. The run killed the browser alone, and
+// its network service, which writes into the profile as it ends, made part
+// of the profile again in the temp folder after the run had removed it and
+// ended, under load now and then. Here a wrapper starts a stand-in for each
+// kind, which writes into the profile every 50 ms for as long as it runs:
+// one that descends from the browser and whose command line does not name
+// the profile, and one whose command line names it and whose parent ended
+// at once. Each writes its pid into a file of the test's.
+test("a run ends every process of its browser before its profile goes, as it ends and as it is stopped", { skip: noBrowser || (process.platform !== "linux" && "the browser's processes are read from /proc"), timeout: 200_000 }, async (t) => {
+  const { server, origin } = await fixture();
+  const root = tempDir();
+  const tmp = fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "t-"));
+  const pids = path.join(root, "pids");
+  const wrapper = path.join(root, "chrome-with-helpers");
+  fs.writeFileSync(
+    wrapper,
+    [
+      "#!/bin/sh",
+      'for arg in "$@"; do case "$arg" in --user-data-dir=*) profile="${arg#--user-data-dir=}" ;; esac; done',
+      `P="$profile" Q=${sh(pids)} sh -c 'echo $$ >> "$Q"; while :; do mkdir -p "$P/Default/Cache" 2>/dev/null; sleep 0.05; done' </dev/null >/dev/null 2>&1 3>&- 4>&- &`,
+      `(sh -c 'echo $$ >> "$2"; while :; do mkdir -p "\${1#--user-data-dir=}/Default/Network" 2>/dev/null; sleep 0.05; done' helper "--user-data-dir=$profile" ${sh(pids)} </dev/null >/dev/null 2>&1 3>&- 4>&- &)`,
+      `exec ${sh(findChrome())} "$@"`,
+      "",
+    ].join("\n"),
+    { mode: 0o755 },
+  );
+  const env = { ...process.env, CHROME_PATH: wrapper, TMPDIR: tmp };
+  const started = () => (fs.existsSync(pids) ? fs.readFileSync(pids, "utf8").split("\n").filter(Boolean).map(Number) : []);
+  try {
+    if (!roomIn(path.join(tmp, "easyscreenshotkit-chrome-XXXXXX"))) return t.skip(`${tmp} leaves no room for the browser's lock in its profile`);
+    const ended = await runCli([origin, "--pages", "1", "--sizes", "desktop", "--out", path.join(root, "ended")], { env });
+    assert.equal(ended.status, 0, ended.stderr);
+    let opened = 0;
+    const stopped = await stopCli([origin, "--pages", "2", "--sizes", "desktop", "--out", path.join(root, "stopped")], {
+      env,
+      stopAt: (stderr) => {
+        if (!opened && /^Opening /m.test(stderr)) opened = Date.now();
+        return opened > 0 && Date.now() - opened >= 1_000;
+      },
+    });
+    assert.ok(stopped.sent, stopped.stderr);
+    assert.equal(stopped.signal, "SIGTERM", stopped.stderr);
+    assert.equal(started().length, 4, "the stand-ins of both runs");
+    // A moment after each run, nothing has made its profile again, and no
+    // stand-in runs.
+    await sleep(1_000);
+    assert.deepEqual(fs.readdirSync(tmp), []);
+    assert.deepEqual(started().filter(running), []);
+  } finally {
+    for (const pid of started()) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // Ended already.
+      }
+    }
     server.close();
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(tmp, { recursive: true, force: true });

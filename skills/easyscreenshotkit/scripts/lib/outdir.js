@@ -621,18 +621,21 @@ function abort(run) {
 }
 
 // Stops everything this process has going, at once and synchronously, for a
-// process that is being stopped or is ending: its browsers and its ffmpeg
-// are killed, and every run that has not ended takes its part folder away,
-// so its folder is as it was. Then, once the browsers' helper processes
-// have ended too, their profiles go. Returns the runs stopped.
+// process that is being stopped or is ending: its browsers, with every
+// process of each, and its ffmpeg are killed, and every run that has not
+// ended takes its part folder away, so its folder is as it was. Then, once
+// the browsers' processes and helpers have ended too, their profiles go.
+// Returns the runs stopped.
 function stopAll() {
   const browsers = killBrowsers();
   const children = killChildren();
   const stopped = [...live];
   for (const run of stopped) abort(run);
   if (browsers.length || children) {
-    // A browser's helpers end about a tenth of a second after it, and write
-    // to its profile meanwhile; a write of ffmpeg's may still be on its way.
+    // A browser's helpers end a moment after they are killed, and write to
+    // its profile meanwhile, which goes once they have ended (see
+    // chrome.js removeProfiles()); a write of ffmpeg's may still be on its
+    // way.
     pause(300);
     removeProfiles(browsers);
     for (const run of stopped) {

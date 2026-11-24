@@ -765,11 +765,15 @@ async function start(binary, { lang, args, own, wait = START_MS, proxy }) {
   });
   // Chrome is asked to quit first: killed outright, its helper processes go
   // on writing to the profile for a while and the folder cannot be removed.
-  // A profile that still cannot be removed is left in the temp folder; the
-  // screenshots are not lost over it.
+  // Those still there once it has ended are killed, and the profile goes
+  // once they have ended too. A profile that still cannot be removed is
+  // left in the temp folder; the screenshots are not lost over it.
   const close = async () => {
     closing = true;
     let killed = lost;
+    // The browser's processes as they are now: those that descend from it
+    // can be told only while it runs (see processesOf()).
+    const processes = processesOf(child);
     // A browser that never answered is not asked.
     if (answered && !exited && !browser.closed()) {
       await browser.send("Browser.close", {}, 3_000, { fixed: true, watched: false }).catch(() => {});
@@ -789,6 +793,10 @@ async function start(binary, { lang, args, own, wait = START_MS, proxy }) {
     const letGo = () => (child.stdio || []).forEach((stream) => stream && stream.destroy());
     if (exited) letGo();
     else child.once("exit", letGo);
+    // Every process of the browser still there, as its network service,
+    // which writes into the profile as it ends, killed and waited for, a
+    // second at most (see endAll()).
+    endAll(processes, profile);
     open.delete(started);
     const lock = started.lock || lockFolderOf(profile);
     const remove = () => {
@@ -2065,20 +2073,126 @@ async function currentUrl(cdp, fallback = "") {
   }
 }
 
+// When a process started, on Linux, from /proc/<pid>/stat, so that a pid
+// that has come round again on another process is not taken for it: null
+// once it has ended (a zombie has ended too).
+function startOf(pid) {
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, "latin1");
+    const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+    return fields[0] === "Z" || fields[0] === "X" ? null : fields[19];
+  } catch {
+    return null;
+  }
+}
+
+// The processes that run on Linux, but this one: the parent of each, and,
+// given a tag, those whose command line holds it.
+function scan(tag = "") {
+  const parentOf = new Map();
+  const named = [];
+  let names = [];
+  try {
+    names = fs.readdirSync("/proc");
+  } catch {
+    return { parentOf, named };
+  }
+  for (const name of names) {
+    const pid = Number(name);
+    if (!/^\d+$/.test(name) || pid === process.pid) continue;
+    try {
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, "latin1");
+      const [state, ppid] = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+      if (state === "Z" || state === "X") continue;
+      parentOf.set(pid, Number(ppid));
+      if (tag && fs.readFileSync(`/proc/${pid}/cmdline`, "latin1").includes(tag)) named.push(pid);
+    } catch {
+      // Gone already.
+    }
+  }
+  return { parentOf, named };
+}
+
+// A browser's processes on Linux, each with when it started: the browser
+// and those that descend from it, as its helpers and a program its
+// CHROME_PATH's wrapper left running. Other systems give none, and so does
+// a browser that has ended, whose pid can be another process's by now: its
+// helpers are found by the profile they name (see endAll()).
+function processesOf(child) {
+  if (process.platform !== "linux" || !child.pid || child.exitCode !== null || child.signalCode !== null) return [];
+  const { parentOf } = scan();
+  const found = new Set([child.pid]);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const [pid, ppid] of parentOf) {
+      if (!found.has(pid) && found.has(ppid)) {
+        found.add(pid);
+        grew = true;
+      }
+    }
+  }
+  return [...found].map((pid) => ({ pid, start: startOf(pid) })).filter(({ start }) => start !== null);
+}
+
+// Each of them that still runs, killed.
+function killAll(processes) {
+  for (const { pid, start } of processes) {
+    if (startOf(pid) !== start) continue;
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // Gone already.
+    }
+  }
+}
+const allGone = (processes) => processes.every(({ pid, start }) => startOf(pid) !== start);
+
+const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+// Each of a browser's processes that still runs, killed, and then each
+// process whose command line names its profile, as Chrome's helpers do and
+// its crash handler, whose reports go into the profile (see configIn()):
+// they are found that way also once the browser has ended and they belong
+// to no one, and one of them can start another a moment before it is
+// killed. Looked for again until a look finds none and all have ended, a
+// second at most, and only then may the profile go: Chrome's network
+// service writes into the profile as it ends, and with the browser alone
+// killed it made part of the profile again in the temp folder after the
+// run had removed it and ended. Gives back every process it killed.
+function endAll(processes, profile) {
+  const ended = [...processes];
+  killAll(ended);
+  if (process.platform !== "linux") return ended;
+  const tag = path.basename(profile);
+  for (let waited = 0; waited < 1_000; waited += 20) {
+    const late = scan(tag)
+      .named.map((pid) => ({ pid, start: startOf(pid) }))
+      .filter(({ pid, start }) => start !== null && !ended.some((known) => known.pid === pid && known.start === start));
+    if (!late.length && allGone(ended)) break;
+    killAll(late);
+    ended.push(...late);
+    pause(20);
+  }
+  return ended;
+}
+
 // For a process that is being stopped and has no time to ask its browsers
-// to quit: each one is killed at once. Returns their profiles with their
-// lock folders, for removeProfiles() once the browsers' helper processes
-// have ended too, about a tenth of a second later: removed sooner, a
+// to quit: each one is killed at once, with every process of it (see
+// processesOf()). Returns their profiles with their lock folders and those
+// processes, for removeProfiles(), which removes each profile once those
+// processes and its helpers have ended (see endAll()): removed sooner, a
 // profile fills up again.
 function killBrowsers() {
   const browsers = [];
   for (const { child, profile, lock, fetching } of open) {
+    const processes = processesOf(child);
     try {
       child.kill("SIGKILL");
     } catch {
       // Gone already.
     }
-    browsers.push({ profile, lock: lock || lockFolderOf(profile), fetching });
+    killAll(processes);
+    browsers.push({ profile, lock: lock || lockFolderOf(profile), fetching, processes });
   }
   open.clear();
   return browsers;
@@ -2122,10 +2236,12 @@ function removeLockFolder(folder) {
 }
 
 // Synchronous, with no retries that wait long: a stopped process may have a
-// second left before it is killed outright. Each browser's lock folder goes
-// too.
+// second left before it is killed outright. Each profile goes once the
+// browser's processes and its helpers have ended (see endAll()), and its
+// lock folder too.
 function removeProfiles(browsers) {
-  for (const { profile, lock, fetching } of browsers) {
+  for (const { profile, lock, fetching, processes = [] } of browsers) {
+    endAll(processes, profile);
     for (let tries = 0; tries < 2; tries++) {
       try {
         fs.rmSync(profile, { recursive: true, force: true });
