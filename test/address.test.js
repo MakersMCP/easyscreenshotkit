@@ -611,15 +611,19 @@ test("a reading of this machine's network interfaces that the system refuses kee
 
 // The kernel's lists of a machine with an interface up with no link (eth9,
 // a veth whose other end is down), one that is down (kd0, as kube-proxy
-// leaves kube-ipvs0), ranges routed to the machine itself, /24, /64 and
-// /40, and a transparent proxy's table 100, which routes every address to
-// the machine itself for the packets it marks alone, as a network namespace
-// of such a machine lists them (see the test in proxy.test.js that sets one
-// up), and an address held with a prefix shorter than /48 (w0); and a
-// range routed to the machine itself in the main table, listed under
-// "Main:" alone, as where the machine has a rule of its own, and one in the
-// default table, under "Id 253:"; prefixes and routes6 stand for the counts
-// of routes the kernel gives.
+// leaves kube-ipvs0), an address held with a prefix shorter than /48 (w0),
+// ranges routed to the machine itself, in IPv4 a /24 in the local table,
+// one in the main table, which the kernel lists under "Main:" apart from
+// "Local:" where the machine has a rule of its own, and one in the default
+// table, under "Id 253:", and in IPv6 a /64, a /56, a /48, a /47, a /40 and
+// a /128 of an address no interface holds, as an AnyIP or virtual IP setup
+// routes one, and a transparent proxy's table 100, which routes every
+// address to the machine itself for the packets it marks alone, as a
+// network namespace of such a machine lists them (see the test in
+// proxy.test.js that sets one up); prefixes and routes6 stand for the
+// counts of routes the kernel gives. They are easybrandkit's, which reads
+// the kernel's lists with the same code, and its tests of that reading are
+// this kit's too.
 const KERNEL = {
   trieStats: (prefixes = [1, 4, 9, 1]) => `Basic info: size of leaf: 48 bytes, size of tnode: 40 bytes.\n${["Id 100", "Main", "Local", "Id 253"].map((name, i) => `${name}:\n\tAver depth:     1.00\n\tMax depth:      1\n\tLeaves:         ${prefixes[i]}\n\tPrefixes:       ${prefixes[i]}\n\tInternal nodes: 1\n\tPointers: 8\nNull ptrs: 5\nTotal size: 1  kB\n\nCounters:\n---------\ngets = 0\n`).join("\n")}`,
   trie: `Id 100:
@@ -629,12 +633,13 @@ Main:
   +-- 0.0.0.0/0 3 0 5
      |-- 0.0.0.0
         /0 link UNICAST
-     |-- 93.184.216.0
-        /24 link UNICAST
+     +-- 93.184.216.0/22 2 0 2
+        |-- 93.184.216.0
+           /24 link UNICAST
+        |-- 93.184.218.0
+           /24 host LOCAL
      |-- 198.51.100.0
         /24 link UNICAST
-     |-- 93.184.218.0
-        /24 host LOCAL
 Local:
   +-- 0.0.0.0/0 3 0 5
      +-- 93.184.216.0/23 3 0 5
@@ -671,7 +676,7 @@ Id 253:
 fe80000000000000acdbd3fffef59979 02 40 20 80       d0
 2a022f0c900000000000000000000005 06 28 00 80       w0
 `,
-  routeStats6: (routes6 = 14) => `0012 000b 0002 ${routes6.toString(16).padStart(4, "0")} 0000 0000 0000\n`,
+  routeStats6: (routes6 = 18) => `0012 000b 0002 ${routes6.toString(16).padStart(4, "0")} 0000 0000 0000\n`,
   route6: `00000000000000000000000000000000 00 00000000000000000000000000000000 00 00000000000000000000000000000000 00000400 00000001 00000000 80000001       lo
 2a022f0c800000010000000000000000 40 00000000000000000000000000000000 00 00000000000000000000000000000000 00000100 00000002 00000000 00000001       d0
 2a022f0c800000770000000000000000 40 00000000000000000000000000000000 00 00000000000000000000000000000000 00000100 00000001 00000000 00000001     eth9
@@ -681,7 +686,11 @@ fe80000000000000acdbd3fffef59979 02 40 20 80       d0
 2a022f0c800000770000000000000005 80 00000000000000000000000000000000 00 00000000000000000000000000000000 00000000 00000002 00000000 80200001     eth9
 2a022f0c800000880000000000000008 80 00000000000000000000000000000000 00 00000000000000000000000000000000 00000000 00000003 00000000 80200001      kd0
 2a022f0c800000990000000000000000 40 00000000000000000000000000000000 00 00000000000000000000000000000000 00000400 00000001 00000000 80000001       lo
+2a022f0c800000b00000000000000005 80 00000000000000000000000000000000 00 00000000000000000000000000000000 00000400 00000001 00000000 80000001       lo
+2a022f0c8000a0000000000000000000 38 00000000000000000000000000000000 00 00000000000000000000000000000000 00000400 00000001 00000000 80000001       lo
 2a022f0c810000000000000000000000 28 00000000000000000000000000000000 00 00000000000000000000000000000000 00000400 00000001 00000000 80000001       lo
+2a022f0c820000000000000000000000 30 00000000000000000000000000000000 00 00000000000000000000000000000000 00000400 00000002 00000000 80000001       lo
+2a022f0c830000000000000000000000 2f 00000000000000000000000000000000 00 00000000000000000000000000000000 00000400 00000001 00000000 80000001       lo
 ff000000000000000000000000000000 08 00000000000000000000000000000000 00 00000000000000000000000000000000 00000100 00000002 00000000 00000001       d0
 00000000000000000000000000000000 00 00000000000000000000000000000000 00 00000000000000000000000000000000 ffffffff 00000001 00000000 00200200       lo
 `,
@@ -692,14 +701,21 @@ ff000000000000000000000000000000 08 00000000000000000000000000000000 00 00000000
 // leaves out each interface that is not up with a link: an address of an
 // interface up with no link, as a veth whose other end is down, of one
 // that is down, as kube-proxy's kube-ipvs0, and every address of a range
-// routed to the machine itself (ip route add local ... dev lo). Read from
-// the interfaces alone, each was taken for an address on the public
-// internet, and through the run's proxy a page reached this machine's
-// service there. A transparent proxy's table of its own is not this
-// machine's; nor, as the kernel names no table for an IPv6 route, is an
-// IPv6 range routed to the machine shorter than /48. And a machine of more
+// routed to the machine itself (ip route add local ... dev lo), in the
+// kernel's local, main and default tables, and in IPv6 one of /48 or
+// longer. Read from the interfaces alone, each was taken for an address on
+// the public internet, and through the run's proxy a page reached this
+// machine's service there. A transparent proxy's table of its own is not
+// this machine's; nor, as the kernel names no table for an IPv6 route, is
+// an IPv6 range routed to the machine shorter than /48. A machine of more
 // routes than the kernel lists in a few milliseconds is not read by them,
-// and read again only once a second has passed for each 20,000 of them.
+// and read again only once a second has passed for each 20,000 of them,
+// both kinds counted, and a list whose count of routes cannot be read is
+// not read either. A file that cannot be read a moment later is taken as it
+// was last read, and where the files cannot be read at all, the interfaces
+// stand alone. With the local IPv6 routes taken from /64, /49 or /47 on, or
+// from /48 to /127 alone, a list read with no count, or the IPv6 routes
+// left out of the count, every test still passed.
 test("on Linux an address the kernel holds for this machine on an interface that is down or has no link, or in a range routed to it, is this machine's", { skip: process.platform !== "linux" && "the kernel's lists are read on Linux only" }, async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: 7_000_000 });
   const os = require("node:os");
@@ -712,18 +728,19 @@ test("on Linux an address the kernel holds for this machine on an interface that
     d0: [{ address: "198.51.100.9", netmask: "255.255.255.0", family: "IPv4", internal: false, cidr: "198.51.100.9/24" }, { address: "2a02:2f0c:8000:1::9", netmask: "ffff:ffff:ffff:ffff::", family: "IPv6", internal: false, cidr: "2a02:2f0c:8000:1::9/64", scopeid: 0 }],
   });
   let prefixes = [1, 4, 9, 1];
-  let routes6 = 14;
+  let routes6 = 18;
   // The files that cannot be read for a while, as where this process has as
   // many files open as it may.
   let refusing = [];
   const reads = [];
   const files = { "/proc/net/fib_triestat": () => KERNEL.trieStats(prefixes), "/proc/net/fib_trie": () => KERNEL.trie, "/proc/net/if_inet6": () => KERNEL.inet6, "/proc/net/rt6_stats": () => KERNEL.routeStats6(routes6), "/proc/net/ipv6_route": () => KERNEL.route6 };
-  kernel.read = (file) => {
+  const reader = (file) => {
     reads.push(file.replace("/proc/net/", ""));
     if (refusing.includes(file)) throw Object.assign(new Error(`EMFILE: too many open files, open '${file}'`), { code: "EMFILE" });
     if (!files[file]) throw Object.assign(new Error(`ENOENT: ${file}`), { code: "ENOENT" });
     return files[file]();
   };
+  kernel.read = reader;
   const at = (address) => `at ${address}, an address of this machine`;
   const url = (address) => (address.includes(":") ? `http://[${address}]/secret` : `http://${address}/secret`);
   try {
@@ -742,14 +759,20 @@ test("on Linux an address the kernel holds for this machine on an interface that
       ["2a02:2f0c:9000::5", at("2a02:2f0c:9000::5")],
       ["2a02:2f0c:9000:ffff::1", "at 2a02:2f0c:9000:ffff::1, on a network of this machine"],
       ["2a02:2f0c:9001::1", ""],
-      // Ranges routed to the machine itself, in the local table, in the
-      // main table and in the default table, each of which every
-      // connection is looked up in.
+      // Ranges routed to the machine itself: in IPv4 in the local table,
+      // in the main table, which the kernel lists apart under "Main:"
+      // where the machine has a rule of its own, and in the default table,
+      // each of which every connection is looked up in; in IPv6 a /64, a
+      // /56 and a /48, and a /128 of an address no interface holds, which
+      // ipv6_route lists alone, as /proc/net/if_inet6 does not.
       ["93.184.217.50", at("93.184.217.50")],
       ["93.184.218.7", at("93.184.218.7")],
       ["93.184.219.7", at("93.184.219.7")],
       ["::ffff:93.184.217.50", "at ::ffff:5db8:d932, an address of this machine"],
       ["2a02:2f0c:8000:99::7", at("2a02:2f0c:8000:99::7")],
+      ["2a02:2f0c:8000:a0ab::7", at("2a02:2f0c:8000:a0ab::7")],
+      ["2a02:2f0c:8200:ab::1", at("2a02:2f0c:8200:ab::1")],
+      ["2a02:2f0c:8000:b0::5", at("2a02:2f0c:8000:b0::5")],
     ];
     for (const [address, why] of [
       ...kept,
@@ -757,12 +780,17 @@ test("on Linux an address the kernel holds for this machine on an interface that
       ["198.51.100.9", NOT_PUBLIC],
       ["2a02:2f0c:8000:1::9", at("2a02:2f0c:8000:1::9")],
       // Not this machine's: the rest of eth9's IPv4 range, the transparent
-      // proxy's table, and an IPv6 range routed to the machine shorter
-      // than /48.
+      // proxy's table, an address past the /56, IPv6 ranges routed to the
+      // machine shorter than /48, a /47 and a /40, beyond eth9's and kd0's
+      // /64, and the address next to the /128, which gives no network.
       ["93.184.216.99", ""],
       ["93.184.215.14", ""],
       ["2606:4700::1", ""],
+      ["2a02:2f0c:8000:a100::7", ""],
+      ["2a02:2f0c:8301:5::1", ""],
       ["2a02:2f0c:8100::7", ""],
+      ["2a02:2f0c:8000:89::1", ""],
+      ["2a02:2f0c:8000:b0::6", ""],
     ]) {
       assert.equal(await guard.refuses(url(address)), why, address);
     }
@@ -817,6 +845,64 @@ test("on Linux an address the kernel holds for this machine on an interface that
     t.mock.timers.tick(1);
     await guard.refuses(url("93.184.216.77"));
     assert.deepEqual(reads.sort(), ["fib_triestat", "if_inet6", "ipv6_route", "rt6_stats"]);
+    // So is one whose routes are nearly all IPv6 ones, as the routes of
+    // both kinds are counted: 100,000 in all.
+    prefixes = [1, 4, 9, 1];
+    routes6 = 100_000 - 15;
+    t.mock.timers.tick(5_000);
+    await guard.refuses(url("93.184.216.77"));
+    reads.length = 0;
+    t.mock.timers.tick(4_999);
+    await guard.refuses(url("93.184.216.77"));
+    assert.deepEqual(reads, []);
+    t.mock.timers.tick(1);
+    await guard.refuses(url("93.184.216.77"));
+    assert.deepEqual(reads.sort(), ["fib_trie", "fib_triestat", "if_inet6", "rt6_stats"]);
+    // A line the kit cannot read is passed over, and the rest is read: no
+    // address that is not one, as 999.1.1.1 or 32 characters that are not
+    // hex digits, and no prefix past an address's bits, which a list of
+    // addresses would not take, nor a route whose kind is not written as
+    // one.
+    kernel.read = (file) => ({
+      "/proc/net/fib_triestat": "Local:\n\tPrefixes:       3\nId 253:\n\tPrefixes:       1\n",
+      "/proc/net/fib_trie": "Local:\n  +-- 93.184.219.0/24 2 0 2\n     |-- 999.1.1.1\n        /32 host LOCAL\n     |-- 93.184.219.1\n        /40 host LOCAL\n     |-- 93.184.219.2\n        /32 host LOCAL\nId 253:\n  |-- 93.184.220.0\n     /24 host LOCAL\n",
+      "/proc/net/if_inet6": "zz022f0c800000aa0000000000000001 04 40 00 82     eth8\n2a022f0c800000aa0000000000000001 04 40 00 82     eth8\n",
+      "/proc/net/rt6_stats": "0012 000b 0002 0003 0000 0000 0000\n",
+      "/proc/net/ipv6_route": "2a022f0c800000bb0000000000000000 ff 00000000000000000000000000000000 00 00000000000000000000000000000000 00000400 00000001 00000000 80000001       lo\n2a022f0c800000cc0000000000000000 40 00000000000000000000000000000000 00 00000000000000000000000000000000 00000400 00000001 00000000 80000001zz       lo\n2a022f0c800000dd0000000000000000 40 00000000000000000000000000000000 00 00000000000000000000000000000000 00000400 00000001 00000000 80000001       lo\n",
+    })[file];
+    for (const [address, why] of [
+      ["93.184.219.2", at("93.184.219.2")],
+      // The default table is one every connection is looked up in too.
+      ["93.184.220.9", at("93.184.220.9")],
+      ["93.184.219.1", ""],
+      ["2a02:2f0c:8000:aa::1", at("2a02:2f0c:8000:aa::1")],
+      ["2a02:2f0c:8000:bb::7", ""],
+      ["2a02:2f0c:8000:cc::7", ""],
+      ["2a02:2f0c:8000:dd::7", at("2a02:2f0c:8000:dd::7")],
+    ]) {
+      assert.equal(await guard.refuses(url(address)), why, address);
+    }
+    // A count of the kernel's that cannot be read, as where its file is not
+    // there, keeps the list it counts unread, as that list could be a
+    // router's, which takes the kernel a minute to give: fib_triestat for
+    // fib_trie, the IPv4 one, and rt6_stats for ipv6_route, the IPv6 one.
+    // The other lists are read.
+    prefixes = [1, 4, 9, 1];
+    routes6 = 18;
+    for (const [count, list, unread, others] of [
+      ["fib_triestat", "fib_trie", ["93.184.216.77", "93.184.217.50", "93.184.218.7", "93.184.219.7"], ["2a02:2f0c:8000:77::5", "2a02:2f0c:8000:99::7"]],
+      ["rt6_stats", "ipv6_route", ["2a02:2f0c:8000:99::7", "2a02:2f0c:8000:a0ab::7", "2a02:2f0c:8200:ab::1", "2a02:2f0c:8000:b0::5"], ["2a02:2f0c:8000:77::5", "93.184.217.50", "93.184.218.7", "93.184.219.7"]],
+    ]) {
+      const seen = [];
+      kernel.read = (file) => {
+        seen.push(file.replace("/proc/net/", ""));
+        if (file === `/proc/net/${count}`) throw Object.assign(new Error(`ENOENT: ${file}`), { code: "ENOENT" });
+        return files[file]();
+      };
+      for (const address of unread) assert.equal(await guard.refuses(url(address)), "", `${address} with no ${count}`);
+      for (const address of others) assert.equal(await guard.refuses(url(address)), at(address), `${address} with no ${count}`);
+      assert.deepEqual(seen.sort(), ["fib_trie", "fib_triestat", "if_inet6", "ipv6_route", "rt6_stats"].filter((one) => one !== list));
+    }
     // Where the kernel's files cannot be read, the interfaces alone, read
     // at once where the function that reads the files is another, as a
     // test puts one in its place.
@@ -826,6 +912,8 @@ test("on Linux an address the kernel holds for this machine on an interface that
     assert.equal(await guard.refuses(url("2a02:2f0c:8000:77::5")), "");
     assert.equal(await guard.refuses(url("93.184.216.77")), "");
     assert.equal(await guard.refuses(url("2a02:2f0c:8000:1::9")), at("2a02:2f0c:8000:1::9"));
+    // What another function read last is not this one's.
+    assert.equal(await guard.refuses(url("93.184.219.2")), "");
   } finally {
     os.networkInterfaces = savedInterfaces;
     kernel.read = savedRead;
