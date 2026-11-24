@@ -257,7 +257,8 @@ function checkScreenshots(list, images = [], options = {}) {
       );
     }
     if (shots.length > LOOKED_AT) {
-      problems.push(`Chrome looks at the first ${LOOKED_AT} screenshots of the list only, wide and narrow together, so ${numbers(shots.slice(LOOKED_AT).map((shot) => shot.n))} never show.`);
+      const past = shots.slice(LOOKED_AT).map((shot) => shot.n);
+      problems.push(`Chrome looks at the first ${LOOKED_AT} screenshots of the list only, wide and narrow together, so ${numbers(past)} ${past.length === 1 ? "never shows" : "never show"}.`);
     }
   }
   // The same words for several screenshots come once, with their numbers,

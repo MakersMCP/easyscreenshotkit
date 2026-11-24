@@ -102,7 +102,10 @@ test("Chrome's rules: only the first 8 of the list, whatever their form factor, 
   const report = checkScreenshots(list, [...Array(8).fill(WIDE), NARROW, NARROW]);
   assert.deepEqual([report.desktop, report.phone], [[1, 2, 3, 4, 5, 6, 7, 8], []]);
   assert.match(report.problems.join("\n"), /Phones get the plain install dialog/);
-  assert.match(report.problems.join("\n"), /so screenshots 9 and 10 never show/);
+  assert.match(report.problems.join("\n"), /so screenshots 9 and 10 never show\./);
+  // One past the first 8.
+  const nine = checkScreenshots(list.slice(0, 9), [...Array(8).fill(WIDE), NARROW]);
+  assert.ok(nine.problems.includes("Chrome looks at the first 8 screenshots of the list only, wide and narrow together, so screenshot 9 never shows."), nine.problems.join("\n"));
 
   const phones = checkScreenshots(Array.from({ length: 6 }, (_, i) => entry(i + 1, "narrow")), Array(6).fill(NARROW));
   assert.deepEqual(phones.phone, [1, 2, 3, 4, 5]);
