@@ -1886,6 +1886,25 @@ async function drawnSoFar(cdp) {
   return false;
 }
 
+// A screenshot of a tab (Page.captureScreenshot): its answer, or a tab that
+// crashed where the tab's page crashed while the screenshot was under way.
+// Chrome 157 answers such a screenshot "Unable to capture screenshot" and
+// says a moment after that the page crashed (Inspector.targetCrashed),
+// where Chrome 155 says that first: a run whose tab crashed as it took a
+// screenshot, or as a demo's frame was taken, ended in the browser's words,
+// which say nothing of what happened, as "easyscreenshotkit demo: Unable to
+// capture screenshot". One that failed with no crash keeps those words; the
+// crash is waited for a second at most.
+async function screenshot(cdp, params, timeoutMs) {
+  try {
+    return await cdp.send("Page.captureScreenshot", params, timeoutMs);
+  } catch (err) {
+    if (!err.answered) throw err;
+    for (let i = 0; i < 10 && !cdp.crashed; i++) await sleep(100);
+    throw cdp.crashed ? new Error(CRASHED) : err;
+  }
+}
+
 async function navigate(cdp, url) {
   cdp.stopped = null;
   if (!cdp.own) {
@@ -2122,4 +2141,4 @@ function removeProfiles(browsers) {
   }
 }
 
-module.exports = { findChrome, browserProblem, onPath, launch, startWait, openTab, closeTab, sendInput, guardBrowser, navigate, failedWords, drawnSoFar, currentUrl, killBrowsers, removeProfiles, removeStrayLocks, removeFetchFolders, fetchFolders, roomIn, lockFolderOf, userAgentFor, proxySaid, busy, CRASHED, BARRED, UNREACHED, NOT_A_PAGE };
+module.exports = { findChrome, browserProblem, onPath, launch, startWait, openTab, closeTab, sendInput, guardBrowser, navigate, screenshot, failedWords, drawnSoFar, currentUrl, killBrowsers, removeProfiles, removeStrayLocks, removeFetchFolders, fetchFolders, roomIn, lockFolderOf, userAgentFor, proxySaid, busy, CRASHED, BARRED, UNREACHED, NOT_A_PAGE };

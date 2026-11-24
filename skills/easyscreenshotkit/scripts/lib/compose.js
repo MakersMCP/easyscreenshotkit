@@ -11,7 +11,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { pathToFileURL } = require("url");
-const { openTab, closeTab, navigate } = require("./chrome");
+const { openTab, closeTab, navigate, screenshot } = require("./chrome");
 const { planCamera, cameraAt, cursorAt, ringsAt, keyAt, ease, clamp } = require("./motion");
 const { toRgb } = require("./png");
 const { routeOf, readable } = require("./pick");
@@ -460,7 +460,7 @@ async function drawFrame(tab, state, format) {
   const { exceptionDetails } = await tab.send("Runtime.evaluate", { expression: `draw(${JSON.stringify(state)})`, awaitPromise: true }, 30_000);
   if (exceptionDetails) throw new Error(`a frame could not be drawn: ${exceptionDetails.text}`);
   for (let tries = 0; ; tries++) {
-    const shot = await tab.send("Page.captureScreenshot", format === "png" ? { format: "png" } : { format: "jpeg", quality: 92, optimizeForSpeed: true }, 30_000);
+    const shot = await screenshot(tab, format === "png" ? { format: "png" } : { format: "jpeg", quality: 92, optimizeForSpeed: true }, 30_000);
     const image = Buffer.from(shot.data || "", "base64");
     if (format === "png" || whole(image)) return image;
     if (tries === 2) throw new Error("a frame came back from the browser cut off");

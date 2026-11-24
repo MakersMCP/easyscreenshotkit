@@ -252,6 +252,83 @@ child.on("exit", (code) => process.exit(code === null ? 1 : code));
   return { browser: wrapper, dropped: () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8").split("\n").filter(Boolean) : []) };
 }
 
+// A browser for CHROME_PATH that is the real one, `browser`, behind a relay
+// of the DevTools pipe that has it crash a tab's page as the kit takes the
+// tab's first screenshot: it passes every message on, and right after the
+// first Page.captureScreenshot to a tab that opened an address matching
+// `page` (a regular expression; every tab when it is none), it sends
+// Page.crash for that tab, which ends its page's process alone while the
+// browser goes on, as the system can end one for its memory (Chrome does
+// not do it while the tab has a navigation under way). The kit hears of it
+// as Chrome 157 tells it, whatever the browser: the screenshot answered
+// "Unable to capture screenshot", and 150 ms later Inspector.targetCrashed,
+// where Chrome 155 sends that event first and no answer. Returns the
+// wrapper to set CHROME_PATH to, and crashed(): what it did, a line each.
+function crashingBrowser(root, browser, { page = "" } = {}) {
+  const script = path.join(root, "crashing.js");
+  const log = path.join(root, "crashing.log");
+  fs.writeFileSync(
+    script,
+    `"use strict";
+const fs = require("fs");
+const { spawn } = require("child_process");
+const child = spawn(${JSON.stringify(browser)}, process.argv.slice(2), { stdio: ["ignore", "inherit", "inherit", "pipe", "pipe"] });
+const fromKit = fs.createReadStream(null, { fd: 3 });
+const toKit = fs.createWriteStream(null, { fd: 4 });
+for (const stream of [fromKit, toKit, child.stdio[3], child.stdio[4]]) stream.on("error", () => {});
+const note = (line) => fs.appendFileSync(${JSON.stringify(log)}, line + "\\n");
+const page = ${JSON.stringify(page)} ? new RegExp(${JSON.stringify(page)}) : null;
+const opened = new Set();
+// The tab crashed and the screenshot under way there, once it is sent.
+let crashing = null;
+const split = (stream, take) => {
+  let held = Buffer.alloc(0);
+  stream.on("data", (chunk) => {
+    held = Buffer.concat([held, chunk]);
+    let at;
+    while ((at = held.indexOf(0)) >= 0) {
+      const text = held.subarray(0, at).toString();
+      held = held.subarray(at + 1);
+      take(text);
+    }
+  });
+};
+split(fromKit, (text) => {
+  const msg = JSON.parse(text);
+  if (msg.method === "Page.navigate" && msg.sessionId && (!page || page.test(msg.params.url))) opened.add(msg.sessionId);
+  child.stdio[3].write(text + "\\0");
+  if (!crashing && msg.method === "Page.captureScreenshot" && opened.has(msg.sessionId)) {
+    crashing = { session: msg.sessionId, id: msg.id, answered: false };
+    note("Page.crash");
+    child.stdio[3].write(JSON.stringify({ id: 2000000000, sessionId: crashing.session, method: "Page.crash", params: {} }) + "\\0");
+  }
+});
+split(child.stdio[4], (text) => {
+  const msg = JSON.parse(text);
+  if (msg.id === 2000000000) return;
+  if (crashing && msg.id === crashing.id && msg.sessionId === crashing.session) {
+    if (crashing.answered) return;
+    crashing.answered = true;
+  }
+  if (crashing && msg.method === "Inspector.targetCrashed" && msg.sessionId === crashing.session) {
+    if (!crashing.answered) {
+      crashing.answered = true;
+      toKit.write(JSON.stringify({ id: crashing.id, sessionId: crashing.session, error: { code: -32000, message: "Unable to capture screenshot" } }) + "\\0");
+    }
+    note("Inspector.targetCrashed");
+    return void setTimeout(() => toKit.write(text + "\\0"), 150);
+  }
+  toKit.write(text + "\\0");
+});
+fromKit.on("end", () => child.stdio[3].end());
+child.on("exit", (code) => process.exit(code === null ? 1 : code));
+`,
+  );
+  const wrapper = path.join(root, "crashing-chrome");
+  fs.writeFileSync(wrapper, `#!/bin/sh\nexec ${sh(process.execPath)} ${sh(script)} "$@"\n`, { mode: 0o755 });
+  return { browser: wrapper, crashed: () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8").split("\n").filter(Boolean) : []) };
+}
+
 // Runs the command line with args and resolves to how it ended: { status,
 // stdout, stderr } once it has, or { stdout, stderr, held: true } when it had
 // printed its whole JSON (--json) holdMs before and still had not exited, as
@@ -354,4 +431,4 @@ async function withRebinding(names, body) {
   }
 }
 
-module.exports = { readPng, pngOf, serve, near, descendants, relayBrowser, runUntilOver, tempProblem, sh, reachAt, withRebinding };
+module.exports = { readPng, pngOf, serve, near, descendants, relayBrowser, crashingBrowser, runUntilOver, tempProblem, sh, reachAt, withRebinding };

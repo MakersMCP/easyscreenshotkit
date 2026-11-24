@@ -10,6 +10,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { joinScreens, tagPng, pngText, pngSize, pngFileIsWhole } = require("../skills/easyscreenshotkit/scripts/lib/png");
 const { screenTops, capturePage } = require("../skills/easyscreenshotkit/scripts/lib/page");
+const { CRASHED } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
 const { readPng, pngOf } = require("./helpers");
 
 // A page 100 px tall whose every row has its own color, captured as
@@ -80,26 +81,45 @@ test("joining screens leaves the event loop free for a stop that comes meanwhile
 
 // A tab that stops answering partway down a whole page: one too busy keeps
 // the screens taken so far and says it was cut, one that crashed is no page
-// cut short, as it would be saved as one.
+// cut short, as it would be saved as one. So is one whose page crashed as
+// a screenshot was under way, as Chrome 157 tells it: the screenshot
+// answered "Unable to capture screenshot", and the page's crash said a
+// moment after (Inspector.targetCrashed, which openTab() hears and fails
+// the tab with), where Chrome 155 says that first; the page was kept as
+// one cut short. A screenshot that fails so with no crash is the browser's
+// own failure, named in its words, and a page is cut there.
 test("a whole page whose tab crashed partway is lost, and one too busy to answer is cut", { timeout: 30_000 }, async () => {
-  const tab = (dead) => {
+  // unable: the screenshot answered "Unable to capture screenshot", by its
+  // number, or none.
+  const tab = (dead, unable = 0) => {
     let shots = 0;
-    return {
-      closed: () => dead && shots >= 1,
+    const stand = {
+      crashed: false,
+      closed: () => (unable ? stand.crashed : dead && shots >= 1),
       async send(method) {
         if (method === "Page.getLayoutMetrics") return { cssLayoutViewport: { clientWidth: 10, clientHeight: 20 }, cssVisualViewport: { pageY: 0, clientWidth: 10, clientHeight: 20 }, cssContentSize: { height: 50 } };
         if (method === "Page.captureScreenshot") {
-          if (++shots > 1) throw new Error("Page.captureScreenshot timed out");
+          if (++shots === unable) {
+            if (dead) setTimeout(() => (stand.crashed = true), 150);
+            throw Object.assign(new Error("Unable to capture screenshot"), { answered: true });
+          }
+          if (shots > 1 && !unable) throw new Error("Page.captureScreenshot timed out");
           return { data: pngOf(10, 20, (x, y) => PAGE_COLOR(x, y)).toString("base64") };
         }
         return { result: { value: 0 } };
       },
     };
+    return stand;
   };
   const busy = await capturePage(tab(false));
   assert.equal(busy.truncated, true);
   assert.equal(readPng(busy.png).height, 20);
   await assert.rejects(capturePage(tab(true)), /timed out/);
+  await assert.rejects(capturePage(tab(true, 2)), { message: CRASHED });
+  const failed = await capturePage(tab(false, 2));
+  assert.equal(failed.truncated, true);
+  assert.equal(readPng(failed.png).height, 20);
+  await assert.rejects(capturePage(tab(false, 1)), { message: "Unable to capture screenshot" });
 });
 
 test("a PNG file is whole only when it starts and ends as a PNG does", () => {

@@ -20,7 +20,7 @@ const { findChrome, launch, openTab, closeTab, navigate } = require("../skills/e
 const { guardFor } = require("../skills/easyscreenshotkit/scripts/lib/address");
 const { findFfmpeg, makeGif, startVideo, gifIsWhole, mp4Frames } = require("../skills/easyscreenshotkit/scripts/lib/ffmpeg");
 const { checkBackdrop } = require("../skills/easyscreenshotkit/scripts/lib/compose");
-const { readPng, pngOf, serve, near, descendants, relayBrowser, runUntilOver, tempProblem, sh, reachAt } = require("./helpers");
+const { readPng, pngOf, serve, near, descendants, relayBrowser, crashingBrowser, runUntilOver, tempProblem, sh, reachAt } = require("./helpers");
 const { noBus, privateBus, fakePortal } = require("./bus");
 
 const CLI = path.resolve(__dirname, "../skills/easyscreenshotkit/scripts/easyscreenshotkit.js");
@@ -1956,6 +1956,43 @@ test("a demo whose browser ends or whose tab crashes in the middle of it fails, 
       assert.ok(profiles.length >= 1, `case ${i}: a profile to look for`);
       for (const profile of profiles) assert.equal(fs.existsSync(profile), false, `case ${i}: ${profile}`);
     }
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// The tab that draws the frames crashed while its browser goes on: the
+// demo says the tab crashed, which is what happened, fails, and leaves an
+// earlier demo as it was. Case 5 of the test before kills every page's
+// process of the browser that draws the frames, after which the browser
+// itself can end, so it takes either message; here the browser stays, and
+// a demo that took it for one that ended said so all the same. The browser
+// sits behind a relay that has it crash the frames page as the demo takes
+// its first frame, and tells the demo of it as Chrome 157 does (see
+// helpers.js crashingBrowser()): the frame answered "Unable to capture
+// screenshot" before the page's crash was said, and the demo ended in those
+// words.
+test("a demo whose tab that draws its frames crashes while its browser goes on says the tab crashed, and leaves an earlier demo as it was", { skip: missing || (process.platform === "win32" && "the relay is started by a shell script"), timeout: 200_000 }, async () => {
+  const { server, origin } = await fixture();
+  const root = tempDir();
+  const dir = path.join(root, "demo");
+  const steps = path.join(root, "short.yaml");
+  fs.writeFileSync(steps, "steps:\n  - visit: /\n  - wait: 2\n");
+  const relay = crashingBrowser(root, findChrome(), { page: "/compose\\.html$" });
+  try {
+    await makeDemo(origin, { dir, steps, gif: false, timeLimit: 150_000 });
+    const before = snapshot(dir);
+    const run = await new Promise((resolve) => {
+      const child = spawn(process.execPath, [CLI, "demo", origin, "--steps", steps, "--no-gif", "--out", dir], { env: { ...process.env, CHROME_PATH: relay.browser } });
+      let stderr = "";
+      child.stderr.on("data", (d) => (stderr += d));
+      child.on("close", (status) => resolve({ status, stderr }));
+    });
+    assert.deepEqual(relay.crashed(), ["Page.crash", "Inspector.targetCrashed"], run.stderr);
+    assert.equal(run.status, 1, run.stderr);
+    assert.match(run.stderr, /^easyscreenshotkit demo: The browser's tab crashed in the middle of the demo, so no demo was saved\.$/m);
+    assert.deepEqual(snapshot(dir), before);
   } finally {
     server.close();
     fs.rmSync(root, { recursive: true, force: true });

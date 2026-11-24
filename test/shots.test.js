@@ -25,7 +25,7 @@ const { pngText } = require("../skills/easyscreenshotkit/scripts/lib/png");
 const { clean } = require("../skills/easyscreenshotkit/scripts/lib/clean");
 const { hideProblem } = require("../skills/easyscreenshotkit/scripts/lib/steps");
 const programs = require("../skills/easyscreenshotkit/scripts/lib/programs");
-const { readPng, pngOf, serve, near, descendants, relayBrowser, runUntilOver, tempProblem, sh, reachAt } = require("./helpers");
+const { readPng, pngOf, serve, near, descendants, relayBrowser, crashingBrowser, runUntilOver, tempProblem, sh, reachAt } = require("./helpers");
 const { noBus, privateBus, fakePortal } = require("./bus");
 
 const CLI = path.resolve(__dirname, "../skills/easyscreenshotkit/scripts/easyscreenshotkit.js");
@@ -2911,6 +2911,42 @@ test("a tab that crashes fails the run on its first page and is named in the not
     const [only] = manifestOf(later).pages;
     assert.deepEqual(only.shots.map((shot) => shot.size), ["desktop"]);
     assert.deepEqual(only.notes, ["mobile could not be taken: the browser's tab crashed"]);
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A tab whose page crashes while its screenshot is under way, as the system
+// can end a page's process for its memory, is a tab that crashed: Chrome 157
+// answers such a screenshot "Unable to capture screenshot" a moment before
+// it says the page crashed, and the run ended in those words, which say
+// nothing of what happened, where Chrome 155 says the page crashed first.
+// The browser here sits behind a relay that has it crash the tab's page as
+// the run takes its first screenshot, and tells the run of it as Chrome 157
+// does (see helpers.js crashingBrowser()). The run fails in its own words
+// and leaves an earlier run as it was.
+test("a run whose tab crashes as its screenshot is taken says the tab crashed, and leaves an earlier run as it was", { skip: noBrowser || (process.platform === "win32" && "the relay is started by a shell script"), timeout: 200_000 }, async () => {
+  const { server, origin } = await serve((req, res) => {
+    if (req.url !== "/") return res.writeHead(404).end("not found");
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page("Acme | Tools for teams", '<h1>Acme</h1><div style="height:1400px;background:rgb(0,160,0)"></div>'));
+  });
+  const root = tempDir();
+  const dir = path.join(root, "shots");
+  const relay = crashingBrowser(root, findChrome());
+  try {
+    await takeShots(origin, { dir, pages: 1, sizes: "desktop", timeLimit: 100_000 });
+    const before = snapshot(dir);
+    const run = await new Promise((resolve) => {
+      const child = spawn(process.execPath, [CLI, origin, "--pages", "1", "--sizes", "desktop", "--out", dir], { env: { ...process.env, CHROME_PATH: relay.browser } });
+      let stderr = "";
+      child.stderr.on("data", (d) => (stderr += d));
+      child.on("close", (status) => resolve({ status, stderr }));
+    });
+    assert.deepEqual(relay.crashed(), ["Page.crash", "Inspector.targetCrashed"], run.stderr);
+    assert.equal(run.status, 1, run.stderr);
+    assert.match(run.stderr, /^easyscreenshotkit: The browser's tab crashed in the middle of the run, so no screenshots were saved\.$/m);
+    assert.deepEqual(snapshot(dir), before);
   } finally {
     server.close();
     fs.rmSync(root, { recursive: true, force: true });

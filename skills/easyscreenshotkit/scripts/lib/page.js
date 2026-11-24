@@ -7,7 +7,7 @@
 
 const { timeLeft, sleep } = require("./time");
 const { joinScreens } = require("./png");
-const { sendInput } = require("./chrome");
+const { sendInput, screenshot } = require("./chrome");
 
 const STEP_PAUSE_MS = 350;
 
@@ -424,11 +424,7 @@ async function capture(cdp, x, y, width, height, scale = 1, beyondViewport = tru
     const onScreen = x >= 0 && x + width <= m.width + 1 && y >= m.scrollY - 1 && y + height <= m.scrollY + m.viewportHeight + 1;
     if (onScreen) beyondViewport = false;
   }
-  return cdp.send(
-    "Page.captureScreenshot",
-    { format: "png", captureBeyondViewport: beyondViewport, clip: { x, y, width, height, scale } },
-    60_000,
-  );
+  return screenshot(cdp, { format: "png", captureBeyondViewport: beyondViewport, clip: { x, y, width, height, scale } }, 60_000);
 }
 
 // The screen as the device shows it: no clip, so the image is the device's
@@ -436,7 +432,7 @@ async function capture(cdp, x, y, width, height, scale = 1, beyondViewport = tru
 async function captureScreen(cdp) {
   const m = await metrics(cdp);
   await waitForPictures(cdp, { x: 0, y: m.scrollY, width: m.visualWidth, height: m.visualHeight });
-  return cdp.send("Page.captureScreenshot", { format: "png" }, 60_000);
+  return screenshot(cdp, { format: "png" }, 60_000);
 }
 
 // ─── screen by screen ──────────────────────────────────────────────────────
