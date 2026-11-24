@@ -1980,9 +1980,18 @@ test("a site given by a name that answers with a public address and with 127.0.0
   try {
     const hosts = path.join(root, "hosts");
     fs.writeFileSync(hosts, "127.0.0.1 localhost\n::1 localhost\n2606:2800:220:1::99 evil.example\n127.0.0.1 evil.example\n127.0.0.1 mixdev.example\n");
+    // RESOLV_MULTI, which glibc reads in place of the multi line of
+    // /etc/host.conf, has the system's lookup give every line of the hosts
+    // file for a name, as the test holds. The namespace's host.conf says
+    // multi off, glibc's own default where host.conf says nothing, so the
+    // test holds on any machine, where it held only where the machine's
+    // host.conf says multi on, as Ubuntu's does: elsewhere the lookup gave
+    // the first line alone, and the test failed though the kit was right.
+    const hostConf = path.join(root, "host.conf");
+    fs.writeFileSync(hostConf, "multi off\n");
     const cli = require.resolve("../skills/easyscreenshotkit/scripts/easyscreenshotkit.js");
-    const script = 'ip link set lo up && mount --bind "$1" /etc/hosts && exec "$2" "$3" mixed "$4" "$5" "$6" "$7"';
-    const child = spawn("unshare", ["-rmn", "sh", "-c", script, "sh", hosts, process.execPath, path.join(__dirname, "network.js"), String(process.getuid()), String(process.getgid()), cli, path.join(root, "shots")], { stdio: ["ignore", "pipe", "pipe"] });
+    const script = 'ip link set lo up && mount --bind "$1" /etc/hosts && { [ ! -e /etc/host.conf ] || mount --bind "$8" /etc/host.conf; } && exec "$2" "$3" mixed "$4" "$5" "$6" "$7"';
+    const child = spawn("unshare", ["-rmn", "sh", "-c", script, "sh", hosts, process.execPath, path.join(__dirname, "network.js"), String(process.getuid()), String(process.getgid()), cli, path.join(root, "shots"), hostConf], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, RESOLV_MULTI: "on" } });
     let out = "";
     let err = "";
     child.stdout.on("data", (d) => (out += d));
