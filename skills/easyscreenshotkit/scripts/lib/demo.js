@@ -430,11 +430,16 @@ function what(step) {
 // else by its href as the page wrote it (a[href="#/plants"]), so a route in
 // other letters is matched as the page has it, not escaped as in the
 // address. Without that, by its #route (a[href$="#/plants"]), else by its
-// path.
+// path. In the selector's quotes a quote and a backslash are escaped, and a
+// line feed, a carriage return and a form feed are written as CSS escapes,
+// \a , \d  and \c , as CSS.escape writes them: a page's HTML keeps a line
+// break in an href, where the address leaves it out, and written as it was,
+// it ended the selector's string, so the browser could not read the
+// selector and a recording from demo.yaml stopped at that click.
 function asWritten(step) {
   if (step.action !== "click" || !step.target.href) return step;
   const route = readable(routeOf(step.target.href));
-  const quoted = (text) => `"${text.replace(/["\\]/g, "\\$&")}"`;
+  const quoted = (text) => `"${text.replace(/["\\\n\r\f]/g, (c) => (c === '"' || c === "\\" ? `\\${c}` : `\\${c.charCodeAt(0).toString(16)} `))}"`;
   let target;
   if (step.text) target = { text: step.text };
   else if (step.attribute) target = { css: `a[href=${quoted(step.attribute)}]` };

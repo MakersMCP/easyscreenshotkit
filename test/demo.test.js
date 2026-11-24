@@ -979,14 +979,19 @@ test("a tour: the pages the menu puts forward, clicked through the menu, pricing
 // page the tour picked was missing from the video. And demo.yaml writes the
 // click on a link by its href where its words find the other port's link
 // first: written by its words, a recording from it clicked that link, the
-// run refused it, and the page was missing from the new video.
+// run refused it, and the page was missing from the new video. The page's
+// own links end in line breaks, a line feed in one and a carriage return
+// and a form feed in the other, which the page's HTML keeps in the href and
+// the address leaves out: demo.yaml writes them as CSS escapes, where it
+// wrote them as they were, the browser could not read the selector, and a
+// recording from it stopped at that click.
 test("a tour of a site given at 127.0.0.1 whose menu links its pages at localhost clicks through that menu, and passes over a link to another port, in demo.yaml too", { skip: missing, timeout: 400_000 }, async () => {
   const html = { "Content-Type": "text/html; charset=utf-8" };
   let at = "";
   let elsewhere = "";
   let elsewhereGiven = "";
   const { server, origin } = await serve((req, res) => {
-    const page = (title, color) => `<!doctype html><html><head><meta charset="utf-8"><title>${title} | Jekyll</title><style>body{margin:0;font-family:sans-serif} header{background:#c00;padding:20px} header a{color:#fff;margin-right:30px;font-size:22px} main{background:rgb(${color});height:2000px;padding:40px}</style></head><body><header><nav><a href="${elsewhere}/features">Features</a><a href="${elsewhereGiven}/pricing">Pricing</a><a href="${at}/features">Features</a><a href="${at}/pricing">Pricing</a></nav></header><main><h1>${title}</h1><p>The ${title.toLowerCase()} page of a site Jekyll serves.</p></main></body></html>`;
+    const page = (title, color) => `<!doctype html><html><head><meta charset="utf-8"><title>${title} | Jekyll</title><style>body{margin:0;font-family:sans-serif} header{background:#c00;padding:20px} header a{color:#fff;margin-right:30px;font-size:22px} main{background:rgb(${color});height:2000px;padding:40px}</style></head><body><header><nav><a href="${elsewhere}/features">Features</a><a href="${elsewhereGiven}/pricing">Pricing</a><a href="${at}/features&#10;">Features</a><a href="${at}/pricing&#13;&#12;">Pricing</a></nav></header><main><h1>${title}</h1><p>The ${title.toLowerCase()} page of a site Jekyll serves.</p></main></body></html>`;
     const path = req.url.split("?")[0];
     if (path === "/") return res.writeHead(200, html).end(page("Tools for teams", GREEN.join(",")));
     if (path === "/features") return res.writeHead(200, html).end(page("Features", TEAL.join(",")));
@@ -1006,7 +1011,7 @@ test("a tour of a site given at 127.0.0.1 whose menu links its pages at localhos
     // No click went to the other port, so the run refused none.
     assert.deepEqual(manifest.notes.filter((note) => note.includes(`:${other}/`)), []);
     // demo.yaml, recorded again: the same pages, and no click there either.
-    assert.deepEqual(readSteps(path.join(root, "tour", "demo.yaml")).steps.filter((s) => s.action === "click").map((s) => s.target), [{ css: `a[href="${at}/features"]` }, { css: `a[href="${at}/pricing"]` }]);
+    assert.deepEqual(readSteps(path.join(root, "tour", "demo.yaml")).steps.filter((s) => s.action === "click").map((s) => s.target), [{ css: `a[href="${at}/features\\a "]` }, { css: `a[href="${at}/pricing\\d \\c "]` }]);
     const { manifest: again } = await makeDemo(`${origin}/`, { dir: path.join(root, "again"), steps: path.join(root, "tour", "demo.yaml"), gif: false, timeLimit: 280_000 });
     assert.deepEqual(again.pages.map((p) => new URL(p.url).pathname), ["/", "/features", "/pricing"]);
     assert.deepEqual(again.notes.filter((note) => note.includes(`:${other}/`)), []);
