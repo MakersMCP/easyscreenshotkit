@@ -142,6 +142,42 @@ test("of two links to one page, the one the run opens by its port is kept", () =
   assert.deepEqual(upgraded.candidates.map((c) => c.url), ["https://dup.example:8080/pricing"]);
 });
 
+// Of two links to one page on port 80 or 443, both of which the run opens by
+// their port, the one at the home page's host is kept, the run having
+// opened that host already, and the page is ranked by the better of the
+// two: the menu's link at the site's www name, first in the menu, was kept,
+// and where the run's rule refuses that name, as a host of its own for a
+// site given on this machine or its network, or one that does not answer,
+// the page was left out though the menu linked it at the host given too.
+// Another form of the name is kept where the site gives no link at the
+// host given, and with the home page on another port, the link there.
+test("of two links to one page that the run opens by their port, the one at the home page's host is kept, ranked by the better", () => {
+  const www = (host, scheme) => [
+    { href: `${scheme}://www.${host}/features`, text: "Features", where: "header" },
+    { href: `${scheme}://www.${host}/pricing`, text: "Pricing", where: "header" },
+    { href: "/features", text: "Features", where: "footer" },
+    { href: "/pricing", text: "Pricing", where: "footer" },
+  ];
+  for (const [home, scheme] of [["http://site80.test/", "http"], ["https://site443.test/", "https"]]) {
+    const { candidates } = pick.rankLinks(www(new URL(home).hostname, scheme), [], { home });
+    assert.deepEqual(candidates.map((c) => [c.url, c.where, c.why]), [[`${home}pricing`, "header", 'menu link "Pricing"'], [`${home}features`, "header", 'menu link "Features"']], home);
+  }
+  // At the home page's www name, the www links are its own.
+  const atWww = pick.rankLinks([{ href: "https://site443.test/pricing", text: "Pricing", where: "header" }, { href: "/pricing", text: "Pricing", where: "footer" }], [], { home: "https://www.site443.test/" });
+  assert.deepEqual(atWww.candidates.map((c) => c.url), ["https://www.site443.test/pricing"]);
+  // The host given with the one dot that can end a name is the host without
+  // it, as the run's rule reads it.
+  const dotted = pick.rankLinks([{ href: "https://www.site443.test/pricing", text: "Pricing", where: "header" }, { href: "https://site443.test/pricing", text: "Pricing", where: "footer" }], [], { home: "https://site443.test./" });
+  assert.deepEqual(dotted.candidates.map((c) => c.url), ["https://site443.test/pricing"]);
+  // No link at the host given: the www name's.
+  const only = pick.rankLinks([{ href: "https://www.site443.test/pricing", text: "Pricing", where: "header" }], [], { home: "https://site443.test/" });
+  assert.deepEqual(only.candidates.map((c) => c.url), ["https://www.site443.test/pricing"]);
+  // The home page on port 8443: its own link there, over the www name's on
+  // 443, which the run opens too.
+  const onPort = pick.rankLinks([{ href: "https://www.site443.test/pricing", text: "Pricing", where: "header" }, { href: "/pricing", text: "Pricing", where: "footer" }], [], { home: "https://site443.test:8443/" });
+  assert.deepEqual(onPort.candidates.map((c) => [c.url, c.where]), [["https://site443.test:8443/pricing", "header"]]);
+});
+
 // The host given is the site's with or without the one dot that can end a
 // name, as the rule for the addresses a run opens reads it: given
 // https://dup.example.:8443/, the links and the sitemap's entries at

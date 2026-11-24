@@ -487,7 +487,15 @@ function whyOf(where, text, url) {
 // on another port and one the run opens, the one it opens is kept: the
 // page's key has no port, and a menu's link to another port of the site
 // outranked its footer's link to the same page on 443, so the run refused
-// the one it kept and never tried the other.
+// the one it kept and never tried the other. Of two that it opens by their
+// port, the address kept is the one at the home page's host as written,
+// with or without the one dot that can end a name, and the page is ranked by
+// the better of the two links: the run has opened that host already, while
+// another form of its name, as its www name, can be one the rule refuses,
+// as a host of its own for a site given on this machine or its network, or
+// one that does not answer. The menu's link at the www name, first in the
+// menu, was kept, and the run left the page out, though the menu linked it
+// at the host given too.
 function opensPort(url, homeUrl) {
   const port = (u) => u.port || (u.protocol === "https:" ? "443" : "80");
   if (port(url) === "80" || port(url) === "443") return true;
@@ -535,7 +543,10 @@ function rankLinks(links, sitemap, { home, robots = null, alternates = [], exclu
     const opens = opensPort(url, homeUrl);
     const knownOpens = Boolean(known) && opensPort(new URL(known.url), homeUrl);
     const better = !known || (opens && !knownOpens) || (opens === knownOpens && (candidate.score > known.score || (candidate.score === known.score && WHERE_ORDER.indexOf(where) < WHERE_ORDER.indexOf(known.where))));
-    if (better) byKey.set(key, known ? { ...candidate, order: known.order } : candidate);
+    const kept = better ? (known ? { ...candidate, order: known.order } : candidate) : known;
+    const own = (u) => hostOf(u) === hostOf(homeUrl);
+    if (known && opens && knownOpens && own(url) !== own(new URL(known.url))) kept.url = own(url) ? url.href : known.url;
+    byKey.set(key, kept);
   };
   for (const link of links) consider(link.href, link.text, link.where);
   for (const raw of sitemap) consider(raw, "", "sitemap");

@@ -4123,6 +4123,69 @@ test("of a menu's link to a page on another port and the footer's on the site's 
   }
 }));
 
+// A site given on this machine on port 80 whose menu links its pages at its
+// www name, before its links at the host given: the run takes the www name
+// for another host there, as it does every other name but this machine's
+// own (see address.js guardFor()), and both links pass on port 80. Of two
+// links to one page the first was kept, at the www name, and the run left
+// every page but the home page out, in the screenshots and in a demo's
+// tour, though the menu linked them at the host given too. The link at the
+// host given is kept now. Here the run's proxy takes 127.0.0.1 on port 80 to
+// the site's server, and the kit's own requests for the site's name,
+// robots.txt and the sitemap, go to the same server.
+test("a site given on this machine on port 80 whose menu links its pages at its www name first has its pages taken at the host given, in the screenshots and a demo's tour", { skip: noBrowser || (!findFfmpeg() && "no ffmpeg installed"), timeout: 600_000 }, () => withNames({ "site80.test": "127.0.0.1", "www.site80.test": "127.0.0.1" }, async () => {
+  const html = { "Content-Type": "text/html; charset=utf-8" };
+  const pages = { "/features": "Features", "/pricing": "Pricing" };
+  const hosts = [];
+  const menu = '<header><nav><a href="http://www.site80.test/features">Features</a> <a href="http://www.site80.test/pricing">Pricing</a> <a href="/features">Features</a> <a href="/pricing">Pricing</a></nav></header>';
+  const { server, origin } = await serve((req, res) => {
+    hosts.push(req.headers.host);
+    const path = req.url.split("?")[0];
+    if (path === "/") return res.writeHead(200, html).end(page("Site80 | Tools for teams", `${menu}<h1>Site80</h1><div style="height:1400px"></div>`));
+    if (pages[path]) return res.writeHead(200, html).end(page(`${pages[path]} | Site80`, `${menu}<h1>${pages[path]}</h1><p>The ${pages[path].toLowerCase()} page of Site80, which makes tools for teams.</p><div style="height:1400px"></div>`));
+    res.writeHead(404).end("not found");
+  });
+  const port = new URL(origin).port;
+  const http = require("node:http");
+  const get = http.get;
+  // The kit's own requests for the site's name go to the site's server,
+  // each once the lookup the kit gave it has handed back the name's one
+  // answer: a request with no lookup of the kit's fails here.
+  http.get = (url, options, done) => {
+    const where = new URL(String(url));
+    if (where.hostname !== "site80.test") return get(url, options, done);
+    const { lookup, ...rest } = options || {};
+    const judged = (host, opts, callback) => {
+      if (!lookup) return callback(Object.assign(new Error(`no lookup was given for ${host}`), { code: "ENOLOOKUP" }));
+      lookup(host, { ...opts, all: true }, (err, list) => {
+        if (err) return callback(err);
+        if (opts && opts.all) callback(null, list);
+        else callback(null, list[0].address, list[0].family);
+      });
+    };
+    return get({ protocol: "http:", hostname: "site80.test", port, path: `${where.pathname}${where.search}`, ...rest, lookup: judged, headers: { ...((rest && rest.headers) || {}), Host: "site80.test" } }, done);
+  };
+  const root = tempDir();
+  const stand = reachAt({ "127.0.0.1:80": `127.0.0.1:${port}` });
+  const taken = ["http://site80.test/", "http://site80.test/features", "http://site80.test/pricing"];
+  try {
+    const { manifest } = await takeShots("http://site80.test/", { dir: path.join(root, "shots"), pages: 3, sizes: "desktop", timeLimit: 180_000 });
+    assert.deepEqual(manifest.pages.map((p) => p.url).sort(), taken);
+    assert.deepEqual(manifest.skipped.filter((skip) => skip.url.includes("www.site80.test")), []);
+    const { manifest: demo } = await makeDemo("http://site80.test/", { dir: path.join(root, "demo"), pages: 3, gif: false, timeLimit: 400_000 });
+    assert.deepEqual(demo.pages.map((p) => p.url), taken);
+    assert.deepEqual(demo.steps.filter((s) => s.action === "click" || s.action === "visit").map((s) => s.label), ["Open site80.test", 'Click "Features"', 'Click "Pricing"']);
+    assert.deepEqual(demo.notes.filter((note) => note.includes("www.site80.test")), []);
+    // Nothing went to the www name, which the run would refuse.
+    assert.ok(!hosts.includes("www.site80.test"), hosts.join(" "));
+  } finally {
+    http.get = get;
+    stand.restore();
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}));
+
 // A site given at 127.0.0.1 whose links and sitemap name its pages at
 // localhost on the same port, as Jekyll writes them from its url while
 // `jekyll serve` names http://127.0.0.1:4000/, has its tour take them, at
