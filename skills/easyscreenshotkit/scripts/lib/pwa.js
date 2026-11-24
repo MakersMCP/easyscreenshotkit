@@ -551,8 +551,10 @@ async function loadManifest(target, guard, timeLimit) {
 const DATA = /^data:([^,]*?)(;base64)?,(.*)$/is;
 
 // Whether a screenshot's src is read from the web: one of a manifest read
-// from the web, or a web address, but for a data: address.
-const fromWeb = (src, base) => !DATA.test(src) && Boolean(base.url || /^https?:\/\//i.test(src));
+// from the web, or a web address. A data: address holds its picture:
+// loadImage() reads one before it asks, and in a manifest file one is no
+// web address.
+const fromWeb = (src, base) => Boolean(base.url || /^https?:\/\//i.test(src));
 
 // A screenshot's file, from the web or next to a manifest file. Next to a
 // file, a src that starts with "/" is taken from the manifest's folder: a

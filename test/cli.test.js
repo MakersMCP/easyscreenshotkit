@@ -206,7 +206,8 @@ test("a MAKERSMCP_REFUSE_ADDRESSES that does not parse stops every command befor
 // starts no browser. A manifest file whose screenshots are files needs no
 // address judged, and is checked as 0.1.3 checked it, where the check
 // stopped before it read the file; one that names a screenshot at a web
-// address stops before it reads that.
+// address stops before it reads that, but for a screenshot past the first
+// 8, which Chrome does not look at and the check does not read.
 test("a run whose system does not let it read this machine's network interfaces stops before any work in each command, saying why and what to do, and --pwa-check of a manifest file whose screenshots are files checks it", { skip: process.platform === "win32" && "the stand-ins are shell scripts", timeout: 60_000 }, () => {
   const root = fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "easyscreenshotkit-unread-"));
   const { CHROME_PATH, FFMPEG_PATH, MAKERSMCP_REFUSE_ADDRESSES, ...base } = process.env;
@@ -225,6 +226,8 @@ test("a run whose system does not let it read this machine's network interfaces 
     fs.writeFileSync(manifest, JSON.stringify({ screenshots: [shot("s/wide.png", "wide"), shot("s/narrow.png", "narrow")] }));
     const web = path.join(root, "web.json");
     fs.writeFileSync(web, JSON.stringify({ screenshots: [shot("s/wide.png", "wide"), shot("https://acme.com/s/narrow.png", "narrow")] }));
+    const ninth = path.join(root, "ninth.json");
+    fs.writeFileSync(ninth, JSON.stringify({ screenshots: [...Array.from({ length: 8 }, () => shot("s/wide.png", "wide")), shot("https://acme.com/s/ninth.png", "narrow")] }));
     // As Node.js throws it, the error's number given as it is.
     const preload = path.join(root, "unread.js");
     fs.writeFileSync(preload, `const os = require("os");\nconst errno = Number(process.env.UNREAD_ERRNO);\nos.networkInterfaces = () => { throw Object.assign(new Error("A system error occurred: uv_interface_addresses returned Unknown system error " + errno + " (Unknown system error " + errno + ")"), { code: "ERR_SYSTEM_ERROR", errno, syscall: "uv_interface_addresses" }); };\n`);
@@ -256,6 +259,11 @@ test("a run whose system does not let it read this machine's network interfaces 
       const json = run(errno, "--pwa-check", manifest, "--json");
       const report = JSON.parse(json.stdout);
       assert.deepEqual([json.status, report.ok, report.desktop, report.phone], [0, true, [1], [2]], String(errno));
+      // A screenshot at a web address past the first 8 is not read, and
+      // needs no address judged.
+      const past = run(errno, "--pwa-check", ninth);
+      assert.deepEqual([past.status, past.stderr], [1, ""], String(errno));
+      assert.ok(past.stdout.includes("  - Chrome looks at the first 8 screenshots of the list only, wide and narrow together, so screenshot 9 never shows."), past.stdout);
     }
     // The demo asks ffmpeg its version and encoders before the address is
     // judged, as before; no browser started at all.
