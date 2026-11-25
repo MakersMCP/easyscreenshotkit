@@ -237,7 +237,7 @@ async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = 
   // with fewer than it was asked for.
   let short = false;
   if (wanted > kept.length) {
-    const ranked = rankLinks(links, index.urls || [], {
+    const ranked = await rankLinks(links, index.urls || [], {
       home: nav.url,
       robots: index.robots,
       alternates: (info.alternates || []).map((alt) => alt.href),

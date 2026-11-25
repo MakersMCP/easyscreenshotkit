@@ -13,6 +13,7 @@
 
 const zlib = require("zlib");
 const { guardFor, getChecked, hostOf, sharedAddresses } = require("./address");
+const { turn, TURN } = require("./time");
 
 const fold = (text) =>
   String(text || "")
@@ -509,8 +510,12 @@ function opensPort(url, homeUrl) {
 // first, skipped with reasons (links only: a sitemap holds every post the
 // site has). The tour follows paths only, so a link to a #route of the
 // site counts as a link to its page, /docs/ for /docs/#/install, and
-// routeLinks() lists the route itself.
-function rankLinks(links, sitemap, { home, robots = null, alternates = [], exclude = [], keys = [] }) {
+// routeLinks() lists the route itself. The event loop gets a turn every
+// TURN links (see time.js turn()), and each candidate's depth is read once
+// before the sort, where the sort read it from an address made again for
+// each comparison: a page of 200,000 links held the run's only thread more
+// than 5 s in one pass, where a stop was not heard. Resolves to the lists.
+async function rankLinks(links, sitemap, { home, robots = null, alternates = [], exclude = [], keys = [] }) {
   const homeUrl = new URL(home);
   const homeLocale = localeOf(homeUrl.pathname);
   const site = siteOf(home);
@@ -548,17 +553,29 @@ function rankLinks(links, sitemap, { home, robots = null, alternates = [], exclu
     if (known && opens && knownOpens && own(url) !== own(new URL(known.url))) kept.url = own(url) ? url.href : known.url;
     byKey.set(key, kept);
   };
-  for (const link of links) consider(link.href, link.text, link.where);
-  for (const raw of sitemap) consider(raw, "", "sitemap");
+  let read = 0;
+  for (const link of links) {
+    consider(link.href, link.text, link.where);
+    if (++read % TURN === 0) await turn();
+  }
+  for (const raw of sitemap) {
+    consider(raw, "", "sitemap");
+    if (++read % TURN === 0) await turn();
+  }
   // A page left out for one link's words but taken from another link.
   for (const key of byKey.keys()) skipped.delete(key);
+  const depths = new Map();
+  for (const candidate of byKey.values()) {
+    depths.set(candidate, depthOf(new URL(candidate.url)));
+    if (++read % TURN === 0) await turn();
+  }
   // On a tie the site's own order decides: the first link of a menu is
   // usually the one it puts forward.
   const candidates = [...byKey.values()].sort(
     (a, b) =>
       b.score - a.score ||
       WHERE_ORDER.indexOf(a.where) - WHERE_ORDER.indexOf(b.where) ||
-      depthOf(new URL(a.url)) - depthOf(new URL(b.url)) ||
+      depths.get(a) - depths.get(b) ||
       a.order - b.order,
   );
   return { candidates, skipped: [...skipped.values()] };
@@ -583,13 +600,17 @@ function rankLinks(links, sitemap, { home, robots = null, alternates = [], exclu
 // list, looked through and copied for each link, and the rule asked for
 // each address, a page that linked one view by 40,000 addresses, each with
 // a query of its own, held the run's only thread 20 s, where no signal to
-// stop it was heard. Resolves to [{url, reason}].
+// stop it was heard; and the event loop gets a turn every TURN links (see
+// time.js turn()), where 200,000 links held it 0.9 s in one pass. Resolves
+// to [{url, reason}].
 async function routeLinks(links, { home, keys = [], refuses = async () => "" }) {
   const site = siteOf(home);
   const homeUrl = new URL(home);
   const taken = new Set([viewKey(home), ...keys]);
   const views = new Map();
+  let read = 0;
   for (const link of links) {
+    if (++read % TURN === 0) await turn();
     const url = onHomeHost(pageUrl(link.href, home), homeUrl);
     if (!url || siteOf(url.href) !== site || !routeOf(url.href)) continue;
     const key = viewKey(url.href);
@@ -609,6 +630,7 @@ async function routeLinks(links, { home, keys = [], refuses = async () => "" }) 
     let opened = "";
     let refused = null;
     for (const url of urls) {
+      if (++read % TURN === 0) await turn();
       const why = await judge(url);
       if (why) refused = refused || { url, reason: why };
       else if (!opened || (own(url) && !own(opened))) opened = url;

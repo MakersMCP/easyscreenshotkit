@@ -1615,7 +1615,7 @@ async function takeShots(rawUrl, options = {}) {
       // Then the pages found on the home page and in the sitemap.
       const index = await indexing;
       notes.push(...indexNotes(index.refused));
-      const ranked = rankLinks(result.links || [], index.urls || [], {
+      const ranked = await rankLinks(result.links || [], index.urls || [], {
         home: kept[0].url,
         robots: index.robots,
         alternates: (result.info.alternates || []).map((alt) => alt.href),

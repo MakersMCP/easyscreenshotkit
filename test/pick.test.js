@@ -84,7 +84,7 @@ test("home pages: the site's root, or its language root", () => {
   assert.equal(pick.pageKey("https://acme.com"), "acme.com/");
 });
 
-test("ranking: menu links first, a sitemap only as a fallback, reasons kept for the links left out", () => {
+test("ranking: menu links first, a sitemap only as a fallback, reasons kept for the links left out", async () => {
   const links = [
     { href: "/pricing", text: "Pricing", where: "header" },
     { href: "/features", text: "Features", where: "header" },
@@ -98,7 +98,7 @@ test("ranking: menu links first, a sitemap only as a fallback, reasons kept for 
     { href: "mailto:hi@acme.com", text: "Mail", where: "footer" },
   ];
   const robots = pick.parseRobots("User-agent: *\nDisallow: /about\n");
-  const { candidates, skipped } = pick.rankLinks(links, ["https://acme.com/changelog", "https://acme.com/blog/post-1"], { home: HOME, robots });
+  const { candidates, skipped } = await pick.rankLinks(links, ["https://acme.com/changelog", "https://acme.com/blog/post-1"], { home: HOME, robots });
   assert.deepEqual(
     candidates.map((c) => [new URL(c.url).pathname, c.kind, c.score, c.where]),
     [
@@ -125,7 +125,7 @@ test("ranking: menu links first, a sitemap only as a fallback, reasons kept for 
 // link the run opens is kept; one on another port alone stays, for the
 // run's rule to refuse with its reason. A site given on another port keeps
 // its own links there, and https of an http one.
-test("of two links to one page, the one the run opens by its port is kept", () => {
+test("of two links to one page, the one the run opens by its port is kept", async () => {
   const links = [
     { href: "https://dup.example:8443/pricing", text: "Pricing", where: "header" },
     { href: "https://dup.example:8443/features", text: "Features", where: "header" },
@@ -133,12 +133,12 @@ test("of two links to one page, the one the run opens by its port is kept", () =
     { href: "/pricing", text: "Pricing", where: "footer" },
     { href: "https://www.dup.example/features", text: "Features", where: "footer" },
   ];
-  const { candidates } = pick.rankLinks(links, ["https://dup.example:9443/integrations", "https://dup.example/integrations"], { home: "https://dup.example/" });
+  const { candidates } = await pick.rankLinks(links, ["https://dup.example:9443/integrations", "https://dup.example/integrations"], { home: "https://dup.example/" });
   assert.deepEqual(candidates.map((c) => c.url).sort(), ["https://dup.example/integrations", "https://dup.example/pricing", "https://dup.example:8443/customers", "https://www.dup.example/features"]);
   // Given on 8443: that port is the site's own, and another one is not.
-  const onPort = pick.rankLinks([{ href: "/pricing", text: "Pricing", where: "header" }, { href: "https://dup.example:9443/pricing", text: "Pricing", where: "header" }, { href: "https://dup.example/pricing", text: "Pricing", where: "footer" }], [], { home: "https://dup.example:8443/" });
+  const onPort = await pick.rankLinks([{ href: "/pricing", text: "Pricing", where: "header" }, { href: "https://dup.example:9443/pricing", text: "Pricing", where: "header" }, { href: "https://dup.example/pricing", text: "Pricing", where: "footer" }], [], { home: "https://dup.example:8443/" });
   assert.deepEqual(onPort.candidates.map((c) => c.url), ["https://dup.example:8443/pricing"]);
-  const upgraded = pick.rankLinks([{ href: "http://dup.example:9443/pricing", text: "Pricing", where: "header" }, { href: "https://dup.example:8080/pricing", text: "Pricing", where: "footer" }], [], { home: "http://dup.example:8080/" });
+  const upgraded = await pick.rankLinks([{ href: "http://dup.example:9443/pricing", text: "Pricing", where: "header" }, { href: "https://dup.example:8080/pricing", text: "Pricing", where: "footer" }], [], { home: "http://dup.example:8080/" });
   assert.deepEqual(upgraded.candidates.map((c) => c.url), ["https://dup.example:8080/pricing"]);
 });
 
@@ -151,7 +151,7 @@ test("of two links to one page, the one the run opens by its port is kept", () =
 // the page was left out though the menu linked it at the host given too.
 // Another form of the name is kept where the site gives no link at the
 // host given, and with the home page on another port, the link there.
-test("of two links to one page that the run opens by their port, the one at the home page's host is kept, ranked by the better", () => {
+test("of two links to one page that the run opens by their port, the one at the home page's host is kept, ranked by the better", async () => {
   const www = (host, scheme) => [
     { href: `${scheme}://www.${host}/features`, text: "Features", where: "header" },
     { href: `${scheme}://www.${host}/pricing`, text: "Pricing", where: "header" },
@@ -159,22 +159,22 @@ test("of two links to one page that the run opens by their port, the one at the 
     { href: "/pricing", text: "Pricing", where: "footer" },
   ];
   for (const [home, scheme] of [["http://site80.test/", "http"], ["https://site443.test/", "https"]]) {
-    const { candidates } = pick.rankLinks(www(new URL(home).hostname, scheme), [], { home });
+    const { candidates } = await pick.rankLinks(www(new URL(home).hostname, scheme), [], { home });
     assert.deepEqual(candidates.map((c) => [c.url, c.where, c.why]), [[`${home}pricing`, "header", 'menu link "Pricing"'], [`${home}features`, "header", 'menu link "Features"']], home);
   }
   // At the home page's www name, the www links are its own.
-  const atWww = pick.rankLinks([{ href: "https://site443.test/pricing", text: "Pricing", where: "header" }, { href: "/pricing", text: "Pricing", where: "footer" }], [], { home: "https://www.site443.test/" });
+  const atWww = await pick.rankLinks([{ href: "https://site443.test/pricing", text: "Pricing", where: "header" }, { href: "/pricing", text: "Pricing", where: "footer" }], [], { home: "https://www.site443.test/" });
   assert.deepEqual(atWww.candidates.map((c) => c.url), ["https://www.site443.test/pricing"]);
   // The host given with the one dot that can end a name is the host without
   // it, as the run's rule reads it.
-  const dotted = pick.rankLinks([{ href: "https://www.site443.test/pricing", text: "Pricing", where: "header" }, { href: "https://site443.test/pricing", text: "Pricing", where: "footer" }], [], { home: "https://site443.test./" });
+  const dotted = await pick.rankLinks([{ href: "https://www.site443.test/pricing", text: "Pricing", where: "header" }, { href: "https://site443.test/pricing", text: "Pricing", where: "footer" }], [], { home: "https://site443.test./" });
   assert.deepEqual(dotted.candidates.map((c) => c.url), ["https://site443.test/pricing"]);
   // No link at the host given: the www name's.
-  const only = pick.rankLinks([{ href: "https://www.site443.test/pricing", text: "Pricing", where: "header" }], [], { home: "https://site443.test/" });
+  const only = await pick.rankLinks([{ href: "https://www.site443.test/pricing", text: "Pricing", where: "header" }], [], { home: "https://site443.test/" });
   assert.deepEqual(only.candidates.map((c) => c.url), ["https://www.site443.test/pricing"]);
   // The home page on port 8443: its own link there, over the www name's on
   // 443, which the run opens too.
-  const onPort = pick.rankLinks([{ href: "https://www.site443.test/pricing", text: "Pricing", where: "header" }, { href: "/pricing", text: "Pricing", where: "footer" }], [], { home: "https://site443.test:8443/" });
+  const onPort = await pick.rankLinks([{ href: "https://www.site443.test/pricing", text: "Pricing", where: "header" }, { href: "/pricing", text: "Pricing", where: "footer" }], [], { home: "https://site443.test:8443/" });
   assert.deepEqual(onPort.candidates.map((c) => [c.url, c.where]), [["https://site443.test:8443/pricing", "header"]]);
 });
 
@@ -184,18 +184,18 @@ test("of two links to one page that the run opens by their port, the one at the 
 // https://dup.example:8443/ are the site's and on its port, where the tour
 // dropped them as another site's and kept the pages at the dotted host
 // alone; and the other way round.
-test("the host given is the site's with or without the one dot that can end a name, in links and in the sitemap", () => {
+test("the host given is the site's with or without the one dot that can end a name, in links and in the sitemap", async () => {
   const links = [
     { href: "/pricing", text: "Pricing", where: "header" },
     { href: "https://dup.example:8443/features", text: "Features", where: "header" },
   ];
-  const { candidates } = pick.rankLinks(links, ["https://dup.example:8443/customers"], { home: "https://dup.example.:8443/" });
+  const { candidates } = await pick.rankLinks(links, ["https://dup.example:8443/customers"], { home: "https://dup.example.:8443/" });
   assert.deepEqual(candidates.map((c) => c.url).sort(), ["https://dup.example.:8443/pricing", "https://dup.example:8443/customers", "https://dup.example:8443/features"]);
-  const plain = pick.rankLinks([{ href: "https://dup.example.:8443/features", text: "Features", where: "header" }], [], { home: "https://dup.example:8443/" });
+  const plain = await pick.rankLinks([{ href: "https://dup.example.:8443/features", text: "Features", where: "header" }], [], { home: "https://dup.example:8443/" });
   assert.deepEqual(plain.candidates.map((c) => c.url), ["https://dup.example.:8443/features"]);
   // Of a menu's link to another port and the footer's on the port given,
   // the footer's, which the run opens.
-  const two = pick.rankLinks([{ href: "https://dup.example:9443/pricing", text: "Pricing", where: "header" }, { href: "https://dup.example:8443/pricing", text: "Pricing", where: "footer" }], [], { home: "https://dup.example.:8443/" });
+  const two = await pick.rankLinks([{ href: "https://dup.example:9443/pricing", text: "Pricing", where: "header" }, { href: "https://dup.example:8443/pricing", text: "Pricing", where: "footer" }], [], { home: "https://dup.example.:8443/" });
   assert.deepEqual(two.candidates.map((c) => c.url), ["https://dup.example:8443/pricing"]);
   assert.equal(pick.siteOf("https://www.dup.example.:8443/"), "dup.example");
   assert.equal(pick.pageKey("https://dup.example.:8443/features"), pick.pageKey("https://dup.example:8443/features"));
@@ -220,17 +220,17 @@ test("a link of the site at another of this machine's own names on the home page
     { href: "http://localhost:5000/integrations", text: "Integrations", where: "header" },
   ];
   const sitemap = ["http://localhost:4000/how-it-works", "http://localhost:4000/features"];
-  const ranked = pick.rankLinks(links, sitemap, { home: "http://127.0.0.1:4000/" });
+  const ranked = await pick.rankLinks(links, sitemap, { home: "http://127.0.0.1:4000/" });
   assert.deepEqual(ranked.candidates.map((c) => c.url).sort(), ["http://127.0.0.1:4000/features", "http://127.0.0.1:4000/how-it-works", "http://127.0.0.1:4000/pricing"]);
   assert.deepEqual(ranked.skipped, [{ url: "http://127.0.0.1:4000/login", reason: "sign-in or sign-up page" }]);
   // A page taken already is not offered again from a link at that name.
-  const taken = pick.rankLinks(links, [], { home: "http://127.0.0.1:4000/", exclude: ["http://127.0.0.1:4000/pricing"] });
+  const taken = await pick.rankLinks(links, [], { home: "http://127.0.0.1:4000/", exclude: ["http://127.0.0.1:4000/pricing"] });
   assert.deepEqual(taken.candidates.map((c) => c.url), ["http://127.0.0.1:4000/features"]);
   // From [::1] and from localhost the same, each at its own host.
-  assert.deepEqual(pick.rankLinks([{ href: "http://localhost:4000/pricing", text: "Pricing", where: "header" }, { href: "http://127.0.0.1:4000/features", text: "Features", where: "header" }], [], { home: "http://[::1]:4000/" }).candidates.map((c) => c.url), ["http://[::1]:4000/pricing"]);
-  assert.deepEqual(pick.rankLinks([{ href: "http://127.0.0.1:4000/pricing", text: "Pricing", where: "header" }, { href: "http://[::1]:4000/features", text: "Features", where: "header" }], [], { home: "http://localhost:4000/" }).candidates.map((c) => c.url).sort(), ["http://localhost:4000/features", "http://localhost:4000/pricing"]);
+  assert.deepEqual((await pick.rankLinks([{ href: "http://localhost:4000/pricing", text: "Pricing", where: "header" }, { href: "http://127.0.0.1:4000/features", text: "Features", where: "header" }], [], { home: "http://[::1]:4000/" })).candidates.map((c) => c.url), ["http://[::1]:4000/pricing"]);
+  assert.deepEqual((await pick.rankLinks([{ href: "http://127.0.0.1:4000/pricing", text: "Pricing", where: "header" }, { href: "http://[::1]:4000/features", text: "Features", where: "header" }], [], { home: "http://localhost:4000/" })).candidates.map((c) => c.url).sort(), ["http://localhost:4000/features", "http://localhost:4000/pricing"]);
   // Over https on that port too, and not a name under localhost.
-  assert.deepEqual(pick.rankLinks([{ href: "https://localhost:4443/pricing", text: "Pricing", where: "header" }, { href: "https://app.localhost:4443/features", text: "Features", where: "header" }], [], { home: "https://127.0.0.1:4443/" }).candidates.map((c) => c.url), ["https://127.0.0.1:4443/pricing"]);
+  assert.deepEqual((await pick.rankLinks([{ href: "https://localhost:4443/pricing", text: "Pricing", where: "header" }, { href: "https://app.localhost:4443/features", text: "Features", where: "header" }], [], { home: "https://127.0.0.1:4443/" })).candidates.map((c) => c.url), ["https://127.0.0.1:4443/pricing"]);
   // A #route there is listed at the home page's host, and a page's version
   // in another language there is taken at it.
   assert.deepEqual((await pick.routeLinks([{ href: "http://localhost:4000/app/#/plants" }, { href: "http://[::1]:4000/app/#/light" }], { home: "http://127.0.0.1:4000/" })).map((r) => r.url), ["http://127.0.0.1:4000/app/#/plants"]);
@@ -239,7 +239,7 @@ test("a link of the site at another of this machine's own names on the home page
   // not read as a language, is left out as one, as from its own host.
   const languages = [{ href: "http://localhost:4000/pricing", text: "Pricing", where: "header" }, { href: "http://localhost:4000/deutsch", text: "Deutsch", where: "header" }, { href: "http://localhost:4000/features", text: "Features", where: "header" }];
   for (const home of ["http://127.0.0.1:4000/", "http://localhost:4000/"]) {
-    const other = pick.rankLinks(languages, [], { home, alternates: ["http://localhost:4000/deutsch"] });
+    const other = await pick.rankLinks(languages, [], { home, alternates: ["http://localhost:4000/deutsch"] });
     assert.deepEqual(other.candidates.map((c) => new URL(c.url).pathname).sort(), ["/features", "/pricing"], home);
     assert.deepEqual(other.skipped, [{ url: `${home}deutsch`, reason: "another language" }], home);
   }
@@ -301,7 +301,7 @@ test("ranking: a link to a #route offers its page to the tour; routeLinks lists 
   // Each link counts as one to its page, as it did before routes were
   // kept: /docs/ for the docs, /app/ for the app's views, which is left
   // out as an app's own page, and the home page for #/plants.
-  const { candidates, skipped } = pick.rankLinks(links, ["https://acme.com/#/from-the-sitemap"], { home: HOME, keys: ["acme.com/app#/today"] });
+  const { candidates, skipped } = await pick.rankLinks(links, ["https://acme.com/#/from-the-sitemap"], { home: HOME, keys: ["acme.com/app#/today"] });
   assert.deepEqual(candidates.map((c) => [new URL(c.url).pathname, c.kind, c.why]), [["/pricing", "pricing", 'menu link "Pricing"'], ["/docs/", "docs", 'menu link "Docs"']]);
   assert.deepEqual(skipped.map((s) => [s.url, s.reason]), [["https://acme.com/app/", "the app itself or an account page, which often needs a sign-in"], ["https://acme.com/login", "sign-in or sign-up page"]]);
   assert.deepEqual(
@@ -318,7 +318,7 @@ test("ranking: a link to a #route offers its page to the tour; routeLinks lists 
   // Links read on another page of the site come as the browser wrote them.
   assert.deepEqual((await pick.routeLinks([{ href: "https://acme.com/app/#/settings" }], { home: HOME })).map((s) => s.url), ["https://acme.com/app/#/settings"]);
   // A page with a route taken leaves its path to the tour.
-  const docs = pick.rankLinks([{ href: "/docs/", text: "Docs", where: "header" }], [], { home: HOME, exclude: ["https://acme.com/docs/#/intro"] });
+  const docs = await pick.rankLinks([{ href: "/docs/", text: "Docs", where: "header" }], [], { home: HOME, exclude: ["https://acme.com/docs/#/intro"] });
   assert.deepEqual(docs.candidates.map((c) => new URL(c.url).pathname), ["/docs/"]);
 });
 
@@ -388,6 +388,47 @@ test("routeLinks takes time in step with the links it reads, however many of the
   assert.equal(judged.length, 2, `the rule was asked ${judged.length} times`);
   assert.deepEqual(judged, ["https://acme.com:8443/app?k=0#/orders", "https://acme.com/app?k=1#/orders"]);
   assert.ok(ms < 10_000, `routeLinks took ${ms} ms of the main thread for 100,000 links`);
+});
+
+// The longest the main thread ran, in ms of its own CPU time, between two
+// turns of a 10 ms timer while body() ran, and what body() resolved to.
+async function longestHold(body) {
+  let last = cpuSince();
+  let longest = 0;
+  const held = () => {
+    const now = cpuSince();
+    longest = Math.max(longest, (now.user + now.system - last.user - last.system) / 1000);
+    last = now;
+  };
+  const timer = setInterval(held, 10);
+  try {
+    const result = await body();
+    held();
+    return { result, longest: Math.round(longest) };
+  } finally {
+    clearInterval(timer);
+  }
+}
+
+// A pass over a page's links gives the event loop a turn every 1,000 links,
+// so a signal to stop the run is heard in the middle of it: in one pass with
+// no turn, rankLinks() held the run's only thread more than 5 s over a
+// menu's 200,000 links to another port of the host given, and routeLinks()
+// about 2 s over 200,000 #route links, where a stop was heard only after
+// them, and makersmcp's supervisor, which kills a run a second after it asks
+// it to stop, left the browser's profile in the temp folder. Half a second
+// at most, as a stop then has the other half to end the browser: with each
+// candidate's depth read from an address made again for each comparison of
+// rankLinks()'s sort, as it was, the sort alone held it 808 ms.
+test("rankLinks and routeLinks give the event loop a turn every 1,000 links, however many links a page has", async () => {
+  const links = Array.from({ length: 200_000 }, (_, i) => ({ href: `http://127.0.0.1:5000/features/item-${i}`, text: `Item ${i}`, where: "header" }));
+  const ranked = await longestHold(() => pick.rankLinks(links, [], { home: "http://127.0.0.1:4000/" }));
+  assert.equal(ranked.result.candidates.length, 200_000);
+  assert.ok(ranked.longest < 500, `rankLinks held the main thread ${ranked.longest} ms of its CPU time with no turn of the event loop`);
+  const views = Array.from({ length: 200_000 }, (_, i) => ({ href: `http://127.0.0.1:4000/app/#/view-${i}` }));
+  const routes = await longestHold(() => pick.routeLinks(views, { home: "http://127.0.0.1:4000/" }));
+  assert.equal(routes.result.length, 200_000);
+  assert.ok(routes.longest < 500, `routeLinks held the main thread ${routes.longest} ms of its CPU time with no turn of the event loop`);
 });
 
 test("visit order: the best of each kind first, two product pages, then the rest", () => {
