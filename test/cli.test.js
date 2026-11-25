@@ -13,6 +13,7 @@ const { tempProblem, sh, pngOf, mostParsed } = require("./helpers");
 const { parse, summary } = require("../skills/easyscreenshotkit/scripts/easyscreenshotkit");
 const { parseSizes, normalizeUrl, fragmentNotes, prepareDir, openShots, slugOf, identity, movedOn, pagesAsked, leftOut, othersToTake, siteName, writeMarkdown } = require("../skills/easyscreenshotkit/scripts/lib/shots");
 const { sheetHtml } = require("../skills/easyscreenshotkit/scripts/lib/sheet");
+const { viewKey } = require("../skills/easyscreenshotkit/scripts/lib/pick");
 
 const CLI = path.resolve(__dirname, "../skills/easyscreenshotkit/scripts/easyscreenshotkit.js");
 
@@ -840,12 +841,29 @@ test("the pages a run could take besides are judged once for each scheme, host a
   assert.deepEqual(listed.result.leftover, [{ url: "http://127.0.0.1:4000/pricing", kind: "pricing", score: 110, why: 'menu link "Pricing"' }]);
   assert.equal(listed.result.refused.length, 40);
   assert.deepEqual(listed.result.refused[39], { url: "http://127.0.0.1:5000/features/item-39", reason: PORT });
+  // And every one it refused past them is counted, for the run's note.
+  assert.equal(listed.result.more, 199_960);
   assert.ok(listed.most < 20_000, `the listing parsed ${listed.most} addresses with no turn of the event loop`);
   const posts = Array.from({ length: 200_000 }, (_, i) => ({ url: `http://127.0.0.1:4000/blog/2024/post-${i}`, reason: "a single post" }));
   const left = await mostParsed(() => leftOut(listed.result.refused, [], posts));
   assert.equal(left.result.skipped.length, 40);
   assert.deepEqual(left.result.skipped[39], { url: "http://127.0.0.1:5000/features/item-39", reason: PORT });
   assert.ok(left.most < 20_000, `leftOut parsed ${left.most} addresses with no turn of the event loop`);
+});
+
+// A page left out already, as a --page the run's rule refused, is counted
+// once past the 40 listed, also where the menu links it after the 40 links
+// the rule refused that othersToTake() keeps: it was counted again there,
+// and the run's note said 6 more pages and links were left out where 5 were.
+test("a page left out already is counted once past the 40 listed, also where the menu links it after the 40 refused links kept", async () => {
+  const PORT = "on port 8443, not 80 or 443, and not on the scheme, host and port given";
+  const refuses = async (url) => (new URL(url).port === "8443" ? PORT : "");
+  const queue = Array.from({ length: 45 }, (_, i) => ({ url: `https://site.example:8443/${i === 44 ? "x" : `p${i}`}`, kind: "other", score: 30, why: `menu link "Page ${i}"`, where: "header" }));
+  const rejected = [{ url: "https://site.example:8443/x", reason: PORT }];
+  const others = await othersToTake(queue, refuses, new Set(rejected.map((skip) => viewKey(skip.url))));
+  assert.deepEqual([others.refused.length, others.more], [40, 4]);
+  const left = await leftOut([...rejected, ...others.refused], [], [], others.more);
+  assert.deepEqual([left.skipped.length, left.past], [40, 5]);
 });
 
 test("two runs that put their files in one folder at the same moment take turns, and the later one's replace the earlier one's whole", async () => {

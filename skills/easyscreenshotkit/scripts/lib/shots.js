@@ -1665,7 +1665,7 @@ async function takeShots(rawUrl, options = {}) {
         else keep(page, got);
       }
       // The pages it could take besides (see othersToTake()).
-      const others = await othersToTake(queue, (url) => chrome.guard.refuses(url));
+      const others = await othersToTake(queue, (url) => chrome.guard.refuses(url), new Set(rejected.map((skip) => leftKey(skip.url))));
       leftover = others.leftover;
       for (const skip of others.refused) rejected.push(skip);
       refusedMore = others.more;
@@ -1813,18 +1813,23 @@ function makePool(limit) {
 // held the run's only thread 1 s here in one pass.
 const LEFT_OUT = 40;
 
+// The key of a page left out, by which leftOut() lists each once: its view,
+// or its address as it is where that is no address.
+function leftKey(url) {
+  try {
+    return viewKey(url);
+  } catch {
+    return url;
+  }
+}
+
 async function leftOut(rejected, routes, links, more = 0) {
   const seen = new Set();
   const all = [];
   let read = 0;
   for (const skip of [...rejected, ...routes, ...links]) {
     if (++read % TURN === 0) await turn();
-    let key;
-    try {
-      key = viewKey(skip.url);
-    } catch {
-      key = skip.url;
-    }
+    const key = leftKey(skip.url);
     if (seen.has(key)) continue;
     seen.add(key);
     all.push(skip);
@@ -1848,10 +1853,12 @@ async function leftOut(rejected, routes, links, more = 0) {
 // links (see time.js turn()). With the rule asked for each link and every
 // link it refused kept, a menu's 200,000 links to another port of the host
 // given held the run's only thread 3.5 s here and 1 s more in leftOut(),
-// where a stop was heard only after them. Resolves to { leftover, refused,
-// more }, the ones it could take, the ones left out, each with its reason,
-// and how many more it left out.
-async function othersToTake(queue, refuses) {
+// where a stop was heard only after them. One past those LEFT_OUT that is
+// left out already, of the keys in left (see leftKey()), is not counted
+// again: a --page the rule refused that the menu links too was counted
+// twice. Resolves to { leftover, refused, more }, the ones it could take,
+// the ones left out, each with its reason, and how many more it left out.
+async function othersToTake(queue, refuses, left = new Set()) {
   const leftover = [];
   const refused = [];
   let more = 0;
@@ -1866,7 +1873,7 @@ async function othersToTake(queue, refuses) {
     if (!barred) leftover.push({ url, kind, score, why });
     else if (where === "sitemap") continue;
     else if (refused.length < LEFT_OUT) refused.push({ url, reason: barred });
-    else more++;
+    else if (!left.has(leftKey(url))) more++;
   }
   return { leftover, refused, more };
 }

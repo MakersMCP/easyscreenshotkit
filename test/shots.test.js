@@ -4725,6 +4725,45 @@ test("the pages a run could take besides are ones its rule opens: a link it refu
   }
 }));
 
+// A run that leaves out more than the 40 pages and links it lists counts
+// every one past them in a note, each once: the links of its menu that the
+// run's rule refuses past the 40 it keeps of them, and a --page the rule
+// refused once, though the menu links it too, after those 40. With the
+// menu's links past the 40 not handed to the note, a menu that linked 100
+// pages on another port of the host given had 40 listed and no word of
+// the rest, and with the --page counted again the note said 61 where 60
+// were left out. The other port is a server that notes what it is asked.
+test("a run counts once each page and link it leaves out past the 40 listed: a menu's links on another port past the 40 kept, and a --page the menu links too", { skip: noBrowser, timeout: 200_000 }, async () => {
+  const seen = [];
+  const other = await serve((req, res) => {
+    seen.push(req.url);
+    res.writeHead(404).end();
+  });
+  const away = (n) => `http://127.0.0.1:${new URL(other.origin).port}/p${n}`;
+  const menu = Array.from({ length: 100 }, (_, i) => `<a href="${away(i + 1)}">Page ${i + 1}</a>`).join(" ");
+  const html = { "Content-Type": "text/html; charset=utf-8" };
+  const { server, origin } = await serve((req, res) => {
+    if (req.url === "/") return res.writeHead(200, html).end(page("Acme | Tools for teams", `<header><nav><a href="/pricing">Pricing</a> <a href="/features">Features</a> ${menu}</nav></header><h1>Acme</h1><div style="height:1400px"></div>`));
+    if (req.url === "/pricing") return res.writeHead(200, html).end(page("Pricing | Acme", "<h1>Pricing</h1><p>The plans of Acme.</p><div style=\"height:1400px\"></div>"));
+    if (req.url === "/features") return res.writeHead(200, html).end(page("Features | Acme", "<h1>Features</h1><p>What Acme does.</p>"));
+    res.writeHead(404).end("not found");
+  });
+  const root = tempDir();
+  const NOT_GIVEN = "not on the public internet, and not on the host and port given";
+  try {
+    const { manifest } = await takeShots(`${origin}/`, { dir: path.join(root, "shots"), pages: 2, extra: [away(100)], sizes: "desktop", timeLimit: 120_000 });
+    assert.deepEqual(manifest.pages.map((p) => p.slug), ["home", "pricing"]);
+    assert.ok(manifest.notes.includes(`${away(100)} was asked for but not taken: ${NOT_GIVEN}.`), manifest.notes.join("\n"));
+    assert.deepEqual(manifest.skipped.map((skip) => [skip.url, skip.reason]), [away(100), ...Array.from({ length: 39 }, (_, i) => away(i + 1))].map((url) => [url, NOT_GIVEN]));
+    assert.ok(manifest.notes.includes("60 more pages and links were left out past the 40 listed."), manifest.notes.join("\n"));
+    assert.deepEqual(seen, []);
+  } finally {
+    server.close();
+    other.server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // The #route links a run lists for --page, which the tour does not follow,
 // are judged by the run's rule first, in the screenshots and in a demo's
 // tour: a view on another port of the site's own host on the public
