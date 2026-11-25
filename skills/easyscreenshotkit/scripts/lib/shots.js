@@ -30,7 +30,7 @@ const { pngFileIsWhole, pngSize, tagPng } = require("./png");
 const { PWA_SHOTS, LOOKED_AT, planPwa, checkManifest } = require("./pwa");
 const { renderSheet } = require("./sheet");
 const { begin, checkDir, realFolder } = require("./outdir");
-const { setTimeLimit, timeLeft, sleep } = require("./time");
+const { setTimeLimit, timeLeft, sleep, turn, TURN } = require("./time");
 const { guardFor, hostRefusals, unresolvedError, refusedError, NOT_WEB } = require("./address");
 const { hideRefusal, shownSelector } = require("./steps");
 const programs = require("./programs");
@@ -1663,20 +1663,10 @@ async function takeShots(rawUrl, options = {}) {
         if (got.rejected) rejected.push({ url: candidate.url, reason: got.rejected });
         else keep(page, got);
       }
-      // The pages it could take besides, listed for --page, are ones the
-      // run's rule opens: each is judged first, and one it refuses, as a
-      // menu's link to another port of the site's own host or, from a site
-      // on this machine, to another program of it, is listed with the pages
-      // left out, with the reason, as when the tour opens one; an address
-      // only the sitemap names is not, as a link left out there is not
-      // (see rankLinks()). Listed with the pages it could take, such a link
-      // had an agent run again with it as --page, which the run refused.
-      for (const { url, kind, score, why, where } of queue) {
-        if (leftover.length >= 20) break;
-        const barred = await chrome.guard.refuses(url);
-        if (!barred) leftover.push({ url, kind, score, why });
-        else if (where !== "sitemap") rejected.push({ url, reason: barred });
-      }
+      // The pages it could take besides (see othersToTake()).
+      const others = await othersToTake(queue, (url) => chrome.guard.refuses(url));
+      leftover = others.leftover;
+      for (const skip of others.refused) rejected.push(skip);
       // The views of an app that the home page, the address given and each
       // --page link to by #route, and those the sitemap lists: the tour
       // does not follow them, so they are listed for --page, each one the
@@ -1701,7 +1691,7 @@ async function takeShots(rawUrl, options = {}) {
     for (const page of kept) page.shots.sort((a, b) => themes.indexOf(a.theme) - themes.indexOf(b.theme) || order.indexOf(a.size) - order.indexOf(b.size));
     if (!kept.some((page) => page.shots.length)) throw new Error("No page could be captured.");
     if (kept.some((page) => page.notes.some((note) => /time ran out/.test(note)))) notes.push("Time ran out before every size was taken; give more with --timeout.");
-    const left = leftOut(rejected, routes, skipped);
+    const left = await leftOut(rejected, routes, skipped);
     if (left.routesPast) notes.push(`${left.routesPast === 1 ? "1 more #route link was" : `${left.routesPast} more #route links were`} left out past the ${LEFT_OUT} listed; give one with --page to take it.`);
     for (const selector of ctx.unread) notes.push(unreadNote(selector));
     if (themes.includes("dark")) notes.push("Dark captures use the page's own dark theme, through prefers-color-scheme. A site without one looks the same in both.");
@@ -1811,12 +1801,16 @@ function makePool(limit) {
 // opened and left out first, then the #route links the tour does not
 // follow, which --page can take, then the links left out by their address
 // or their words. LEFT_OUT at most; routesPast: the #route links past it.
+// The event loop gets a turn every TURN of them (see time.js turn()): a
+// page's 200,000 links held the run's only thread 1 s here in one pass.
 const LEFT_OUT = 40;
 
-function leftOut(rejected, routes, links) {
+async function leftOut(rejected, routes, links) {
   const seen = new Set();
   const all = [];
+  let read = 0;
   for (const skip of [...rejected, ...routes, ...links]) {
+    if (++read % TURN === 0) await turn();
     let key;
     try {
       key = viewKey(skip.url);
@@ -1830,4 +1824,39 @@ function leftOut(rejected, routes, links) {
   return { skipped: all.slice(0, LEFT_OUT), routesPast: all.slice(LEFT_OUT).filter((skip) => skip.reason === ROUTE_LINK).length };
 }
 
-module.exports = { takeShots, watchFailedMoves, unreadNote, schemeHint, parseSizes, addPwaShots, normalizeUrl, fragmentNotes, prepareDir, openShots, slugOf, identity, movedOn, pagesAsked, waitForView, leftOut, siteName, readInfo, readLinks, rejectAtOnce, rejectReason, notOpened, alternateNote, barredNote, barredNotes, writeMarkdown, DEVICES, MAX_HEIGHT };
+// The pages the run could take besides, those it did not open of queue,
+// the candidates in the order the tour takes them, listed for --page: the
+// first 20 that the run's rule opens, refuses(url) resolving to "" for one
+// it opens and else to why not (see address.js guardFor()). One it refuses,
+// as a menu's link to another port of the site's own host or, from a site
+// on this machine, to another program of it, is listed with the pages left
+// out, with the reason, as when the tour opens one; an address only the
+// sitemap names is not, as a link left out there is not (see rankLinks()).
+// Listed with the pages it could take, such a link had an agent run again
+// with it as --page, which the run refused. The rule, which reads an
+// address's scheme, host and port alone, is asked once for each of them,
+// as routeLinks() asks it, and of the links it refuses, LEFT_OUT are kept,
+// all that leftOut() lists of them; the event loop gets a turn every TURN
+// links (see time.js turn()). With the rule asked for each link and every
+// link it refused kept, a menu's 200,000 links to another port of the host
+// given held the run's only thread 3.5 s here and 1 s more in leftOut(),
+// where a stop was heard only after them. Resolves to { leftover, refused },
+// the ones it could take and the ones left out, each with its reason.
+async function othersToTake(queue, refuses) {
+  const leftover = [];
+  const refused = [];
+  const judged = new Map();
+  let read = 0;
+  for (const { url, kind, score, why, where } of queue) {
+    if (leftover.length >= 20) break;
+    if (++read % TURN === 0) await turn();
+    const origin = new URL(url).origin;
+    if (!judged.has(origin)) judged.set(origin, refuses(url));
+    const barred = await judged.get(origin);
+    if (!barred) leftover.push({ url, kind, score, why });
+    else if (where !== "sitemap" && refused.length < LEFT_OUT) refused.push({ url, reason: barred });
+  }
+  return { leftover, refused };
+}
+
+module.exports = { takeShots, othersToTake, watchFailedMoves, unreadNote, schemeHint, parseSizes, addPwaShots, normalizeUrl, fragmentNotes, prepareDir, openShots, slugOf, identity, movedOn, pagesAsked, waitForView, leftOut, siteName, readInfo, readLinks, rejectAtOnce, rejectReason, notOpened, alternateNote, barredNote, barredNotes, writeMarkdown, DEVICES, MAX_HEIGHT };

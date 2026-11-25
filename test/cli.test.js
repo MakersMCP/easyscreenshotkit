@@ -9,9 +9,9 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const test = require("node:test");
-const { tempProblem, sh, pngOf } = require("./helpers");
+const { tempProblem, sh, pngOf, longestHold } = require("./helpers");
 const { parse, summary } = require("../skills/easyscreenshotkit/scripts/easyscreenshotkit");
-const { parseSizes, normalizeUrl, fragmentNotes, prepareDir, openShots, slugOf, identity, movedOn, pagesAsked, leftOut, siteName, writeMarkdown } = require("../skills/easyscreenshotkit/scripts/lib/shots");
+const { parseSizes, normalizeUrl, fragmentNotes, prepareDir, openShots, slugOf, identity, movedOn, pagesAsked, leftOut, othersToTake, siteName, writeMarkdown } = require("../skills/easyscreenshotkit/scripts/lib/shots");
 const { sheetHtml } = require("../skills/easyscreenshotkit/scripts/lib/sheet");
 
 const CLI = path.resolve(__dirname, "../skills/easyscreenshotkit/scripts/easyscreenshotkit.js");
@@ -781,12 +781,12 @@ test("the notes on what a page tried to open: its own first, then its windows, t
   assert.equal(notes.length, 12);
 });
 
-test("the pages left out: those opened first, then the #route links, then the other links, 40 at most, with the #route links past them counted", () => {
+test("the pages left out: those opened first, then the #route links, then the other links, 40 at most, with the #route links past them counted", async () => {
   const ROUTE = "a #route, which the tour does not follow: give it with --page";
   const rejected = [{ url: "https://acme.com/start", reason: "redirected to a sign-in page" }, { url: "https://acme.com/app/#/private", reason: "the page answered 404" }];
   const routes = ["today", "plants", "private"].map((view) => ({ url: `https://acme.com/app/#/${view}`, reason: ROUTE }));
   const posts = Array.from({ length: 45 }, (_, i) => ({ url: `https://acme.com/blog/2025/post-number-${i + 1}`, reason: "a single post" }));
-  const left = leftOut(rejected, routes, posts);
+  const left = await leftOut(rejected, routes, posts);
   assert.equal(left.skipped.length, 40);
   assert.deepEqual(
     left.skipped.slice(0, 5).map((s) => [s.url.slice(16), s.reason]),
@@ -801,7 +801,45 @@ test("the pages left out: those opened first, then the #route links, then the ot
   assert.equal(left.routesPast, 0);
   // More #route links than the list holds: counted, for a note.
   const many = Array.from({ length: 50 }, (_, i) => ({ url: `https://acme.com/app/#/item/${i}`, reason: ROUTE }));
-  assert.deepEqual([leftOut(rejected, many, posts).skipped.length, leftOut(rejected, many, posts).routesPast], [40, 12]);
+  const past = await leftOut(rejected, many, posts);
+  assert.deepEqual([past.skipped.length, past.routesPast], [40, 12]);
+});
+
+// The pages a run could take besides are listed with the run's rule asked
+// once for each scheme, host and port, which is all it reads of an address,
+// and of the links it refuses, the 40 that leftOut() lists are kept; that
+// listing and leftOut() give the event loop a turn every 1,000 links. With
+// the rule asked for each link and each link it refused kept, a menu's
+// 200,000 links to another port of the host given held the run's only
+// thread 3.5 s in the listing and 1 s more in leftOut(), where a stop was
+// heard only after them, and makersmcp's supervisor, which kills a run a
+// second after it asks it to stop, left the browser's profile in the temp
+// folder. Judged by the main thread's own CPU time between two turns of a
+// 10 ms timer: with no turn, the listing held it 226 ms and leftOut() 686 ms
+// over the links here.
+test("the pages a run could take besides are judged once for each scheme, host and port, and that listing and the pages left out give the event loop a turn every 1,000 links", async () => {
+  const PORT = "not on the public internet, and not on the host and port given";
+  const asked = [];
+  const refuses = async (url) => {
+    asked.push(url);
+    return new URL(url).port === "5000" ? PORT : "";
+  };
+  const queue = Array.from({ length: 200_000 }, (_, i) => ({ url: `http://127.0.0.1:5000/features/item-${i}`, kind: "product", score: 100, why: `menu link "Item ${i}"`, where: "header" }));
+  queue.push({ url: "http://127.0.0.1:4000/pricing", kind: "pricing", score: 110, why: 'menu link "Pricing"', where: "header" });
+  const listed = await longestHold(() => othersToTake(queue, refuses));
+  // The counts first: told apart from the two expected, a list of 200,000
+  // takes the assertion's diff more memory than a machine has.
+  assert.equal(asked.length, 2, `the rule was asked ${asked.length} times`);
+  assert.deepEqual(asked, ["http://127.0.0.1:5000/features/item-0", "http://127.0.0.1:4000/pricing"]);
+  assert.deepEqual(listed.result.leftover, [{ url: "http://127.0.0.1:4000/pricing", kind: "pricing", score: 110, why: 'menu link "Pricing"' }]);
+  assert.equal(listed.result.refused.length, 40);
+  assert.deepEqual(listed.result.refused[39], { url: "http://127.0.0.1:5000/features/item-39", reason: PORT });
+  assert.ok(listed.longest < 100, `the listing held the main thread ${listed.longest} ms of its CPU time with no turn of the event loop`);
+  const posts = Array.from({ length: 200_000 }, (_, i) => ({ url: `http://127.0.0.1:4000/blog/2024/post-${i}`, reason: "a single post" }));
+  const left = await longestHold(() => leftOut(listed.result.refused, [], posts));
+  assert.equal(left.result.skipped.length, 40);
+  assert.deepEqual(left.result.skipped[39], { url: "http://127.0.0.1:5000/features/item-39", reason: PORT });
+  assert.ok(left.longest < 100, `leftOut held the main thread ${left.longest} ms of its CPU time with no turn of the event loop`);
 });
 
 test("two runs that put their files in one folder at the same moment take turns, and the later one's replace the earlier one's whole", async () => {

@@ -7,7 +7,7 @@ const assert = require("node:assert/strict");
 const zlib = require("node:zlib");
 const test = require("node:test");
 const pick = require("../skills/easyscreenshotkit/scripts/lib/pick");
-const { serve, withRebinding } = require("./helpers");
+const { serve, withRebinding, longestHold } = require("./helpers");
 
 const HOME = "https://acme.com/";
 const page = (path) => new URL(path, HOME);
@@ -389,26 +389,6 @@ test("routeLinks takes time in step with the links it reads, however many of the
   assert.deepEqual(judged, ["https://acme.com:8443/app?k=0#/orders", "https://acme.com/app?k=1#/orders"]);
   assert.ok(ms < 10_000, `routeLinks took ${ms} ms of the main thread for 100,000 links`);
 });
-
-// The longest the main thread ran, in ms of its own CPU time, between two
-// turns of a 10 ms timer while body() ran, and what body() resolved to.
-async function longestHold(body) {
-  let last = cpuSince();
-  let longest = 0;
-  const held = () => {
-    const now = cpuSince();
-    longest = Math.max(longest, (now.user + now.system - last.user - last.system) / 1000);
-    last = now;
-  };
-  const timer = setInterval(held, 10);
-  try {
-    const result = await body();
-    held();
-    return { result, longest: Math.round(longest) };
-  } finally {
-    clearInterval(timer);
-  }
-}
 
 // A pass over a page's links gives the event loop a turn every 1,000 links,
 // so a signal to stop the run is heard in the middle of it: in one pass with

@@ -431,4 +431,27 @@ async function withRebinding(names, body) {
   }
 }
 
-module.exports = { readPng, pngOf, serve, near, descendants, relayBrowser, crashingBrowser, runUntilOver, tempProblem, sh, reachAt, withRebinding };
+// The longest the main thread ran, in ms of its own CPU time, between two
+// turns of a 10 ms timer while body() ran, and what body() resolved to:
+// judged by the thread's CPU time, as a busy machine makes the clock's
+// longer, or the process's where Node.js has no count of a thread's.
+async function longestHold(body) {
+  const cpu = () => (process.threadCpuUsage ? process.threadCpuUsage() : process.cpuUsage());
+  let last = cpu();
+  let longest = 0;
+  const held = () => {
+    const now = cpu();
+    longest = Math.max(longest, (now.user + now.system - last.user - last.system) / 1000);
+    last = now;
+  };
+  const timer = setInterval(held, 10);
+  try {
+    const result = await body();
+    held();
+    return { result, longest: Math.round(longest) };
+  } finally {
+    clearInterval(timer);
+  }
+}
+
+module.exports = { readPng, pngOf, serve, near, descendants, relayBrowser, crashingBrowser, runUntilOver, tempProblem, sh, reachAt, withRebinding, longestHold };
