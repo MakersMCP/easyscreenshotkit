@@ -38,6 +38,10 @@ const NAV_HOLD = 0.3; // the old page stays up after the click that leaves it
 const DWELL = 0.12; // the pointer rests on its target before it presses
 const AFTER = { click: 0.6, key: 0.5, type: 0.4, hover: 0.8 };
 const LIVE_WAIT = 1.2; // waiting on camera for something to appear, at most
+// A page stays on camera this long at least before a visit leaves it, as a
+// tour waits after each page it opens and the page shown last stays up
+// (see demo.js LAST_PAGE).
+const SHOWN = 1.1;
 const BACK = 0.25; // the crossfade back to the page after a wait off camera
 // A page is walked this many screens down before it is recorded, so lazy
 // pictures and scroll-revealed parts are there when the demo gets to them.
@@ -698,9 +702,15 @@ class Recorder {
   }
 
   // ─── steps ───────────────────────────────────────────────────────────────
-  // Opens an address off camera and starts the part that shows it.
+  // Opens an address off camera and starts the part that shows it. The page
+  // on camera stays up SHOWN seconds of the video from when it came first
+  // (see linger()): a visit right after the visit or the click that opened
+  // a page took it off camera at once, so it was in the video for a
+  // millisecond or not at all: a steps file of three visits made a video of
+  // 1.1 s in which the second page never showed.
   async visit(url, { fade = true } = {}) {
     const first = this.windows.length === 0;
+    if (!first) await this.linger(SHOWN);
     this.stopLive();
     await this.pace(1);
     this.quiet = true;

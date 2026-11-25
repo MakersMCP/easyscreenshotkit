@@ -2587,6 +2587,47 @@ test("a demo checks the tab after a click on a tel: link, and not after one on a
   }
 });
 
+// A page stays on camera 1.1 s at least before a visit leaves it, as a tour
+// waits after each page it opens: a visit right after the visit or the click
+// that opened a page took it off camera at once, so it was in the video for
+// a millisecond or not at all, and steps.json listed it or not by chance: a
+// steps file of three visits made a video of 1.1 s in which the second page
+// never showed.
+test("a demo shows each page of visits one after the other, and a page a click opened before the visit after it", { skip: missing, timeout: 500_000 }, async () => {
+  const colors = { "/alpha": GREEN, "/beta": PURPLE, "/gamma": ORANGE, "/delta": TEAL };
+  const fill = ([r, g, b]) => `body{background:rgb(${r},${g},${b})}`;
+  const { server, origin } = await serve((req, res) => {
+    const color = colors[req.url];
+    if (!color) return res.writeHead(404).end("not found");
+    const name = req.url.slice(1);
+    const body = req.url === "/alpha" ? `<h1>Alpha</h1><p style="font-size:32px;padding:0 40px"><a href="/beta">Beta</a></p>` : `<h1>${name}</h1>`;
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(page(`${name} | Acme`, `${body}<div style="height:1400px"></div>`, fill(color)));
+  });
+  const root = tempDir();
+  try {
+    for (const [name, steps, paths] of [
+      ["visits", "steps:\n  - visit: /alpha\n  - visit: /gamma\n  - visit: /delta\n", ["/alpha", "/gamma", "/delta"]],
+      ["click", 'steps:\n  - visit: /alpha\n  - click: "text=Beta"\n    zoom: false\n  - visit: /gamma\n  - visit: /delta\n', ["/alpha", "/beta", "/gamma", "/delta"]],
+    ]) {
+      const file = path.join(root, `${name}.yaml`);
+      fs.writeFileSync(file, steps);
+      const dir = path.join(root, name);
+      const { manifest } = await makeDemo(origin, { dir, steps: file, gif: false, timeLimit: 280_000 });
+      assert.deepEqual(manifest.pages.map((p) => new URL(p.url).pathname), paths, name);
+      for (const shown of manifest.pages.slice(name === "click" ? 1 : 0)) assert.ok(shown.end - shown.start >= 1, `${name}: ${shown.url} from ${shown.start} to ${shown.end}`);
+      // Each page is in the video, in its own color, halfway through its time.
+      for (const shown of manifest.pages) {
+        const frame = await frameOf(path.join(dir, "demo.mp4"), (shown.start + shown.end) / 2);
+        const color = colors[new URL(shown.url).pathname];
+        assert.ok(near(unzoomed(frame, 800, 600), color), `${name}: ${shown.url} at ${(shown.start + shown.end) / 2}: ${unzoomed(frame, 800, 600)}`);
+      }
+    }
+  } finally {
+    server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // An input event on its way as the page moves on can go unanswered: Chrome
 // drops such an event with the page at times. The demo waited 30 s for the
 // answer, and its step failed in the words "Input.dispatchMouseEvent timed
