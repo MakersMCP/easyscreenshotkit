@@ -3302,6 +3302,89 @@ test("a browser's profile goes once a look finds no process naming it, while a h
   }
 });
 
+// A tracer, in Python: it starts a stand-in that names the profile in
+// HELD_PROFILE, traced, and when the stand-in is killed holds it at its exit
+// for the milliseconds given, as the kernel lets a tracer do, then writes
+// into the report whether the profile was still there and lets it end. It
+// prints "ready" once the stand-in runs. The profile is not on its own
+// command line, so the run's looks do not kill it.
+const HELD = `
+import ctypes, os, signal, sys, time
+hold, report = int(sys.argv[1]), sys.argv[2]
+profile = os.environ["HELD_PROFILE"]
+libc = ctypes.CDLL(None, use_errno=True)
+libc.ptrace.argtypes = [ctypes.c_long, ctypes.c_long, ctypes.c_void_p, ctypes.c_void_p]
+TRACEME, CONT, SETOPTIONS, TRACEEXIT, EVENT_EXIT = 0, 7, 0x4200, 0x40, 6
+pid = os.fork()
+if pid == 0:
+    if libc.ptrace(TRACEME, 0, None, None) != 0:
+        os._exit(3)
+    os.kill(os.getpid(), signal.SIGSTOP)
+    os.execvp("sh", ["sh", "-c", "sleep 60; :", "--user-data-dir=" + profile])
+_, status = os.waitpid(pid, 0)
+if not os.WIFSTOPPED(status):
+    sys.exit(3)
+libc.ptrace(SETOPTIONS, pid, None, ctypes.c_void_p(TRACEEXIT))
+libc.ptrace(CONT, pid, None, None)
+_, status = os.waitpid(pid, 0)
+libc.ptrace(CONT, pid, None, None)
+print("ready", flush=True)
+_, status = os.waitpid(pid, 0)
+if not (os.WIFSTOPPED(status) and status >> 16 == EVENT_EXIT):
+    open(report, "w").write("not held")
+    sys.exit(0)
+time.sleep(hold / 1000)
+open(report, "w").write("there" if os.path.exists(profile) else "gone")
+libc.ptrace(CONT, pid, None, None)
+os.waitpid(pid, 0)
+`;
+
+// The processes of a browser that are killed can take a moment to end, and
+// one in the middle of writing into the profile goes on until it has: the
+// profile goes only once every process killed has ended. Here a stand-in
+// that names the profile is traced, and as it is killed its tracer holds it
+// at its exit 300 ms, then looks whether the profile is still there: with
+// the looks ended at the first that found no process naming the profile,
+// the profile had gone while the process killed had not ended.
+test("a browser's profile goes once the processes killed have ended, one held at its exit 300 ms too", { skip: process.platform !== "linux" && "the processes are read from /proc", timeout: 60_000 }, async (t) => {
+  const root = tempDir();
+  const profile = fs.mkdtempSync(path.join(root, "easyscreenshotkit-chrome-"));
+  const script = path.join(root, "held.py");
+  const report = path.join(root, "report");
+  fs.writeFileSync(script, HELD);
+  const tracer = spawn("python3", ["-I", script, "300", report], { env: { ...process.env, HELD_PROFILE: profile }, stdio: ["ignore", "pipe", "ignore"], detached: true });
+  const ended = new Promise((resolve) => {
+    tracer.on("exit", resolve);
+    tracer.on("error", resolve);
+  });
+  try {
+    const ready = await new Promise((resolve) => {
+      let out = "";
+      tracer.stdout.on("data", (d) => {
+        out += d;
+        if (out.includes("ready")) resolve(true);
+      });
+      ended.then(() => resolve(false));
+    });
+    if (!ready) return t.skip("no python3 here that can trace a process it starts");
+    removeProfiles([{ profile, lock: "", fetching: null, processes: [] }]);
+    assert.equal(fs.existsSync(profile), false, profile);
+    await ended;
+    const said = fs.readFileSync(report, "utf8");
+    if (said === "not held") return t.skip("this system does not hold a process killed with SIGKILL at its exit for its tracer");
+    assert.equal(said, "there", "the profile went while a process killed had not ended");
+  } finally {
+    // What a failed check leaves running: the tracer, the stand-in and its
+    // sleep.
+    try {
+      process.kill(-tracer.pid, "SIGKILL");
+    } catch {
+      // Ended already.
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // A supervisor that stops a run with SIGTERM, as makersmcp's does, kills it
 // outright a second later, and a kill then leaves the browser's profile in
 // the temp folder: a stop waits for the browser's processes until half a
