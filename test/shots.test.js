@@ -4832,6 +4832,54 @@ test("the #route links a run lists for --page are ones its rule opens: one it re
   }
 }));
 
+// A demo's note names a #route link by its path where it is on the scheme,
+// host and port of the home page as the tour opened it, which the path
+// given with --page reaches the same way. A site given at an alias whose
+// pages all move on to another site, as alias.example to main.example,
+// has its views named so, where --page refuses their whole address at
+// main.example as not a page of alias.example; named against the address
+// given, they were named by their whole address.
+test("a demo's tour of a site whose home page moves on to another site names its #route links by their path", { skip: noBrowser, timeout: 300_000 }, () => withNames({ "alias.example": "93.184.215.15", "main.example": "93.184.215.14" }, async () => {
+  const html = { "Content-Type": "text/html; charset=utf-8" };
+  const { server, origin } = await serve((req, res) => {
+    const host = String(req.headers.host || "").replace(/:\d+$/, "");
+    if (host === "alias.example") return res.writeHead(301, { Location: `http://main.example${req.url}` }).end();
+    if (req.url === "/") return res.writeHead(200, html).end(page("Acme | Tools for teams", `<header><nav><a href="/pricing">Pricing</a></nav></header><h1>Acme</h1><div style="height:1400px"></div><footer><a href="/garden/#/light">Light</a></footer>`));
+    if (req.url === "/pricing") return res.writeHead(200, html).end(page("Pricing | Acme", "<h1>Pricing</h1><p>The plans of Acme.</p><div style=\"height:1400px\"></div>"));
+    res.writeHead(404).end("not found");
+  });
+  const port = new URL(origin).port;
+  const http = require("node:http");
+  const get = http.get;
+  // The kit's own requests for the two names go to the site's server.
+  http.get = (url, options, done) => {
+    const where = new URL(String(url));
+    if (where.hostname !== "alias.example" && where.hostname !== "main.example") return get(url, options, done);
+    const { lookup, ...rest } = options || {};
+    return get(`http://127.0.0.1:${port}${where.pathname}${where.search}`, { ...rest, headers: { ...((rest && rest.headers) || {}), Host: where.hostname } }, done);
+  };
+  const stand = reachAt({ "93.184.215.14:80": `127.0.0.1:${port}`, "93.184.215.15:80": `127.0.0.1:${port}` });
+  // A tour looks for pages of its own while 4 minutes of the run are left.
+  setTimeLimit(400_000);
+  let chrome = null;
+  try {
+    chrome = await launch({ guard: await guardFor("http://alias.example/") });
+    const tour = await pickPages(chrome, "http://alias.example/", { pages: 2 });
+    assert.deepEqual(tour.pages.map((p) => p.url), ["http://main.example/", "http://main.example/pricing"]);
+    assert.equal(tour.home, "http://main.example/");
+    assert.deepEqual(tour.routes.map((route) => route.url), ["http://main.example/garden/#/light"]);
+    const notes = tourNotes(tour);
+    assert.ok(notes.includes("Left out /garden/#/light: a #route, which the tour does not follow: give it with --page."), notes.join("\n"));
+    assert.ok(!notes.some((note) => note.includes("main.example/garden")), notes.join("\n"));
+  } finally {
+    if (chrome) await chrome.close();
+    setTimeLimit(120_000);
+    http.get = get;
+    stand.restore();
+    server.close();
+  }
+}));
+
 // A page can link any number of addresses, and each list of them is added to
 // another one by one: spread into the arguments of push(), which Node.js
 // holds to its stack, a home page's 140,000 #route links to views of an app
