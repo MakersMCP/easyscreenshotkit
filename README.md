@@ -106,7 +106,7 @@ npx easyscreenshotkit@latest demo --steps demo.yaml
 
 | Step | What it does |
 | --- | --- |
-| `visit: /pricing` | opens a page of the site, or another web address on the public internet, on port 80 or 443 (see [Use it from the command line](#use-it-from-the-command-line)); `visit: /app/#/plants` opens that view of a web app |
+| `visit: /pricing` | opens a path, read from the page the demo is on as a link there is read, or another web address on the public internet, on port 80 or 443 (see [Use it from the command line](#use-it-from-the-command-line)); after a step that leaves the site, give its pages by their whole address; `visit: /app/#/plants` opens that view of a web app |
 | `scroll: 800` | scrolls down 800 px, or up with a negative number; also `top`, `bottom`, a target, or `{ to: <target>, duration: 2 }` |
 | `click: <target>` | moves the pointer there and clicks, zoomed in; add `zoom: false` or `zoom: 2` to the step to change that |
 | `type: <text>` | types into the field in focus, or clicks `into: <target>` first |
