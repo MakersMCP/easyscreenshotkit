@@ -56,7 +56,7 @@ A view with a request still out counts as not ready too when it looks empty: whe
 
 Its files are named after the view: `02-app-plants-desktop.png` for `/app/#/plants`. A file name keeps the letters a to z and the digits. An accented letter loses its accent, so `#/café` gives `app-cafe`, and a route with letters a file name cannot keep that way, such as Cyrillic or ß, gets `view-` and six characters of its own, the same on every run: `app-view-805ad3` for `#/растения`, `app-plant-view-b9f99e` for `#/plant/Фикус`.
 
-The tour follows paths only: a link to `/docs/#/install` offers it `/docs/`. The `#/` and `#!` links on the home page, on the address given and on each `--page`, and the `#/` and `#!` addresses the site's sitemap lists, are listed with the pages it left out, so you can give them with `--page`.
+The tour follows paths only: a link to `/docs/#/install` offers it `/docs/`. The `#/` and `#!` links on the home page, on the address given and on each `--page`, and the `#/` and `#!` addresses the site's sitemap lists, are listed with the pages it left out.
 
 ## Record a demo
 
@@ -315,7 +315,7 @@ It tells you which screenshots a desktop and a phone would show and what to fix.
 4. On each page, hides what floats over it: everything fixed to the screen except the page's own top bar and sidebar, plus the consent and chat tools seen most (OneTrust, Cookiebot, Didomi, Usercentrics, Intercom, Crisp, Drift, HubSpot, Zendesk and more). When a consent dialog had stopped the page from scrolling, it lets the page scroll again. A JavaScript dialog a page opens (`alert`, `confirm`, `prompt`) is answered with OK, as it would otherwise hold the page for good.
 5. Takes the first screen once its pictures, videos and fade-ins are done, and the whole page a screen at a time, each screen as the browser shows it, joined into one image with sticky headers and fixed bars shown once.
 6. Opens every page again as a phone (or an iPhone, or in the dark theme) in windows of its own while it looks for the next pages. A view of a web app gets one such window at a time, and no other page loads while it does: the browser sends a second request for the same data, from another window or from another view of the app, only once the answer to the first has begun to come.
-7. Writes `manifest.json`, `SCREENSHOTS.md` and `sheet.png`. Of the candidates it did not open, they list those it could take with `--page`, each an address the run opens. With the pages left out they list the #route links the tour does not follow, each an address the run opens, to give with `--page`, and a link of the site it does not open, as one to another port, a #route link among them, with the reason.
+7. Writes `manifest.json`, `SCREENSHOTS.md` and `sheet.png`. Of the candidates it did not open, they list those at an address the run opens. With the pages left out they list the #route links the tour does not follow, each an address the run opens, and a link of the site it does not open, as one to another port, a #route link among them, with the reason.
 
 ## Limits
 
