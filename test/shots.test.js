@@ -3261,6 +3261,47 @@ test("a run ends every process of its browser before its profile goes, as it end
   }
 });
 
+// A helper of a browser can start another process a moment before it is
+// killed (kit lesson 1.44), so the processes that name a profile are looked
+// for again until a look finds none and all have ended, and only then does
+// the profile go. Here a stand-in that names the profile keeps starting
+// processes that name it too, each of which writes into the profile 300 ms
+// after it starts: with one look, those it started while the look read
+// /proc were left running, and they made the profile again once it had
+// gone.
+test("a browser's profile goes once a look finds no process naming it, while a helper keeps starting others", { skip: process.platform !== "linux" && "the processes are read from /proc", timeout: 60_000 }, async () => {
+  const root = tempDir();
+  // A name of its own, as a browser's profile has: the processes that name
+  // it are killed.
+  const profile = fs.mkdtempSync(path.join(root, "easyscreenshotkit-chrome-"));
+  const helpers = [];
+  try {
+    for (let round = 1; round <= 5; round++) {
+      fs.mkdirSync(path.join(profile, "Default"), { recursive: true });
+      const helper = spawn("sh", ["-c", 'while :; do sh -c \'sleep 0.3; mkdir -p "$0/Default/Late"\' "$0" & sleep 0.005; done', profile], { stdio: "ignore", detached: true });
+      helpers.push(helper);
+      // Running, with the processes it has started for 300 ms.
+      while (naming(profile).length < 20) await sleep(20);
+      removeProfiles([{ profile, lock: "", fetching: null, processes: [] }]);
+      assert.equal(fs.existsSync(profile), false, `round ${round}`);
+      await sleep(600);
+      assert.deepEqual(naming(profile), [], `round ${round}`);
+      assert.equal(fs.existsSync(profile), false, `round ${round}: a process the helper started made the profile again`);
+    }
+  } finally {
+    // What a failed check leaves running.
+    for (const helper of helpers) {
+      try {
+        process.kill(-helper.pid, "SIGKILL");
+      } catch {
+        // Ended already.
+      }
+    }
+    for (const pid of naming(profile)) process.kill(Number(pid), "SIGKILL");
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // A supervisor that stops a run with SIGTERM, as makersmcp's does, kills it
 // outright a second later, and a kill then leaves the browser's profile in
 // the temp folder: a stop waits for the browser's processes until half a
