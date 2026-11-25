@@ -608,7 +608,13 @@ async function rankLinks(links, sitemap, { home, robots = null, alternates = [],
 // stop it was heard; and the event loop gets a turn every TURN links (see
 // time.js turn()), where 200,000 links held it 0.9 s in one pass. given:
 // the address given, as --page reads a page against it (see shots.js
-// pagesAsked()), where home is the home page as the tour opened it.
+// pagesAsked()), where home is the home page as the tour opened it. The
+// site given is the site of that address and, where its host is one of
+// this machine's own names, the others of them that reach an address of it
+// (see sitesOf()), which --page takes on the port given (see onHomeHost()):
+// a site given at http://localhost:4000/ whose home page moved on to
+// http://127.0.0.1:4000/ had its views listed without the words to give
+// them with --page.
 // Resolves to [{url, reason}].
 async function routeLinks(links, { home, given = home, keys = [], refuses = async () => "" }) {
   const site = siteOf(home);
@@ -626,6 +632,7 @@ async function routeLinks(links, { home, given = home, keys = [], refuses = asyn
     views.get(key).add(url.href);
   }
   const own = (url) => hostOf(new URL(url)) === hostOf(homeUrl);
+  const reason = sitesOf(given).includes(site) ? ROUTE_LINK : ROUTE_ELSEWHERE;
   const judged = new Map();
   const judge = (url) => {
     const origin = new URL(url).origin;
@@ -642,7 +649,7 @@ async function routeLinks(links, { home, given = home, keys = [], refuses = asyn
       if (why) refused = refused || { url, reason: why };
       else if (!opened || (own(url) && !own(opened))) opened = url;
     }
-    routes.push(opened ? { url: opened, reason: site === siteOf(given) ? ROUTE_LINK : ROUTE_ELSEWHERE } : refused);
+    routes.push(opened ? { url: opened, reason } : refused);
   }
   return routes;
 }

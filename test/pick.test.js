@@ -342,6 +342,19 @@ test("routeLinks says to give a #route link with --page only on the site given",
       ["https://www.main.example/garden/#/water", ROUTE],
     ], given);
   }
+  // A site given at one of this machine's own names whose home page moves
+  // on to another of them that reaches an address of it, on the same port,
+  // as a local server with a fixed origin moves it, is the site given:
+  // --page takes its views there. They were listed without the words.
+  const reasons = async (given, home) => (await pick.routeLinks([{ href: "/app/#/inbox" }], { home, given })).map((s) => s.reason);
+  for (const [given, home] of [["http://localhost:4000/", "http://127.0.0.1:4000/"], ["http://127.0.0.1:4000/", "http://localhost:4000/"], ["http://[::1]:4000/", "http://localhost:4000/"]]) {
+    assert.deepEqual(await reasons(given, home), [ROUTE], `${given} at ${home}`);
+  }
+  // 127.0.0.1 and ::1 share no address, as two programs can each have one
+  // on a port, and another name is another site.
+  for (const [given, home] of [["http://127.0.0.1:4000/", "http://[::1]:4000/"], ["https://example.com/", "https://m.example.com/"], ["https://www.example.com/", "https://www2.example.com/"]]) {
+    assert.deepEqual(await reasons(given, home), [ELSEWHERE], `${given} at ${home}`);
+  }
 });
 
 // The #route links listed for --page are ones the run's rule opens: of the
