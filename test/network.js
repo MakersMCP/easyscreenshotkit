@@ -340,7 +340,17 @@ async function outer(uid, gid) {
   await new Promise((resolve) => setTimeout(resolve, 500));
   for (const socket of sockets) socket.close();
   const own = new Set((told.looked || []).map((name) => String(name).replace(/\.$/, "").toLowerCase()));
-  process.stdout.write(`${JSON.stringify({ failed: told.failed || "", shown: told.shown || "", ssdp: seen.ssdp, mdns: seen.mdns, dns: seen.dns.filter((name) => !own.has(String(name).toLowerCase())), connections: seen.connections, joined: [...joined] })}\n`);
+  // A name the kit's process looked up comes to the server again with each
+  // domain of the machine's search list after it, as the system's resolver
+  // tries those once the name alone is not found: on GitHub's runners,
+  // clients2.google.com.ec2.internal for clients2.google.com. Those are the
+  // kit's own lookups too.
+  const searched = [...resolvConf.matchAll(/^\s*(?:search|domain)\s+(.+)$/gm)].flatMap((m) => m[1].trim().split(/\s+/)).map((d) => d.replace(/\.$/, "").toLowerCase()).filter(Boolean);
+  const ownLookup = (name) => {
+    const lower = String(name).toLowerCase();
+    return own.has(lower) || searched.some((d) => lower.endsWith(`.${d}`) && own.has(lower.slice(0, -d.length - 1)));
+  };
+  process.stdout.write(`${JSON.stringify({ failed: told.failed || "", shown: told.shown || "", ssdp: seen.ssdp, mdns: seen.mdns, dns: seen.dns.filter((name) => !ownLookup(name)), connections: seen.connections, joined: [...joined] })}\n`);
 }
 
 async function inner(url) {
