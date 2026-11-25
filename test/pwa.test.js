@@ -1002,3 +1002,25 @@ test("--pwa-check reads nothing from an address on this machine other than the o
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// A manifest can list any number of screenshots, and the report's column for
+// their src is as wide as the longest of them, read one by one: spread into
+// the arguments of Math.max(), which Node.js holds to its stack, 200,000 of
+// them stopped --pwa-check with "Maximum call stack size exceeded".
+test("--pwa-check reports a manifest of 200,000 screenshots, a line for each", async () => {
+  const dir = fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "easyscreenshotkit-pwa-many-"));
+  try {
+    const file = path.join(dir, "manifest.json");
+    const screenshots = Array.from({ length: 200_000 }, (_, i) => ({ src: `s${i}.png`, sizes: "1280x800", type: "image/png", form_factor: "wide" }));
+    fs.writeFileSync(file, JSON.stringify({ name: "Many", screenshots }));
+    const report = await checkManifest({ file });
+    assert.equal(report.screenshots.length, 200_000);
+    const text = describeCheck(report);
+    // The column is as wide as s199999.png, the longest src.
+    assert.match(text, /^ {3}1 {2}s0\.png {7}not loaded +wide +left out$/m);
+    assert.match(text, /^ {2}200000 {2}s199999\.png {2}not read +wide +left out$/m);
+    assert.equal(text.split("\n").filter((line) => /^ +\d+ {2}s\d+\.png /.test(line)).length, 200_000);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

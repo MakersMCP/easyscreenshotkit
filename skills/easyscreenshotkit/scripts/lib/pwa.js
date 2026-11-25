@@ -666,7 +666,12 @@ function describeCheck(report) {
   lines.push(`  Desktop  ${dialog(report.desktop, true)}`, `  Phone    ${dialog(report.phone, false)}`);
   if (report.screenshots.length) {
     lines.push("");
-    const width = Math.min(44, Math.max(...report.screenshots.map((shot) => shot.src.length), 3));
+    // The longest src, read one by one: spread into the arguments of
+    // Math.max(), which Node.js holds to its stack, a manifest's 200,000
+    // screenshots stopped the check with "Maximum call stack size exceeded".
+    let longest = 3;
+    for (const shot of report.screenshots) longest = Math.max(longest, shot.src.length);
+    const width = Math.min(44, longest);
     for (const shot of report.screenshots) {
       const src = shot.src.length > width ? `${shot.src.slice(0, width - 3)}...` : shot.src || "(no src)";
       const file = shot.image ? `${shot.image.width && shot.image.height ? dims(shot.image) : "?"} ${NAMES[shot.image.format] || "not an image"}` : shot.error ? "not loaded" : "not read";
