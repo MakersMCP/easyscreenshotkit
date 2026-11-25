@@ -577,7 +577,13 @@ function rankLinks(links, sitemap, { home, robots = null, alternates = [], exclu
 // or 443, and not on the scheme, host and port given". Listed with those
 // words, a view of an app on another port of the site's host, as a home
 // page links a dashboard of its own on :8443, had an agent run again with
-// it as --page, which the run then refused. Resolves to [{url, reason}].
+// it as --page, which the run then refused. Each view's addresses are kept
+// in a set, and the rule, which reads an address's scheme, host and port
+// alone, is asked once for each of them: with each view's addresses in a
+// list, looked through and copied for each link, and the rule asked for
+// each address, a page that linked one view by 40,000 addresses, each with
+// a query of its own, held the run's only thread 20 s, where no signal to
+// stop it was heard. Resolves to [{url, reason}].
 async function routeLinks(links, { home, keys = [], refuses = async () => "" }) {
   const site = siteOf(home);
   const homeUrl = new URL(home);
@@ -588,16 +594,22 @@ async function routeLinks(links, { home, keys = [], refuses = async () => "" }) 
     if (!url || siteOf(url.href) !== site || !routeOf(url.href)) continue;
     const key = viewKey(url.href);
     if (taken.has(key)) continue;
-    const seen = views.get(key) || [];
-    if (!seen.includes(url.href)) views.set(key, [...seen, url.href]);
+    if (!views.has(key)) views.set(key, new Set());
+    views.get(key).add(url.href);
   }
   const own = (url) => hostOf(new URL(url)) === hostOf(homeUrl);
+  const judged = new Map();
+  const judge = (url) => {
+    const origin = new URL(url).origin;
+    if (!judged.has(origin)) judged.set(origin, refuses(url));
+    return judged.get(origin);
+  };
   const routes = [];
   for (const urls of views.values()) {
     let opened = "";
     let refused = null;
     for (const url of urls) {
-      const why = await refuses(url);
+      const why = await judge(url);
       if (why) refused = refused || { url, reason: why };
       else if (!opened || (own(url) && !own(opened))) opened = url;
     }

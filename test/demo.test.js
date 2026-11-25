@@ -1436,6 +1436,26 @@ test("a demo's notes name a #route the tour does not follow by its path at its h
   assert.deepEqual(tourNotes({ ...tour, routes: [], short: true }).slice(-1), ["Time ran out after 1 page: a tour looks for more only while 4 minutes of the run are left; give more with --timeout."]);
 });
 
+// How much of the main thread's CPU time has gone since `from`: judged so, as
+// a busy machine makes the clock longer, or the process's where Node.js has
+// no count of a thread's.
+const cpuSince = (from) => (process.threadCpuUsage ? process.threadCpuUsage(from) : process.cpuUsage(from));
+
+// Each #route link the run refuses goes into its reason's list as it comes:
+// with the list copied for each link, 40,000 links refused for one reason
+// held the run's only thread 17 s, where no signal to stop it was heard,
+// and 100,000 well over a minute.
+test("a tour's notes take time in step with the #route links the run refuses, however many share a reason", () => {
+  const PORT = "on port 8443, not 80 or 443, and not on the scheme, host and port given";
+  const refused = Array.from({ length: 100_000 }, (_, i) => ({ url: `https://acme.com:8443/app/#/v${i}`, reason: PORT }));
+  const before = cpuSince();
+  const notes = tourNotes({ pages: [{ url: "https://acme.com/" }], skipped: [], notes: [], refused, routes: [], home: "https://acme.com/", short: false });
+  const spent = cpuSince(before);
+  const ms = Math.round((spent.user + spent.system) / 1000);
+  assert.deepEqual(notes, [`Left out ${refused.slice(0, 12).map((route) => route.url).join(", ")} and 99988 more: ${PORT}.`]);
+  assert.ok(ms < 5_000, `the notes took ${ms} ms of the main thread for 100,000 links`);
+});
+
 // A --page the browser cannot open, here one that answers with nothing, is
 // left out of the tour with the reason, and the tour goes on: it stopped
 // the demo.

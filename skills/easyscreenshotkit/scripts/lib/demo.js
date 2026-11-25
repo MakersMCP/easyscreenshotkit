@@ -479,12 +479,17 @@ function routesNote(routes, { home = "" } = {}) {
 // rule refuses, in a note for each reason, as a site can link many views
 // of its app on another port of its host and a note for each link would
 // fill steps.json and the summary, the #route links it does not follow,
-// and whether time ran short.
+// and whether time ran short. Each link goes into its reason's list as it
+// comes: with the list copied for each link, 40,000 links refused for one
+// reason held the run's only thread 17 s.
 function tourNotes(tour) {
   const notes = tour.skipped.map((skip) => `Left out ${skip.url}: ${skip.reason}.`);
   notes.push(...tour.notes);
   const refused = new Map();
-  for (const route of tour.refused) refused.set(route.reason, [...(refused.get(route.reason) || []), route.url]);
+  for (const route of tour.refused) {
+    if (!refused.has(route.reason)) refused.set(route.reason, []);
+    refused.get(route.reason).push(route.url);
+  }
   for (const [reason, urls] of refused) notes.push(`Left out ${listOf(urls)}: ${reason}.`);
   if (tour.routes.length) notes.push(routesNote(tour.routes, { home: tour.home }));
   if (tour.short) notes.push(`Time ran out after ${tour.pages.length === 1 ? "1 page" : `${tour.pages.length} pages`}: a tour looks for more only while 4 minutes of the run are left; give more with --timeout.`);

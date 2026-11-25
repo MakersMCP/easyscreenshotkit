@@ -354,9 +354,40 @@ test("routeLinks lists a #route link the run's rule refuses with the rule's reas
       ["https://www.acme.com/app/#/deck", ROUTE],
     ],
   );
-  // Each address once, and none of a view taken.
-  assert.equal(new Set(judged).size, judged.length);
+  // Each scheme, host and port once, and none of a view taken.
+  assert.deepEqual(judged, ["https://acme.com:8443/app/#/plants", "https://acme.com/app/#/light", "https://www.acme.com/app/#/beds"]);
   assert.deepEqual(await pick.routeLinks(links, { home: HOME, keys: ["acme.com/app#/plants", "acme.com/app#/light", "acme.com/app#/beds", "acme.com/app#/deck"], refuses }), []);
+});
+
+// How much of the main thread's CPU time has gone since `from`: judged so, as
+// a busy machine makes the clock longer, or the process's where Node.js has
+// no count of a thread's.
+const cpuSince = (from) => (process.threadCpuUsage ? process.threadCpuUsage(from) : process.cpuUsage(from));
+
+// The links to one view are kept as a set, and the rule is asked once for
+// each scheme, host and port, all it reads of an address: kept in a list,
+// looked through and copied for each link, 40,000 links to one view, each
+// with a query of its own, held the run's only thread 20 s, where no signal
+// to stop it was heard, and 100,000 two minutes.
+test("routeLinks takes time in step with the links it reads, however many of them name one view, and asks the rule once for each scheme, host and port", async () => {
+  const PORT = "on port 8443, not 80 or 443, and not on the scheme, host and port given";
+  const judged = [];
+  const refuses = async (url) => {
+    judged.push(url);
+    return new URL(url).port === "8443" ? PORT : "";
+  };
+  const links = Array.from({ length: 100_000 }, (_, i) => ({ href: i % 2 ? `/app?k=${i}#/orders` : `https://acme.com:8443/app?k=${i}#/orders` }));
+  const before = cpuSince();
+  const routes = await pick.routeLinks(links, { home: HOME, refuses });
+  const spent = cpuSince(before);
+  const ms = Math.round((spent.user + spent.system) / 1000);
+  // The counts first: told apart from the two expected, a list of 100,000
+  // took the assertion's diff more memory than the machine had.
+  assert.equal(routes.length, 1);
+  assert.deepEqual(routes, [{ url: "https://acme.com/app?k=1#/orders", reason: "a #route, which the tour does not follow: give it with --page" }]);
+  assert.equal(judged.length, 2, `the rule was asked ${judged.length} times`);
+  assert.deepEqual(judged, ["https://acme.com:8443/app?k=0#/orders", "https://acme.com/app?k=1#/orders"]);
+  assert.ok(ms < 10_000, `routeLinks took ${ms} ms of the main thread for 100,000 links`);
 });
 
 test("visit order: the best of each kind first, two product pages, then the rest", () => {
