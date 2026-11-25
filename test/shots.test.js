@@ -4859,7 +4859,11 @@ test("the #route links a run lists for --page are ones its rule opens: one it re
     // moves on to another site, as an alias domain to the main one, --page
     // takes such a page by its path alone, as a page of the site given, and
     // a #route link the run does not open is listed too, with the reason.
-    assert.ok(readme.includes("Of the candidates it did not open, they list those at an address the run opens. With the pages left out they list the #route links the tour does not follow, each an address the run opens, and a link of the site it does not open, as one to another port, a #route link among them, with the reason."), "README");
+    // Of the other candidates, one the run does not open is listed where
+    // the run met it as it looked for the 20 it lists that it could take:
+    // it stops looking there (see shots.js othersToTake()), and the README
+    // said that each link of the site it does not open was listed.
+    assert.ok(readme.includes("Of the candidates it did not open, they list the first 20 at most at an address the run opens. With the pages left out they list the #route links the tour does not follow, each an address the run opens, and with the reason a link of the site it does not open, as one to another port: a #route link, or a candidate it met as it looked for those 20."), "README");
     assert.ok(readme.includes("and the `#/` and `#!` addresses the site's sitemap lists, are listed with the pages it left out.\n"), "README");
     assert.ok(!readme.includes("to give with `--page`") && !readme.includes("those it could take with `--page`") && !readme.includes("so you can give them with `--page`"), "README");
   } finally {
