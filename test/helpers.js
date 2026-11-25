@@ -431,27 +431,46 @@ async function withRebinding(names, body) {
   }
 }
 
-// The longest the main thread ran, in ms of its own CPU time, between two
-// turns of a 10 ms timer while body() ran, and what body() resolved to:
-// judged by the thread's CPU time, as a busy machine makes the clock's
-// longer, or the process's where Node.js has no count of a thread's.
-async function longestHold(body) {
-  const cpu = () => (process.threadCpuUsage ? process.threadCpuUsage() : process.cpuUsage());
-  let last = cpu();
-  let longest = 0;
-  const held = () => {
-    const now = cpu();
-    longest = Math.max(longest, (now.user + now.system - last.user - last.system) / 1000);
-    last = now;
+// The most addresses parsed between two turns of the event loop while
+// body() ran, and what body() resolved to: each address made with new URL()
+// is counted, by a class of its own in the place of the global URL
+// meanwhile, and a ticker that runs at each turn of the event loop notes
+// the count. A pass over a page's links parses a few addresses for each
+// link, so this judges its longest stretch with no turn by the work in it,
+// which no load moves. Judged by the main thread's CPU time between two
+// turns of a timer, as it was, it counted the garbage collection a busy
+// machine makes longer too: in a container on a loaded machine a pass that
+// gave the event loop a turn every 1,000 links held the thread 1,159 ms.
+async function mostParsed(body) {
+  const Url = globalThis.URL;
+  let parsed = 0;
+  globalThis.URL = class extends Url {
+    constructor(...args) {
+      super(...args);
+      parsed++;
+    }
   };
-  const timer = setInterval(held, 10);
+  let last = 0;
+  let most = 0;
+  let ticking = true;
+  const note = () => {
+    most = Math.max(most, parsed - last);
+    last = parsed;
+  };
+  const tick = () => {
+    if (!ticking) return;
+    note();
+    setImmediate(tick);
+  };
+  setImmediate(tick);
   try {
     const result = await body();
-    held();
-    return { result, longest: Math.round(longest) };
+    note();
+    return { result, most };
   } finally {
-    clearInterval(timer);
+    ticking = false;
+    globalThis.URL = Url;
   }
 }
 
-module.exports = { readPng, pngOf, serve, near, descendants, relayBrowser, crashingBrowser, runUntilOver, tempProblem, sh, reachAt, withRebinding, longestHold };
+module.exports = { readPng, pngOf, serve, near, descendants, relayBrowser, crashingBrowser, runUntilOver, tempProblem, sh, reachAt, withRebinding, mostParsed };

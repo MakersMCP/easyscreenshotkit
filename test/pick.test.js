@@ -7,7 +7,7 @@ const assert = require("node:assert/strict");
 const zlib = require("node:zlib");
 const test = require("node:test");
 const pick = require("../skills/easyscreenshotkit/scripts/lib/pick");
-const { serve, withRebinding, longestHold } = require("./helpers");
+const { serve, withRebinding, mostParsed } = require("./helpers");
 
 const HOME = "https://acme.com/";
 const page = (path) => new URL(path, HOME);
@@ -418,19 +418,21 @@ test("routeLinks takes time in step with the links it reads, however many of the
 // menu's 200,000 links to another port of the host given, and routeLinks()
 // about 2 s over 200,000 #route links, where a stop was heard only after
 // them, and makersmcp's supervisor, which kills a run a second after it asks
-// it to stop, left the browser's profile in the temp folder. Half a second
-// at most, as a stop then has the other half to end the browser: with each
+// it to stop, left the browser's profile in the temp folder; with each
 // candidate's depth read from an address made again for each comparison of
-// rankLinks()'s sort, as it was, the sort alone held it 808 ms.
+// rankLinks()'s sort, as it was, the sort alone held it 808 ms. Judged by
+// the addresses parsed between two turns (see helpers.js mostParsed()): a
+// few for each link, so a few thousand, where a pass with no turn parses a
+// few for each of the 200,000 links, and that sort millions.
 test("rankLinks and routeLinks give the event loop a turn every 1,000 links, however many links a page has", async () => {
   const links = Array.from({ length: 200_000 }, (_, i) => ({ href: `http://127.0.0.1:5000/features/item-${i}`, text: `Item ${i}`, where: "header" }));
-  const ranked = await longestHold(() => pick.rankLinks(links, [], { home: "http://127.0.0.1:4000/" }));
+  const ranked = await mostParsed(() => pick.rankLinks(links, [], { home: "http://127.0.0.1:4000/" }));
   assert.equal(ranked.result.candidates.length, 200_000);
-  assert.ok(ranked.longest < 500, `rankLinks held the main thread ${ranked.longest} ms of its CPU time with no turn of the event loop`);
+  assert.ok(ranked.most < 20_000, `rankLinks parsed ${ranked.most} addresses with no turn of the event loop`);
   const views = Array.from({ length: 200_000 }, (_, i) => ({ href: `http://127.0.0.1:4000/app/#/view-${i}` }));
-  const routes = await longestHold(() => pick.routeLinks(views, { home: "http://127.0.0.1:4000/" }));
+  const routes = await mostParsed(() => pick.routeLinks(views, { home: "http://127.0.0.1:4000/" }));
   assert.equal(routes.result.length, 200_000);
-  assert.ok(routes.longest < 500, `routeLinks held the main thread ${routes.longest} ms of its CPU time with no turn of the event loop`);
+  assert.ok(routes.most < 20_000, `routeLinks parsed ${routes.most} addresses with no turn of the event loop`);
 });
 
 test("visit order: the best of each kind first, two product pages, then the rest", () => {

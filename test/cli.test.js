@@ -9,7 +9,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const test = require("node:test");
-const { tempProblem, sh, pngOf, longestHold } = require("./helpers");
+const { tempProblem, sh, pngOf, mostParsed } = require("./helpers");
 const { parse, summary } = require("../skills/easyscreenshotkit/scripts/easyscreenshotkit");
 const { parseSizes, normalizeUrl, fragmentNotes, prepareDir, openShots, slugOf, identity, movedOn, pagesAsked, leftOut, othersToTake, siteName, writeMarkdown } = require("../skills/easyscreenshotkit/scripts/lib/shots");
 const { sheetHtml } = require("../skills/easyscreenshotkit/scripts/lib/sheet");
@@ -819,9 +819,10 @@ test("the pages left out: those opened first, then the #route links, then the ot
 // thread 3.5 s in the listing and 1 s more in leftOut(), where a stop was
 // heard only after them, and makersmcp's supervisor, which kills a run a
 // second after it asks it to stop, left the browser's profile in the temp
-// folder. Judged by the main thread's own CPU time between two turns of a
-// 10 ms timer: with no turn, the listing held it 226 ms and leftOut() 686 ms
-// over the links here.
+// folder. Judged by the addresses parsed between two turns (see helpers.js
+// mostParsed()): one or a few for each link, so a few thousand, where with
+// no turn the listing parses one for each of the 200,000 links and
+// leftOut() a few.
 test("the pages a run could take besides are judged once for each scheme, host and port, and that listing and the pages left out give the event loop a turn every 1,000 links", async () => {
   const PORT = "not on the public internet, and not on the host and port given";
   const asked = [];
@@ -831,7 +832,7 @@ test("the pages a run could take besides are judged once for each scheme, host a
   };
   const queue = Array.from({ length: 200_000 }, (_, i) => ({ url: `http://127.0.0.1:5000/features/item-${i}`, kind: "product", score: 100, why: `menu link "Item ${i}"`, where: "header" }));
   queue.push({ url: "http://127.0.0.1:4000/pricing", kind: "pricing", score: 110, why: 'menu link "Pricing"', where: "header" });
-  const listed = await longestHold(() => othersToTake(queue, refuses));
+  const listed = await mostParsed(() => othersToTake(queue, refuses));
   // The counts first: told apart from the two expected, a list of 200,000
   // takes the assertion's diff more memory than a machine has.
   assert.equal(asked.length, 2, `the rule was asked ${asked.length} times`);
@@ -839,12 +840,12 @@ test("the pages a run could take besides are judged once for each scheme, host a
   assert.deepEqual(listed.result.leftover, [{ url: "http://127.0.0.1:4000/pricing", kind: "pricing", score: 110, why: 'menu link "Pricing"' }]);
   assert.equal(listed.result.refused.length, 40);
   assert.deepEqual(listed.result.refused[39], { url: "http://127.0.0.1:5000/features/item-39", reason: PORT });
-  assert.ok(listed.longest < 100, `the listing held the main thread ${listed.longest} ms of its CPU time with no turn of the event loop`);
+  assert.ok(listed.most < 20_000, `the listing parsed ${listed.most} addresses with no turn of the event loop`);
   const posts = Array.from({ length: 200_000 }, (_, i) => ({ url: `http://127.0.0.1:4000/blog/2024/post-${i}`, reason: "a single post" }));
-  const left = await longestHold(() => leftOut(listed.result.refused, [], posts));
+  const left = await mostParsed(() => leftOut(listed.result.refused, [], posts));
   assert.equal(left.result.skipped.length, 40);
   assert.deepEqual(left.result.skipped[39], { url: "http://127.0.0.1:5000/features/item-39", reason: PORT });
-  assert.ok(left.longest < 100, `leftOut held the main thread ${left.longest} ms of its CPU time with no turn of the event loop`);
+  assert.ok(left.most < 20_000, `leftOut parsed ${left.most} addresses with no turn of the event loop`);
 });
 
 test("two runs that put their files in one folder at the same moment take turns, and the later one's replace the earlier one's whole", async () => {
