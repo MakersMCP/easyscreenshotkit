@@ -18,7 +18,7 @@ const fs = require("fs");
 const path = require("path");
 const { launch, browserProblem, busy, CRASHED } = require("./chrome");
 const { normalizeUrl, fragmentNotes, siteName, unreadNote, schemeHint } = require("./shots");
-const { homeOf, siteOf, routeOf, viewKey, viewOf, pathOf, readable, printable } = require("./pick");
+const { homeOf, siteOf, routeOf, viewKey, viewOf, pathOf, readable, printable, ROUTE_ELSEWHERE } = require("./pick");
 const { Recorder } = require("./record");
 const { loadSteps, toYaml, targetText, hideRefusal } = require("./steps");
 const { pickPages, tourSteps } = require("./tour");
@@ -460,18 +460,29 @@ function listOf(names) {
   return more ? `${shown.join(", ")} and ${more} more` : shown.length > 1 ? `${shown.slice(0, -1).join(", ")} and ${shown[shown.length - 1]}` : shown[0];
 }
 
-// The #route links a tour left out, in one note: the first 12 of them, and
+// The #route links a tour left out, in a note: the first 12 of them, and
 // how many more. Each is named by its path and route where it is on the
 // scheme, host and port of the home page as the tour opened it (home), as
 // --page reads a path against the address given, which went there. Any
 // other, as one at the site's www name, or on port 443 of a site given on
 // another port, by its whole address: named by its path, it had an agent
 // give --page that path, which opens it at the host and port given,
-// another page or another program.
+// another page or another program. One named so on another site than the
+// one given, as a site given at an alias whose pages all move on to another
+// site has at that site's www name, is no address --page takes (see pick.js
+// ROUTE_ELSEWHERE): such links are in a note of their own, without the
+// words to give one with --page. Returns the notes, none for no link.
 function routesNote(routes, { home = "" } = {}) {
-  const name = (url) => (!home || new URL(url).origin === new URL(home).origin ? pathOf(url) : readable(url));
-  const list = listOf(routes.map((route) => name(route.url)));
-  return routes.length === 1 ? `Left out ${list}: a #route, which the tour does not follow: give it with --page.` : `Left out ${list}: #routes, which the tour does not follow: give one with --page.`;
+  const atHome = (url) => !home || new URL(url).origin === new URL(home).origin;
+  const note = (list, offered) => {
+    const names = listOf(list.map((route) => (atHome(route.url) ? pathOf(route.url) : readable(route.url))));
+    const what = list.length === 1 ? "a #route, which the tour does not follow" : "#routes, which the tour does not follow";
+    return `Left out ${names}: ${what}${offered ? `: give ${list.length === 1 ? "it" : "one"} with --page` : ""}.`;
+  };
+  const elsewhere = (route) => route.reason === ROUTE_ELSEWHERE && !atHome(route.url);
+  const offered = routes.filter((route) => !elsewhere(route));
+  const others = routes.filter(elsewhere);
+  return [...(offered.length ? [note(offered, true)] : []), ...(others.length ? [note(others, false)] : [])];
 }
 
 // The notes a tour adds to steps.json (see tour.js pickPages()): the pages
@@ -500,7 +511,7 @@ function tourNotes(tour) {
     else past += urls.length;
   }
   if (past) notes.push(`Left out ${past === 1 ? "1 more #route link" : `${past} more #route links`} the run does not open.`);
-  if (tour.routes.length) notes.push(routesNote(tour.routes, { home: tour.home }));
+  notes.push(...routesNote(tour.routes, { home: tour.home }));
   if (tour.short) notes.push(`Time ran out after ${tour.pages.length === 1 ? "1 page" : `${tour.pages.length} pages`}: a tour looks for more only while 4 minutes of the run are left; give more with --timeout.`);
   return notes;
 }

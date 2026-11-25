@@ -4838,27 +4838,36 @@ test("the #route links a run lists for --page are ones its rule opens: one it re
 // pages all move on to another site, as alias.example to main.example,
 // has its views named so, where --page refuses their whole address at
 // main.example as not a page of alias.example; named against the address
-// given, they were named by their whole address.
-test("a demo's tour of a site whose home page moves on to another site names its #route links by their path", { skip: noBrowser, timeout: 300_000 }, () => withNames({ "alias.example": "93.184.215.15", "main.example": "93.184.215.14" }, async () => {
+// given, they were named by their whole address. One at that site's www
+// name is named by its whole address, in a note of its own without the
+// words to give it with --page. A screenshots run lists such views by
+// their whole address, as it lists every page left out, and without those
+// words, where it said to give them with --page and an agent that gave one
+// so had the run refuse it; the path the demo's note names is taken.
+test("a demo's tour and a run of a site whose home page moves on to another site name its #route links in a form --page takes, or without the words to give them with --page", { skip: noBrowser, timeout: 600_000 }, () => withNames({ "alias.example": "93.184.215.15", "main.example": "93.184.215.14", "www.main.example": "93.184.215.16" }, async () => {
   const html = { "Content-Type": "text/html; charset=utf-8" };
   const { server, origin } = await serve((req, res) => {
     const host = String(req.headers.host || "").replace(/:\d+$/, "");
     if (host === "alias.example") return res.writeHead(301, { Location: `http://main.example${req.url}` }).end();
-    if (req.url === "/") return res.writeHead(200, html).end(page("Acme | Tools for teams", `<header><nav><a href="/pricing">Pricing</a></nav></header><h1>Acme</h1><div style="height:1400px"></div><footer><a href="/garden/#/light">Light</a></footer>`));
+    if (req.url === "/") return res.writeHead(200, html).end(page("Acme | Tools for teams", `<header><nav><a href="/pricing">Pricing</a> <a href="/login">Log in</a></nav></header><h1>Acme</h1><div style="height:1400px"></div><footer><a href="/garden/#/light">Light</a> <a href="http://www.main.example/garden/#/water">Water</a></footer>`));
     if (req.url === "/pricing") return res.writeHead(200, html).end(page("Pricing | Acme", "<h1>Pricing</h1><p>The plans of Acme.</p><div style=\"height:1400px\"></div>"));
+    if (req.url === "/garden/") return res.writeHead(200, html).end(page("Garden | Acme", "<h1>Garden</h1><p>The light and the water of the garden.</p>"));
     res.writeHead(404).end("not found");
   });
   const port = new URL(origin).port;
+  const names = ["alias.example", "main.example", "www.main.example"];
   const http = require("node:http");
   const get = http.get;
-  // The kit's own requests for the two names go to the site's server.
+  // The kit's own requests for the three names go to the site's server.
   http.get = (url, options, done) => {
     const where = new URL(String(url));
-    if (where.hostname !== "alias.example" && where.hostname !== "main.example") return get(url, options, done);
+    if (!names.includes(where.hostname)) return get(url, options, done);
     const { lookup, ...rest } = options || {};
     return get(`http://127.0.0.1:${port}${where.pathname}${where.search}`, { ...rest, headers: { ...((rest && rest.headers) || {}), Host: where.hostname } }, done);
   };
-  const stand = reachAt({ "93.184.215.14:80": `127.0.0.1:${port}`, "93.184.215.15:80": `127.0.0.1:${port}` });
+  const stand = reachAt({ "93.184.215.14:80": `127.0.0.1:${port}`, "93.184.215.15:80": `127.0.0.1:${port}`, "93.184.215.16:80": `127.0.0.1:${port}` });
+  const root = tempDir();
+  const ELSEWHERE = "a #route, which the tour does not follow";
   // A tour looks for pages of its own while 4 minutes of the run are left.
   setTimeLimit(400_000);
   let chrome = null;
@@ -4867,16 +4876,28 @@ test("a demo's tour of a site whose home page moves on to another site names its
     const tour = await pickPages(chrome, "http://alias.example/", { pages: 2 });
     assert.deepEqual(tour.pages.map((p) => p.url), ["http://main.example/", "http://main.example/pricing"]);
     assert.equal(tour.home, "http://main.example/");
-    assert.deepEqual(tour.routes.map((route) => route.url), ["http://main.example/garden/#/light"]);
+    assert.deepEqual(tour.routes.map((route) => [route.url, route.reason]), [["http://main.example/garden/#/light", ELSEWHERE], ["http://www.main.example/garden/#/water", ELSEWHERE]]);
     const notes = tourNotes(tour);
     assert.ok(notes.includes("Left out /garden/#/light: a #route, which the tour does not follow: give it with --page."), notes.join("\n"));
-    assert.ok(!notes.some((note) => note.includes("main.example/garden")), notes.join("\n"));
+    assert.ok(notes.includes("Left out http://www.main.example/garden/#/water: a #route, which the tour does not follow."), notes.join("\n"));
+    assert.ok(!notes.some((note) => note.includes("main.example/garden/#/light")), notes.join("\n"));
+    await chrome.close();
+    chrome = null;
+    const { manifest } = await takeShots("http://alias.example/", { dir: path.join(root, "shots"), pages: 2, sizes: "desktop", timeLimit: 400_000 });
+    assert.deepEqual(manifest.pages.map((p) => p.url), ["http://main.example/", "http://main.example/pricing"]);
+    // The #route links come before the links left out by their address or
+    // their words, as on the site given.
+    assert.deepEqual(manifest.skipped.map((skip) => [skip.url, skip.reason]), [["http://main.example/garden/#/light", ELSEWHERE], ["http://www.main.example/garden/#/water", ELSEWHERE], ["http://main.example/login", "sign-in or sign-up page"]]);
+    // The path the demo's note names, given with --page, is taken.
+    const asked = await takeShots("http://alias.example/", { dir: path.join(root, "asked"), pages: 1, extra: ["/garden/#/light"], sizes: "desktop", timeLimit: 400_000 });
+    assert.deepEqual(asked.manifest.pages.map((p) => [p.url, p.why]), [["http://main.example/", "the home page"], ["http://main.example/garden/#/light", "asked for with --page"]]);
   } finally {
     if (chrome) await chrome.close();
     setTimeLimit(120_000);
     http.get = get;
     stand.restore();
     server.close();
+    fs.rmSync(root, { recursive: true, force: true });
   }
 }));
 

@@ -322,6 +322,28 @@ test("ranking: a link to a #route offers its page to the tour; routeLinks lists 
   assert.deepEqual(docs.candidates.map((c) => new URL(c.url).pathname), ["/docs/"]);
 });
 
+// A #route link is listed with the words to give it with --page only on the
+// site given, which --page takes, its www name too: of a site given at an
+// alias whose pages all move on to another site, the views of that site are
+// listed without them, as --page refuses their address as not a page of the
+// site given, where an agent that read those words gave it.
+test("routeLinks says to give a #route link with --page only on the site given", async () => {
+  const ROUTE = "a #route, which the tour does not follow: give it with --page";
+  const ELSEWHERE = "a #route, which the tour does not follow";
+  const links = [{ href: "/garden/#/light" }, { href: "https://www.main.example/garden/#/water" }];
+  const listed = async (given) => (await pick.routeLinks(links, { home: "https://main.example/", given })).map((s) => [s.url, s.reason]);
+  assert.deepEqual(await listed("https://alias.example/"), [
+    ["https://main.example/garden/#/light", ELSEWHERE],
+    ["https://www.main.example/garden/#/water", ELSEWHERE],
+  ]);
+  for (const given of ["https://main.example/", "https://www.main.example/garden/", undefined]) {
+    assert.deepEqual(await listed(given), [
+      ["https://main.example/garden/#/light", ROUTE],
+      ["https://www.main.example/garden/#/water", ROUTE],
+    ], given);
+  }
+});
+
 // The #route links listed for --page are ones the run's rule opens: of the
 // links to one view, the one it opens, the one at the home page's host
 // where it opens two, and where it opens none, the first, with the reason

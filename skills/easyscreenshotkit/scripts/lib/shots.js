@@ -25,7 +25,7 @@ const crypto = require("crypto");
 const { launch, browserProblem, openTab, closeTab, navigate, currentUrl, failedWords, CRASHED, BARRED, UNREACHED } = require("./chrome");
 const { AROUND, metrics, scrollTo, walk, showsContent, waitForContent, settle, watchRequests, networkQuiet, waitForDrawn, showsLoadingSign, looksEmpty, waitForFonts, clearHover, resetPictureWait, capture, captureScreen, capturePage } = require("./page");
 const { clean } = require("./clean");
-const { homeOf, pageKey, routeOf, viewKey, pathOf, pageUrl, anchorOf, siteOf, onHomeHost, atHomeHost, sitesOf, fold, wordsOf, kindOf, rankLinks, routeLinks, visitOrder, readSiteIndex, indexNotes, localeOf, alternateFor, oneLine, ROUTE_LINK } = require("./pick");
+const { homeOf, pageKey, routeOf, viewKey, pathOf, pageUrl, anchorOf, siteOf, onHomeHost, atHomeHost, sitesOf, fold, wordsOf, kindOf, rankLinks, routeLinks, visitOrder, readSiteIndex, indexNotes, localeOf, alternateFor, oneLine, ROUTE_LINK, ROUTE_ELSEWHERE } = require("./pick");
 const { pngFileIsWhole, pngSize, tagPng } = require("./png");
 const { PWA_SHOTS, LOOKED_AT, planPwa, checkManifest } = require("./pwa");
 const { renderSheet } = require("./sheet");
@@ -1671,10 +1671,12 @@ async function takeShots(rawUrl, options = {}) {
       refusedMore = others.more;
       // The views of an app that the home page, the address given and each
       // --page link to by #route, and those the sitemap lists: the tour
-      // does not follow them, so they are listed for --page, each one the
-      // run's rule opens; one it refuses, as a view on another port of the
-      // site's host, is listed with the links left out, with the reason
-      // (see pick.js routeLinks()). A page the user named is not one of
+      // does not follow them, so they are listed, each one the run's rule
+      // opens, with the words to give it with --page where --page takes its
+      // address, on the site given (see pick.js ROUTE_ELSEWHERE); one the
+      // rule refuses, as a view on another port of the site's host, is
+      // listed with the links left out, with the reason (see pick.js
+      // routeLinks()). A page the user named is not one of
       // them, taken or not: one left out for want of time was listed so,
       // with the words to give it with --page. Each goes into its list one
       // by one: spread into the arguments of push(), which Node.js holds to
@@ -1682,8 +1684,8 @@ async function takeShots(rawUrl, options = {}) {
       // stopped the run with "Maximum call stack size exceeded" once every
       // page was taken.
       const listed = (index.urls || []).map((href) => ({ href }));
-      const views = await routeLinks([...(result.links || []), ...namedLinks, ...listed], { home: kept[0].url, keys: [...kept.flatMap((page) => [...page.keys]), ...named.map(([url]) => viewKey(url))], refuses: (url) => chrome.guard.refuses(url) });
-      for (const view of views) (view.reason === ROUTE_LINK ? routes : skipped).push(view);
+      const views = await routeLinks([...(result.links || []), ...namedLinks, ...listed], { home: kept[0].url, given: asked, keys: [...kept.flatMap((page) => [...page.keys]), ...named.map(([url]) => viewKey(url))], refuses: (url) => chrome.guard.refuses(url) });
+      for (const view of views) (view.reason === ROUTE_LINK || view.reason === ROUTE_ELSEWHERE ? routes : skipped).push(view);
     }
 
     await pool.drain();

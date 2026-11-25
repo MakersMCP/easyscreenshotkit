@@ -14,7 +14,7 @@ const net = require("net");
 const { openTab, closeTab, navigate } = require("./chrome");
 const { waitForContent, settle, walk, watchRequests } = require("./page");
 const { readInfo, readLinks, rejectAtOnce, rejectReason, slugOf, siteName, identity, pagesAsked, waitForView, notOpened, alternateNote, watchFailedMoves } = require("./shots");
-const { homeOf, pageKey, routeOf, viewKey, pathOf, readable, siteOf, atHomeHost, sitesOf, rankLinks, routeLinks, visitOrder, readSiteIndex, indexNotes, kindOf, alternateFor, ROUTE_LINK } = require("./pick");
+const { homeOf, pageKey, routeOf, viewKey, pathOf, readable, siteOf, atHomeHost, sitesOf, rankLinks, routeLinks, visitOrder, readSiteIndex, indexNotes, kindOf, alternateFor, ROUTE_LINK, ROUTE_ELSEWHERE } = require("./pick");
 const { TOP_COVER } = require("./record");
 const { timeLeft } = require("./time");
 const { NOT_WEB, hostOf } = require("./address");
@@ -273,9 +273,10 @@ async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = 
   // time with the words to give it with --page.
   const listed = (index.urls || []).map((href) => ({ href }));
   const refuses = chrome.guard ? (url) => chrome.guard.refuses(url).catch(() => NOT_WEB) : undefined;
-  const views = wanted > 1 ? await routeLinks([...links, ...namedLinks, ...listed], { home: nav.url, keys: [...kept.flatMap((page) => [...page.keys]), ...named.map(([url]) => viewKey(url))], refuses }) : [];
-  const routes = views.filter((view) => view.reason === ROUTE_LINK);
-  const refused = views.filter((view) => view.reason !== ROUTE_LINK);
+  const views = wanted > 1 ? await routeLinks([...links, ...namedLinks, ...listed], { home: nav.url, given: asked, keys: [...kept.flatMap((page) => [...page.keys]), ...named.map(([url]) => viewKey(url))], refuses }) : [];
+  const route = (view) => view.reason === ROUTE_LINK || view.reason === ROUTE_ELSEWHERE;
+  const routes = views.filter(route);
+  const refused = views.filter((view) => !route(view));
   // A visitor's order: what the product is first, what it costs last.
   const [first, ...rest] = kept;
   const ordered = [first, ...rest.filter((page) => page.kind !== "pricing"), ...rest.filter((page) => page.kind === "pricing")];

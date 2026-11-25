@@ -409,8 +409,13 @@ function anchorOf(url) {
   return hash.length > 1 && !routeOf(url.href) && !/^#(?:\/|!)\/*$/.test(hash) ? hash : "";
 }
 
-// Why a link to a view of a single page app is not in the tour.
+// Why a link to a view of a single page app is not in the tour. The same,
+// without the words to give it with --page, for a view on another site than
+// the one given, as a site given at an alias whose pages all move on to
+// another site has its views there: --page refuses its address as not a
+// page of the site given, where an agent that read those words gave it.
 const ROUTE_LINK = "a #route, which the tour does not follow: give it with --page";
+const ROUTE_ELSEWHERE = "a #route, which the tour does not follow";
 
 function innerSegments(url) {
   const segments = segmentsOf(url.pathname);
@@ -601,9 +606,11 @@ async function rankLinks(links, sitemap, { home, robots = null, alternates = [],
 // each address, a page that linked one view by 40,000 addresses, each with
 // a query of its own, held the run's only thread 20 s, where no signal to
 // stop it was heard; and the event loop gets a turn every TURN links (see
-// time.js turn()), where 200,000 links held it 0.9 s in one pass. Resolves
-// to [{url, reason}].
-async function routeLinks(links, { home, keys = [], refuses = async () => "" }) {
+// time.js turn()), where 200,000 links held it 0.9 s in one pass. given:
+// the address given, as --page reads a page against it (see shots.js
+// pagesAsked()), where home is the home page as the tour opened it.
+// Resolves to [{url, reason}].
+async function routeLinks(links, { home, given = home, keys = [], refuses = async () => "" }) {
   const site = siteOf(home);
   const homeUrl = new URL(home);
   const taken = new Set([viewKey(home), ...keys]);
@@ -635,7 +642,7 @@ async function routeLinks(links, { home, keys = [], refuses = async () => "" }) 
       if (why) refused = refused || { url, reason: why };
       else if (!opened || (own(url) && !own(opened))) opened = url;
     }
-    routes.push(opened ? { url: opened, reason: ROUTE_LINK } : refused);
+    routes.push(opened ? { url: opened, reason: site === siteOf(given) ? ROUTE_LINK : ROUTE_ELSEWHERE } : refused);
   }
   return routes;
 }
@@ -826,6 +833,7 @@ module.exports = {
   pageUrl,
   anchorOf,
   ROUTE_LINK,
+  ROUTE_ELSEWHERE,
   localeOf,
   siteOf,
   onHomeHost,

@@ -1382,17 +1382,18 @@ test("a tour lists the #route links of the home page and the address given, and 
       tour.routes.map((r) => decodeURI(r.url.slice(origin.length))),
       ["/app/#/plant/Fern", "/app/#/today", "/app/#/plants", "/app/#/light", "/app/#/растения", "/app/#/report", "/app/#/x"],
     );
-    assert.equal(routesNote(tour.routes), "Left out /app/#/plant/Fern, /app/#/today, /app/#/plants, /app/#/light, /app/#/растения, /app/#/report and /app/#/x: #routes, which the tour does not follow: give one with --page.");
+    assert.deepEqual(routesNote(tour.routes), ["Left out /app/#/plant/Fern, /app/#/today, /app/#/plants, /app/#/light, /app/#/растения, /app/#/report and /app/#/x: #routes, which the tour does not follow: give one with --page."]);
   } finally {
     await chrome.close();
     server.close();
   }
   const route = (view) => ({ url: `https://acme.com/app/#/${view}`, reason: "a #route, which the tour does not follow: give it with --page" });
-  assert.equal(routesNote([route("plants")]), "Left out /app/#/plants: a #route, which the tour does not follow: give it with --page.");
-  assert.equal(
+  assert.deepEqual(routesNote([route("plants")]), ["Left out /app/#/plants: a #route, which the tour does not follow: give it with --page."]);
+  assert.deepEqual(
     routesNote(Array.from({ length: 15 }, (_, i) => route(`item/${i + 1}`))),
-    `Left out ${Array.from({ length: 12 }, (_, i) => `/app/#/item/${i + 1}`).join(", ")} and 3 more: #routes, which the tour does not follow: give one with --page.`,
+    [`Left out ${Array.from({ length: 12 }, (_, i) => `/app/#/item/${i + 1}`).join(", ")} and 3 more: #routes, which the tour does not follow: give one with --page.`],
   );
+  assert.deepEqual(routesNote([]), []);
 });
 
 // A demo's note names a #route the tour does not follow by its path where
@@ -1408,10 +1409,23 @@ test("a demo's notes name a #route the tour does not follow by its path at its h
   const ROUTE = "a #route, which the tour does not follow: give it with --page";
   const routes = ["http://acme.com:8080/app/#/plants", "https://acme.com:8080/app/#/light", "https://acme.com/app/#/beds", "http://www.acme.com:8080/app/#/%D1%80%D0%B0%D1%81%D1%82%D0%B5%D0%BD%D0%B8%D1%8F"].map((url) => ({ url, reason: ROUTE }));
   const after = ": #routes, which the tour does not follow: give one with --page.";
-  assert.equal(routesNote(routes, { home: "http://acme.com:8080/" }), `Left out /app/#/plants, https://acme.com:8080/app/#/light, https://acme.com/app/#/beds and http://www.acme.com:8080/app/#/растения${after}`);
+  assert.deepEqual(routesNote(routes, { home: "http://acme.com:8080/" }), [`Left out /app/#/plants, https://acme.com:8080/app/#/light, https://acme.com/app/#/beds and http://www.acme.com:8080/app/#/растения${after}`]);
   // Where the home page went on to https on that port, a path given with
   // --page goes there too.
-  assert.equal(routesNote(routes, { home: "https://acme.com:8080/" }), `Left out http://acme.com:8080/app/#/plants, /app/#/light, https://acme.com/app/#/beds and http://www.acme.com:8080/app/#/растения${after}`);
+  assert.deepEqual(routesNote(routes, { home: "https://acme.com:8080/" }), [`Left out http://acme.com:8080/app/#/plants, /app/#/light, https://acme.com/app/#/beds and http://www.acme.com:8080/app/#/растения${after}`]);
+  // On another site than the one given, as of a site given at an alias whose
+  // pages all move on to main.example: one at the home page's scheme, host
+  // and port is named by its path, which --page reaches through that move,
+  // and one at that site's www name by its whole address, which --page
+  // refuses as not a page of the site given, in a note of its own without
+  // the words to give one with --page.
+  const ELSEWHERE = "a #route, which the tour does not follow";
+  const moved = ["https://main.example/garden/#/light", "https://www.main.example/garden/#/water", "https://www.main.example/garden/#/soil"].map((url) => ({ url, reason: ELSEWHERE }));
+  assert.deepEqual(routesNote(moved, { home: "https://main.example/" }), [
+    "Left out /garden/#/light: a #route, which the tour does not follow: give it with --page.",
+    "Left out https://www.main.example/garden/#/water and https://www.main.example/garden/#/soil: #routes, which the tour does not follow.",
+  ]);
+  assert.deepEqual(routesNote(moved.slice(1, 2), { home: "https://main.example/" }), ["Left out https://www.main.example/garden/#/water: a #route, which the tour does not follow."]);
   // A tour's notes: the pages left out, what else it noted, the #route
   // links the run refuses, in a note for each reason, the first 12 of them
   // and how many more, then the #route links to give with --page, named
