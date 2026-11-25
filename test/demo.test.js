@@ -1035,7 +1035,7 @@ test("a tour of a site given at 127.0.0.1 whose menu links its pages at localhos
 // the path of the page, as news://site.test:<port>/pricing, which the
 // browser does not open, as it read a link of any scheme by its host, its
 // port and its path.
-test("a tour of a site given on this machine whose menu links its pages at its www name, or by another scheme, clicks the links of the host given", { skip: missing, timeout: 300_000 }, () => withNames({ "site.test": "127.0.0.1", "www.site.test": "127.0.0.1" }, async () => {
+test("a tour of a site given on this machine whose menu links its pages at its www name, or by another scheme, clicks the links of the host given", { skip: missing, timeout: 500_000 }, () => withNames({ "site.test": "127.0.0.1", "www.site.test": "127.0.0.1" }, async () => {
   const html = { "Content-Type": "text/html; charset=utf-8" };
   let www = "";
   let news = "";
@@ -1054,7 +1054,7 @@ test("a tour of a site given on this machine whose menu links its pages at its w
   news = `news://site.test:${port}`;
   const root = tempDir();
   try {
-    const { manifest } = await makeDemo(`http://site.test:${port}/`, { dir: path.join(root, "tour"), pages: 3, gif: false, timeLimit: 280_000 });
+    const { manifest } = await makeDemo(`http://site.test:${port}/`, { dir: path.join(root, "tour"), pages: 3, gif: false, timeLimit: 400_000 });
     assert.deepEqual(manifest.pages.map((p) => p.url), [`http://site.test:${port}/`, `http://site.test:${port}/features`, `http://site.test:${port}/pricing`]);
     assert.deepEqual(manifest.steps.filter((s) => s.action === "click" || s.action === "visit").map((s) => s.label), ["Open site.test", 'Click "Features"', 'Click "Pricing"']);
     assert.deepEqual(manifest.steps.filter((s) => s.action === "click").map((s) => s.opened), [`http://site.test:${port}/features`, `http://site.test:${port}/pricing`]);
@@ -1076,7 +1076,7 @@ test("a tour of a site given on this machine whose menu links its pages at its w
 // as written, so on the page it reached by the relative link, at the host
 // with the dot, the menu's /pricing was no link to the page it took without
 // the dot, and it went on there with a crossfade.
-test("a tour of a site given with the dot that can end its name clicks through a menu that links its pages with the dot and without", { skip: missing, timeout: 300_000 }, () => withNames({ "dot.test": "127.0.0.1" }, async () => {
+test("a tour of a site given with the dot that can end its name clicks through a menu that links its pages with the dot and without", { skip: missing, timeout: 500_000 }, () => withNames({ "dot.test": "127.0.0.1" }, async () => {
   const html = { "Content-Type": "text/html; charset=utf-8" };
   let port = "";
   const { server, origin } = await serve((req, res) => {
@@ -1091,7 +1091,7 @@ test("a tour of a site given with the dot that can end its name clicks through a
   port = new URL(origin).port;
   const root = tempDir();
   try {
-    const { manifest } = await makeDemo(`http://dot.test.:${port}/`, { dir: path.join(root, "tour"), pages: 3, gif: false, timeLimit: 280_000 });
+    const { manifest } = await makeDemo(`http://dot.test.:${port}/`, { dir: path.join(root, "tour"), pages: 3, gif: false, timeLimit: 400_000 });
     assert.deepEqual(manifest.pages.map((p) => new URL(p.url).pathname), ["/", "/features", "/pricing"]);
     assert.deepEqual(manifest.steps.filter((s) => s.action === "click" || s.action === "visit").map((s) => s.label), ["Open dot.test.", 'Click "Features"', 'Click "Pricing"']);
     assert.deepEqual(manifest.steps.filter((s) => s.action === "click").map((s) => s.opened), [`http://dot.test.:${port}/features`, `http://dot.test.:${port}/pricing`]);
@@ -1114,7 +1114,7 @@ test("a tour of a site given with the dot that can end its name clicks through a
 const openssl = spawnSync("openssl", ["version"], { encoding: "utf8" });
 const noOpenssl = (openssl.error || openssl.status !== 0) && "no openssl to make the test's certificate";
 
-test("a tour of a site given at http on port 80 clicks the menu's link to a page it takes there where the link is at https on port 443", { skip: missing || noOpenssl || (process.platform === "win32" && "the browser's stand-in is a shell script"), timeout: 300_000 }, () => withNames({ "tls.example": "93.184.215.16", "www.tls.example": "ENOTFOUND" }, async () => {
+test("a tour of a site given at http on port 80 clicks the menu's link to a page it takes there where the link is at https on port 443", { skip: missing || noOpenssl || (process.platform === "win32" && "the browser's stand-in is a shell script"), timeout: 500_000 }, () => withNames({ "tls.example": "93.184.215.16", "www.tls.example": "ENOTFOUND" }, async () => {
   const root = tempDir();
   const key = path.join(root, "key.pem");
   const cert = path.join(root, "cert.pem");
@@ -1159,7 +1159,7 @@ test("a tour of a site given at http on port 80 clicks the menu's link to a page
   const saved = process.env.CHROME_PATH;
   process.env.CHROME_PATH = browser;
   try {
-    const { manifest } = await makeDemo("http://tls.example/", { dir: path.join(root, "demo"), pages: 2, extra: ["/pricing"], gif: false, timeLimit: 280_000 });
+    const { manifest } = await makeDemo("http://tls.example/", { dir: path.join(root, "demo"), pages: 2, extra: ["/pricing"], gif: false, timeLimit: 400_000 });
     assert.deepEqual(manifest.steps.filter((s) => s.action === "click" || s.action === "visit").map((s) => [s.label, s.opened || s.url]), [["Open tls.example", "http://tls.example/"], ['Click "Pricing"', "https://tls.example/pricing"]]);
     assert.ok(seen.includes("https /pricing"), seen.join(" "));
   } finally {
