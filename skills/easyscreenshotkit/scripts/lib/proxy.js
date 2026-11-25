@@ -189,11 +189,17 @@ function dial(list, port, dials) {
     };
     const entry = { stop: () => end(Object.assign(new Error("the proxy has closed"), { code: "ECONNABORTED" })) };
     const failed = () => end(last || Object.assign(new Error("no address"), { code: "ENOTFOUND" }));
-    // A connection to one address: whether it was started.
+    // A connection to one address: whether it was started. Nagle's
+    // algorithm is off on it, as the browser has it off on the connections
+    // it makes itself: with it on, the browser's request in a tunnel, which
+    // it writes after its last part of the TLS handshake, waited until the
+    // site had acknowledged that part, which a site can hold back 40 ms or
+    // more, so each tunnel a page opened, one for each host of its pictures
+    // too, waited that long for its first answer.
     const start = ({ address, family }) => {
       let socket;
       try {
-        socket = dialer.connect({ host: address, port: Number(port), ...(family ? { family } : {}) });
+        socket = dialer.connect({ host: address, port: Number(port), noDelay: true, ...(family ? { family } : {}) });
       } catch (err) {
         // A port or an address the system will not connect to at all.
         last = err;

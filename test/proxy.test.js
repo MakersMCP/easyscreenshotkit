@@ -292,6 +292,35 @@ test("the proxy keeps the last outcome for each host and port, by the way it was
   }
 });
 
+// The proxy connects to a site with Nagle's algorithm off, as the browser
+// connects itself: with it on, the browser's request in a tunnel, written
+// after its last part of the TLS handshake, waited until the site had
+// acknowledged that part, so each tunnel of a page, one for each host of
+// its pictures too, waited longer for its first answer, about 50 ms on
+// en.wikipedia.org and 20 ms on www.python.org.
+test("the proxy connects to a site with Nagle's algorithm off, for a plain request and for a tunnel", { timeout: 30_000 }, async () => {
+  const site = await serve((req, res) => res.end("site"));
+  const rule = await guardFor(`${site.origin}/`);
+  const proxy = await startProxy(() => rule);
+  const before = dialer.connect;
+  const asked = [];
+  dialer.connect = (options) => {
+    asked.push(options);
+    return before(options);
+  };
+  try {
+    assert.equal((await askProxy(proxy.port, `${site.origin}/`)).body, "site");
+    const { status, socket } = await tunnel(proxy.port, new URL(site.origin).host);
+    socket.destroy();
+    assert.equal(status, "HTTP/1.1 200 Connection Established");
+    assert.deepEqual(asked.map((options) => [options.host, options.noDelay]), [["127.0.0.1", true], ["127.0.0.1", true]]);
+  } finally {
+    dialer.connect = before;
+    proxy.close();
+    site.server.close();
+  }
+});
+
 // A host's addresses are tried in their order, the next beside one that has
 // not connected in a quarter of a second, each once though the lookup gives
 // it twice, and the first to connect is taken, the others ended; once each
