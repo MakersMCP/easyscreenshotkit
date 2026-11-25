@@ -666,17 +666,28 @@ function describeCheck(report) {
   lines.push(`  Desktop  ${dialog(report.desktop, true)}`, `  Phone    ${dialog(report.phone, false)}`);
   if (report.screenshots.length) {
     lines.push("");
-    // The longest src, read one by one: spread into the arguments of
+    // A line for each screenshot Chrome looks at, the first LOOKED_AT, and
+    // one for the rest, which "To fix" names: with a line for each, a
+    // manifest of 600 screenshots made a report longer than the 48,000
+    // characters makersmcp keeps of it from its start, and the check's
+    // verdict, which comes after them, never reached the assistant. The
+    // longest src, read one by one: spread into the arguments of
     // Math.max(), which Node.js holds to its stack, a manifest's 200,000
     // screenshots stopped the check with "Maximum call stack size exceeded".
+    const looked = report.screenshots.slice(0, LOOKED_AT);
     let longest = 3;
-    for (const shot of report.screenshots) longest = Math.max(longest, shot.src.length);
+    for (const shot of looked) longest = Math.max(longest, shot.src.length);
     const width = Math.min(44, longest);
-    for (const shot of report.screenshots) {
+    for (const shot of looked) {
       const src = shot.src.length > width ? `${shot.src.slice(0, width - 3)}...` : shot.src || "(no src)";
       const file = shot.image ? `${shot.image.width && shot.image.height ? dims(shot.image) : "?"} ${NAMES[shot.image.format] || "not an image"}` : shot.error ? "not loaded" : "not read";
       const where = shot.shownOn.length ? `shown on ${shot.shownOn.map((platform) => `${platform}s`).join(" and ")}` : shot.unread ? "not known" : "left out";
       lines.push(`  ${String(shot.n).padStart(2)}  ${src.padEnd(width)}  ${file.padEnd(14)}  ${(shot.formFactor || "none").padEnd(6)}  ${where}`);
+    }
+    const past = report.screenshots.slice(LOOKED_AT).map((shot) => shot.n);
+    if (past.length) {
+      const which = numbers(past);
+      lines.push(`  ${which.charAt(0).toUpperCase()}${which.slice(1)}: not read, as Chrome looks at the first ${LOOKED_AT} only`);
     }
   }
   const unchecked = report.unchecked || [];

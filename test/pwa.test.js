@@ -1003,11 +1003,16 @@ test("--pwa-check reads nothing from an address on this machine other than the o
   }
 });
 
-// A manifest can list any number of screenshots, and the report's column for
-// their src is as wide as the longest of them, read one by one: spread into
-// the arguments of Math.max(), which Node.js holds to its stack, 200,000 of
-// them stopped --pwa-check with "Maximum call stack size exceeded".
-test("--pwa-check reports a manifest of 200,000 screenshots, a line for each", async () => {
+// A manifest can list any number of screenshots. The report has a line for
+// each of the first 8, which Chrome looks at, its column for their src as
+// wide as the longest of them, and one line for the rest: with a line for
+// each, a manifest of 600 screenshots made a report longer than the 48,000
+// characters makersmcp keeps of it from its start, so its verdict, "To
+// fix:" and what Chrome does with screenshots 9 and on, which come after
+// the lines, never reached the assistant. Spread into the arguments of
+// Math.max(), which Node.js holds to its stack, 200,000 srcs stopped the
+// check with "Maximum call stack size exceeded".
+test("--pwa-check reports a manifest of 200,000 screenshots, a line for each of the first 8 and one for the rest", async () => {
   const dir = fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), "easyscreenshotkit-pwa-many-"));
   try {
     const file = path.join(dir, "manifest.json");
@@ -1016,10 +1021,16 @@ test("--pwa-check reports a manifest of 200,000 screenshots, a line for each", a
     const report = await checkManifest({ file });
     assert.equal(report.screenshots.length, 200_000);
     const text = describeCheck(report);
-    // The column is as wide as s199999.png, the longest src.
-    assert.match(text, /^ {3}1 {2}s0\.png {7}not loaded +wide +left out$/m);
-    assert.match(text, /^ {2}200000 {2}s199999\.png {2}not read +wide +left out$/m);
-    assert.equal(text.split("\n").filter((line) => /^ +\d+ {2}s\d+\.png /.test(line)).length, 200_000);
+    // The column is as wide as s0.png, the longest src of the 8.
+    assert.match(text, /^ {3}1 {2}s0\.png {2}not loaded +wide +left out$/m);
+    assert.match(text, /^ {3}8 {2}s7\.png {2}not loaded +wide +left out$/m);
+    assert.deepEqual(text.split("\n").filter((line) => /^ +\d+ {2}s\d+\.png /.test(line)).length, 8);
+    assert.ok(text.includes("\n  Screenshots 9 to 200000: not read, as Chrome looks at the first 8 only\n"), text);
+    assert.ok(text.includes("  - Chrome looks at the first 8 screenshots of the list only, wide and narrow together, so screenshots 9 to 200000 never show."), text);
+    assert.ok(text.length < 5_000, `the report has ${text.length} characters`);
+    // One past the first 8.
+    const nine = checkScreenshots(screenshots.slice(0, 9), []);
+    assert.ok(describeCheck({ manifest: file, page: "", ...nine }).includes("\n  Screenshot 9: not read, as Chrome looks at the first 8 only\n"));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
