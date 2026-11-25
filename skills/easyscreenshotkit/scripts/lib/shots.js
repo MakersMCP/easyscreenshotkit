@@ -1314,6 +1314,7 @@ async function takeShots(rawUrl, options = {}) {
   const kept = [];
   const written = [];
   let leftover = [];
+  let refusedMore = 0;
   let routes = [];
   let name = "";
   let siteManifest = "";
@@ -1667,6 +1668,7 @@ async function takeShots(rawUrl, options = {}) {
       const others = await othersToTake(queue, (url) => chrome.guard.refuses(url));
       leftover = others.leftover;
       for (const skip of others.refused) rejected.push(skip);
+      refusedMore = others.more;
       // The views of an app that the home page, the address given and each
       // --page link to by #route, and those the sitemap lists: the tour
       // does not follow them, so they are listed for --page, each one the
@@ -1691,8 +1693,11 @@ async function takeShots(rawUrl, options = {}) {
     for (const page of kept) page.shots.sort((a, b) => themes.indexOf(a.theme) - themes.indexOf(b.theme) || order.indexOf(a.size) - order.indexOf(b.size));
     if (!kept.some((page) => page.shots.length)) throw new Error("No page could be captured.");
     if (kept.some((page) => page.notes.some((note) => /time ran out/.test(note)))) notes.push("Time ran out before every size was taken; give more with --timeout.");
-    const left = await leftOut(rejected, routes, skipped);
-    if (left.routesPast) notes.push(`${left.routesPast === 1 ? "1 more #route link was" : `${left.routesPast} more #route links were`} left out past the ${LEFT_OUT} listed; give one with --page to take it.`);
+    // Each page and link left out past the ones listed is counted, as a
+    // home page can link 200,000 posts the tour leaves out: with the #route
+    // links alone counted, such a run read as one that had left out 40.
+    const left = await leftOut(rejected, routes, skipped, refusedMore);
+    if (left.past) notes.push(`${left.past === 1 ? "1 more page or link was" : `${left.past} more pages and links were`} left out past the ${LEFT_OUT} listed.`);
     for (const selector of ctx.unread) notes.push(unreadNote(selector));
     if (themes.includes("dark")) notes.push("Dark captures use the page's own dark theme, through prefers-color-scheme. A site without one looks the same in both.");
     if (pwa) pwaSaved = savePwa(kept, run);
@@ -1800,12 +1805,13 @@ function makePool(limit) {
 // The pages left out, each once, as manifest.json lists them: the pages
 // opened and left out first, then the #route links the tour does not
 // follow, which --page can take, then the links left out by their address
-// or their words. LEFT_OUT at most; routesPast: the #route links past it.
-// The event loop gets a turn every TURN of them (see time.js turn()): a
-// page's 200,000 links held the run's only thread 1 s here in one pass.
+// or their words. LEFT_OUT at most; past: how many are left out past them,
+// with more, those not given here (see othersToTake()). The event loop gets
+// a turn every TURN of them (see time.js turn()): a page's 200,000 links
+// held the run's only thread 1 s here in one pass.
 const LEFT_OUT = 40;
 
-async function leftOut(rejected, routes, links) {
+async function leftOut(rejected, routes, links, more = 0) {
   const seen = new Set();
   const all = [];
   let read = 0;
@@ -1821,7 +1827,7 @@ async function leftOut(rejected, routes, links) {
     seen.add(key);
     all.push(skip);
   }
-  return { skipped: all.slice(0, LEFT_OUT), routesPast: all.slice(LEFT_OUT).filter((skip) => skip.reason === ROUTE_LINK).length };
+  return { skipped: all.slice(0, LEFT_OUT), past: Math.max(0, all.length - LEFT_OUT) + more };
 }
 
 // The pages the run could take besides, those it did not open of queue,
@@ -1840,11 +1846,13 @@ async function leftOut(rejected, routes, links) {
 // links (see time.js turn()). With the rule asked for each link and every
 // link it refused kept, a menu's 200,000 links to another port of the host
 // given held the run's only thread 3.5 s here and 1 s more in leftOut(),
-// where a stop was heard only after them. Resolves to { leftover, refused },
-// the ones it could take and the ones left out, each with its reason.
+// where a stop was heard only after them. Resolves to { leftover, refused,
+// more }, the ones it could take, the ones left out, each with its reason,
+// and how many more it left out.
 async function othersToTake(queue, refuses) {
   const leftover = [];
   const refused = [];
+  let more = 0;
   const judged = new Map();
   let read = 0;
   for (const { url, kind, score, why, where } of queue) {
@@ -1854,9 +1862,11 @@ async function othersToTake(queue, refuses) {
     if (!judged.has(origin)) judged.set(origin, refuses(url));
     const barred = await judged.get(origin);
     if (!barred) leftover.push({ url, kind, score, why });
-    else if (where !== "sitemap" && refused.length < LEFT_OUT) refused.push({ url, reason: barred });
+    else if (where === "sitemap") continue;
+    else if (refused.length < LEFT_OUT) refused.push({ url, reason: barred });
+    else more++;
   }
-  return { leftover, refused };
+  return { leftover, refused, more };
 }
 
 module.exports = { takeShots, othersToTake, watchFailedMoves, unreadNote, schemeHint, parseSizes, addPwaShots, normalizeUrl, fragmentNotes, prepareDir, openShots, slugOf, identity, movedOn, pagesAsked, waitForView, leftOut, siteName, readInfo, readLinks, rejectAtOnce, rejectReason, notOpened, alternateNote, barredNote, barredNotes, writeMarkdown, DEVICES, MAX_HEIGHT };

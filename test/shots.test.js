@@ -4908,6 +4908,9 @@ test("a run and a demo's tour whose pages link 200,000 addresses, each left out,
     // would take the assertion's diff more memory than a machine has.
     assert.equal(manifest.skipped.length, 40);
     assert.deepEqual(manifest.skipped.map((skip) => [skip.url, skip.reason]), Array.from({ length: 40 }, (_, i) => [`http://127.0.0.1:${otherPort}/blog/2024/p${i}`, "a single post"]));
+    // Every one past them is counted: the posts as pages left out, and their
+    // #route links, which the run's rule refuses, as links.
+    assert.ok(manifest.notes.includes("399960 more pages and links were left out past the 40 listed."), manifest.notes.join("\n"));
     setTimeLimit(400_000);
     const chrome = await launch({ guard: await guardFor(origin) });
     try {

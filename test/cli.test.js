@@ -781,7 +781,7 @@ test("the notes on what a page tried to open: its own first, then its windows, t
   assert.equal(notes.length, 12);
 });
 
-test("the pages left out: those opened first, then the #route links, then the other links, 40 at most, with the #route links past them counted", async () => {
+test("the pages left out: those opened first, then the #route links, then the other links, 40 at most, with every one past them counted", async () => {
   const ROUTE = "a #route, which the tour does not follow: give it with --page";
   const rejected = [{ url: "https://acme.com/start", reason: "redirected to a sign-in page" }, { url: "https://acme.com/app/#/private", reason: "the page answered 404" }];
   const routes = ["today", "plants", "private"].map((view) => ({ url: `https://acme.com/app/#/${view}`, reason: ROUTE }));
@@ -798,11 +798,16 @@ test("the pages left out: those opened first, then the #route links, then the ot
       ["/blog/2025/post-number-1", "a single post"],
     ],
   );
-  assert.equal(left.routesPast, 0);
-  // More #route links than the list holds: counted, for a note.
+  // Each page and link past the 40, the view left out twice counted once,
+  // for a note: with the #route links alone counted, as they were, a run
+  // that left out a home page's 200,000 posts read as one that left out 40.
+  assert.equal(left.past, 9);
   const many = Array.from({ length: 50 }, (_, i) => ({ url: `https://acme.com/app/#/item/${i}`, reason: ROUTE }));
   const past = await leftOut(rejected, many, posts);
-  assert.deepEqual([past.skipped.length, past.routesPast], [40, 12]);
+  assert.deepEqual([past.skipped.length, past.past], [40, 57]);
+  // And those not given to it, a run's links refused past the 40 it keeps
+  // of them (see othersToTake()).
+  assert.equal((await leftOut(rejected, routes, posts, 5)).past, 14);
 });
 
 // The pages a run could take besides are listed with the run's rule asked
