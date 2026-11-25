@@ -1245,10 +1245,12 @@ function writeMarkdown(manifest, run, { clean: tidied = true, hide = [] } = {}) 
     // their address as not a page of the site given, and their path reaches
     // what the alias makes of it, which can be its home page. Listed under
     // those words, such an address had an agent run again with it as --page,
-    // which the run refused at once.
+    // which the run refused at once. The words ask for the page's address, not
+    // its path: a path is read on the port of the address given, so a page of
+    // the site on another port, as 443 for a site given on 8443, was missed.
     const given = sitesOf(manifest.url);
     const offered = manifest.candidates.every((candidate) => given.includes(siteOf(candidate.url)));
-    lines.push("## Other pages it could take", "", ...(offered ? ["Run again with `--page <path>` to add one.", ""] : []));
+    lines.push("## Other pages it could take", "", ...(offered ? ["Run again with `--page` and the page's address to add one.", ""] : []));
     for (const candidate of manifest.candidates.slice(0, 10)) lines.push(`- ${candidate.url} (${candidate.kind}, ${candidate.why})`);
     lines.push("");
   }
@@ -1533,6 +1535,13 @@ async function takeShots(rawUrl, options = {}) {
     const lastVisit = Date.now() - begun;
     name = siteName(result.info, result.nav.url);
     siteManifest = result.info.manifest || "";
+    // The run's home page is named home wherever it landed: at an alias's
+    // other site, at its language root, or at 127.0.0.1 for localhost, its
+    // path named it page. It is named by the address keep() names it by.
+    if (start.kind === "home") {
+      const { named } = identity(start.asked, result.nav.url, result.info.canonical);
+      start.slug = slugOf(named, named);
+    }
     keep(start, result);
     if (start.kind === "home") start.keys.add(pageKey(home));
 

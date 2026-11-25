@@ -4636,8 +4636,12 @@ test("a home page that moves on to another site makes that site the tour's, in t
     const { manifest } = await takeShots("http://alias.example/", { dir: path.join(root, "shots"), pages: 4, sizes: "desktop", timeLimit: 180_000 });
     assert.deepEqual(manifest.pages.map((p) => p.url).sort(), taken);
     assert.deepEqual(manifest.skipped.map((skip) => [skip.url, skip.reason]), [["http://main.example/customers", "redirected to away.example"]]);
+    // The run's home page is named home where it landed at the other site,
+    // and at that site's language root, where its path named it page.
+    assert.equal(manifest.pages.find((p) => p.url === "http://main.example/").slug, "home");
     const inTurkish = await takeShots("http://alias.example/", { dir: path.join(root, "tr"), pages: 2, lang: "tr", sizes: "desktop", timeLimit: 180_000 });
     assert.deepEqual(inTurkish.manifest.pages.map((p) => p.url), ["http://main.example/tr/", "http://main.example/tr/fiyatlar"]);
+    assert.equal(inTurkish.manifest.pages[0].slug, "home");
     // The same of a demo's tour, which looks for pages while four minutes
     // of the demo are left.
     setTimeLimit(400_000);
@@ -4863,7 +4867,7 @@ test("the #route links a run lists for --page are ones its rule opens: one it re
     // the run met it as it looked for the 20 it lists that it could take:
     // it stops looking there (see shots.js othersToTake()), and the README
     // said that each link of the site it does not open was listed.
-    assert.ok(readme.includes("Of the candidates it did not open, they list the first 20 at most at an address the run opens. With the pages left out they list the #route links the tour does not follow, each an address the run opens, and with the reason a link of the site it does not open, as one to another port: a #route link, or a candidate it met as it looked for those 20."), "README");
+    assert.ok(readme.includes("Of the candidates it did not open, `manifest.json` lists the first 20 at most at an address the run opens, and `SCREENSHOTS.md` the first 10 of them. With the pages left out they list the #route links the tour does not follow, each an address the run opens, and with the reason a link of the site it does not open, as one to another port: a #route link, or a candidate it met as it looked for those 20."), "README");
     assert.ok(readme.includes("and the `#/` and `#!` addresses the site's sitemap lists, are listed with the pages it left out.\n"), "README");
     assert.ok(!readme.includes("to give with `--page`") && !readme.includes("those it could take with `--page`") && !readme.includes("so you can give them with `--page`"), "README");
   } finally {

@@ -718,7 +718,7 @@ test("SCREENSHOTS.md keeps what a page or a site's manifest wrote on its line", 
 // once.
 test("SCREENSHOTS.md has the words to add a page it could take with --page only where --page takes its address", () => {
   const { homeOf } = require("../skills/easyscreenshotkit/scripts/lib/pick");
-  const OFFER = "Run again with `--page <path>` to add one.";
+  const OFFER = "Run again with `--page` and the page's address to add one.";
   const cases = [
     ["https://acme.com/", ["https://acme.com/features", "https://www.acme.com/pricing"], true],
     ["http://localhost:4000/", ["http://127.0.0.1:4000/features"], true],
