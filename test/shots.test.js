@@ -4882,14 +4882,17 @@ test("the #route links a run lists for --page are ones its rule opens: one it re
 // words to give it with --page. A screenshots run lists such views by
 // their whole address, as it lists every page left out, and without those
 // words, where it said to give them with --page and an agent that gave one
-// so had the run refuse it; the path the demo's note names is taken.
+// so had the run refuse it; the path the demo's note names is taken. So
+// does SCREENSHOTS.md list the pages the run could take there, where it
+// listed them under the words to add one with --page.
 test("a demo's tour and a run of a site whose home page moves on to another site name its #route links in a form --page takes, or without the words to give them with --page", { skip: noBrowser, timeout: 600_000 }, () => withNames({ "alias.example": "93.184.215.15", "main.example": "93.184.215.14", "www.main.example": "93.184.215.16" }, async () => {
   const html = { "Content-Type": "text/html; charset=utf-8" };
   const { server, origin } = await serve((req, res) => {
     const host = String(req.headers.host || "").replace(/:\d+$/, "");
     if (host === "alias.example") return res.writeHead(301, { Location: `http://main.example${req.url}` }).end();
-    if (req.url === "/") return res.writeHead(200, html).end(page("Acme | Tools for teams", `<header><nav><a href="/pricing">Pricing</a> <a href="/login">Log in</a></nav></header><h1>Acme</h1><div style="height:1400px"></div><footer><a href="/garden/#/light">Light</a> <a href="http://www.main.example/garden/#/water">Water</a></footer>`));
+    if (req.url === "/") return res.writeHead(200, html).end(page("Acme | Tools for teams", `<header><nav><a href="/pricing">Pricing</a> <a href="/features">Features</a> <a href="/login">Log in</a></nav></header><h1>Acme</h1><div style="height:1400px"></div><footer><a href="/garden/#/light">Light</a> <a href="http://www.main.example/garden/#/water">Water</a></footer>`));
     if (req.url === "/pricing") return res.writeHead(200, html).end(page("Pricing | Acme", "<h1>Pricing</h1><p>The plans of Acme.</p><div style=\"height:1400px\"></div>"));
+    if (req.url === "/features") return res.writeHead(200, html).end(page("Features | Acme", "<h1>Features</h1><p>What Acme does for teams.</p><div style=\"height:1400px\"></div>"));
     if (req.url === "/garden/") return res.writeHead(200, html).end(page("Garden | Acme", "<h1>Garden</h1><p>The light and the water of the garden.</p>"));
     res.writeHead(404).end("not found");
   });
@@ -4927,6 +4930,13 @@ test("a demo's tour and a run of a site whose home page moves on to another site
     // The #route links come before the links left out by their address or
     // their words, as on the site given.
     assert.deepEqual(manifest.skipped.map((skip) => [skip.url, skip.reason]), [["http://main.example/garden/#/light", ELSEWHERE], ["http://www.main.example/garden/#/water", ELSEWHERE], ["http://main.example/login", "sign-in or sign-up page"]]);
+    // The page it could take there is listed, without the words to add it
+    // with --page, which refuses its address.
+    assert.deepEqual(manifest.candidates.map((candidate) => candidate.url), ["http://main.example/features"]);
+    const md = fs.readFileSync(path.join(root, "shots", "SCREENSHOTS.md"), "utf8");
+    const [features] = manifest.candidates;
+    assert.ok(md.includes(`## Other pages it could take\n\n- http://main.example/features (${features.kind}, ${features.why})\n`), md);
+    assert.ok(!md.includes("--page"), md);
     // The path the demo's note names, given with --page, is taken.
     const asked = await takeShots("http://alias.example/", { dir: path.join(root, "asked"), pages: 1, extra: ["/garden/#/light"], sizes: "desktop", timeLimit: 400_000 });
     assert.deepEqual(asked.manifest.pages.map((p) => [p.url, p.why]), [["http://main.example/", "the home page"], ["http://main.example/garden/#/light", "asked for with --page"]]);

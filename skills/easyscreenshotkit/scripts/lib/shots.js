@@ -1237,7 +1237,18 @@ function writeMarkdown(manifest, run, { clean: tidied = true, hide = [] } = {}) 
     lines.push("");
   }
   if (manifest.candidates.length) {
-    lines.push("## Other pages it could take", "", "Run again with `--page <path>` to add one.", "");
+    // The pages it could take are on the site the home page landed on. They
+    // come with the words to add one with --page only where that is the
+    // site given (see pick.js sitesOf()), as --page reads a page against
+    // the address given: of a site given at an alias whose pages all move
+    // on to another site, as an old domain to the main one, --page refuses
+    // their address as not a page of the site given, and their path reaches
+    // what the alias makes of it, which can be its home page. Listed under
+    // those words, such an address had an agent run again with it as --page,
+    // which the run refused at once.
+    const given = sitesOf(manifest.url);
+    const offered = manifest.candidates.every((candidate) => given.includes(siteOf(candidate.url)));
+    lines.push("## Other pages it could take", "", ...(offered ? ["Run again with `--page <path>` to add one.", ""] : []));
     for (const candidate of manifest.candidates.slice(0, 10)) lines.push(`- ${candidate.url} (${candidate.kind}, ${candidate.why})`);
     lines.push("");
   }

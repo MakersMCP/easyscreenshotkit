@@ -708,6 +708,53 @@ test("SCREENSHOTS.md keeps what a page or a site's manifest wrote on its line", 
   assert.deepEqual(lines.filter((line) => /^- (a list item|delete)/.test(line)), []);
 });
 
+// SCREENSHOTS.md lists the pages a run could take with the words to add one
+// with --page only where --page takes their address, as a page of the site
+// given: the site's www name, and this machine's other names on its port, as
+// a site given at localhost whose home page moves on to 127.0.0.1. Of a site
+// given at an alias whose pages all move on to another site, they were listed
+// under those words, and --page refused their address as not a page of the
+// site given, so an agent that ran again with one had the run refuse it at
+// once.
+test("SCREENSHOTS.md has the words to add a page it could take with --page only where --page takes its address", () => {
+  const { homeOf } = require("../skills/easyscreenshotkit/scripts/lib/pick");
+  const OFFER = "Run again with `--page <path>` to add one.";
+  const cases = [
+    ["https://acme.com/", ["https://acme.com/features", "https://www.acme.com/pricing"], true],
+    ["http://localhost:4000/", ["http://127.0.0.1:4000/features"], true],
+    ["http://alias.example/", ["http://main.example/features", "http://main.example/pricing"], false],
+  ];
+  for (const [url, addresses, offered] of cases) {
+    // Whether --page takes each address the list names, as the run reads it.
+    const taken = addresses.map((address) => {
+      try {
+        pagesAsked([address], url, homeOf(url));
+        return true;
+      } catch (err) {
+        assert.match(err.message, /is not a page of/);
+        return false;
+      }
+    });
+    assert.deepEqual(taken, addresses.map(() => offered), url);
+    const manifest = {
+      url,
+      site: "Acme",
+      takenAt: "2026-11-25T10:00:00.000Z",
+      pages: [],
+      sheet: null,
+      pwa: null,
+      candidates: addresses.map((address) => ({ url: address, kind: "product", why: 'menu link "Features"' })),
+      skipped: [],
+      notes: [],
+    };
+    let text = "";
+    writeMarkdown(manifest, { write: (rel, data) => (text = data) });
+    const listed = addresses.map((address) => `- ${address} (product, menu link "Features")`).join("\n");
+    assert.ok(text.includes(`## Other pages it could take\n\n${offered ? `${OFFER}\n\n` : ""}${listed}\n`), text);
+    assert.equal(text.includes(OFFER), offered, url);
+  }
+});
+
 test("a path, a #route or a page's words that would act on the terminal are printed escaped", () => {
   const { pathOf, printable } = require("../skills/easyscreenshotkit/scripts/lib/pick");
   // An escape sequence that sets the terminal's title, then a line break
