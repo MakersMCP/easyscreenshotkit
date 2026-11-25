@@ -2154,23 +2154,29 @@ const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 
 // its crash handler, whose reports go into the profile (see configIn()):
 // they are found that way also once the browser has ended and they belong
 // to no one, and one of them can start another a moment before it is
-// killed. Looked for again until a look finds none and all have ended, a
-// second at most, and only then may the profile go: Chrome's network
-// service writes into the profile as it ends, and with the browser alone
-// killed it made part of the profile again in the temp folder after the
-// run had removed it and ended. Gives back every process it killed.
-function endAll(processes, profile) {
+// killed. Looked for again until a look finds none and all have ended, or
+// until the time `until` by the clock, a second from now unless it is
+// given, and only then may the profile go: Chrome's network service writes
+// into the profile as it ends, and with the browser alone killed it made
+// part of the profile again in the temp folder after the run had removed
+// it and ended. The time counts each look over the processes as well as
+// the pauses between them: with only the pauses counted, a process naming
+// the profile that did not end, or that kept starting others, had the loop
+// look fifty times whatever each look took, and one took 117 ms on a busy
+// machine. Gives back every process it killed.
+function endAll(processes, profile, until = Date.now() + 1_000) {
   const ended = [...processes];
   killAll(ended);
   if (process.platform !== "linux") return ended;
   const tag = path.basename(profile);
-  for (let waited = 0; waited < 1_000; waited += 20) {
+  for (;;) {
     const late = scan(tag)
       .named.map((pid) => ({ pid, start: startOf(pid) }))
       .filter(({ pid, start }) => start !== null && !ended.some((known) => known.pid === pid && known.start === start));
     if (!late.length && allGone(ended)) break;
     killAll(late);
     ended.push(...late);
+    if (Date.now() >= until) break;
     pause(20);
   }
   return ended;
@@ -2237,11 +2243,12 @@ function removeLockFolder(folder) {
 
 // Synchronous, with no retries that wait long: a stopped process may have a
 // second left before it is killed outright. Each profile goes once the
-// browser's processes and its helpers have ended (see endAll()), and its
-// lock folder too.
-function removeProfiles(browsers) {
+// browser's processes and its helpers have ended, waited for until the
+// time `until` by the clock at most (see endAll()), and its lock folder
+// too.
+function removeProfiles(browsers, until = Date.now() + 1_000) {
   for (const { profile, lock, fetching, processes = [] } of browsers) {
-    endAll(processes, profile);
+    endAll(processes, profile, until);
     for (let tries = 0; tries < 2; tries++) {
       try {
         fs.rmSync(profile, { recursive: true, force: true });

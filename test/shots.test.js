@@ -20,6 +20,7 @@ const { watchRequests, networkQuiet, showsLoadingSign, looksEmpty, waitForConten
 const { LOCATE, Recorder } = require("../skills/easyscreenshotkit/scripts/lib/record");
 const { pickPages } = require("../skills/easyscreenshotkit/scripts/lib/tour");
 const { makeDemo, tourNotes } = require("../skills/easyscreenshotkit/scripts/lib/demo");
+const { stopAll } = require("../skills/easyscreenshotkit/scripts/lib/outdir");
 const { findFfmpeg } = require("../skills/easyscreenshotkit/scripts/lib/ffmpeg");
 const { pngText } = require("../skills/easyscreenshotkit/scripts/lib/png");
 const { clean } = require("../skills/easyscreenshotkit/scripts/lib/clean");
@@ -3257,6 +3258,76 @@ test("a run ends every process of its browser before its profile goes, as it end
     server.close();
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// A supervisor that stops a run with SIGTERM, as makersmcp's does, kills it
+// outright a second later, and a kill then leaves the browser's profile in
+// the temp folder: a stop waits for the browser's processes until half a
+// second after it began, by the clock. Here a stand-in beside the browser,
+// which names no profile itself, keeps starting processes that name the
+// browser's, so every look finds more: the stop waited 300 ms first and then
+// looked fifty times, 20 ms apart, and took more than the second.
+test("a stop ends within a second while a stand-in beside the browser keeps starting processes that name its profile", { skip: noBrowser || (process.platform !== "linux" && "the browser's processes are read from /proc"), timeout: 60_000 }, async () => {
+  const root = tempDir();
+  const pids = path.join(root, "pids");
+  const wrapper = path.join(root, "chrome-with-a-starter");
+  fs.writeFileSync(
+    wrapper,
+    [
+      "#!/bin/sh",
+      'for arg in "$@"; do case "$arg" in --user-data-dir=*) profile="${arg#--user-data-dir=}" ;; esac; done',
+      `(P="$profile" Q=${sh(pids)} sh -c 'echo $$ >> "$Q"; while :; do sh -c "sleep 0.3" "--user-data-dir=$P" & sleep 0.01; done' </dev/null >/dev/null 2>&1 3>&- 4>&- &)`,
+      `exec ${sh(findChrome())} "$@"`,
+      "",
+    ].join("\n"),
+    { mode: 0o755 },
+  );
+  const saved = process.env.CHROME_PATH;
+  process.env.CHROME_PATH = wrapper;
+  setTimeLimit(50_000);
+  let chrome = null;
+  let profile = "";
+  try {
+    chrome = await launch();
+    [profile] = profilesOf(process.pid);
+    assert.ok(profile, "a profile");
+    while (naming(profile).length < 5) await sleep(20);
+    // The pauses the stop makes, as Atomics.wait() makes them: with no
+    // ffmpeg to wait for, none but those between its looks. With 300 ms
+    // first as well, a demo stopped on a busy machine ended 1025 ms after
+    // its SIGTERM.
+    const pauses = [];
+    const wait = Atomics.wait;
+    Atomics.wait = (...args) => {
+      pauses.push(args[3]);
+      return wait(...args);
+    };
+    const began = Date.now();
+    try {
+      stopAll();
+    } finally {
+      Atomics.wait = wait;
+    }
+    const took = Date.now() - began;
+    assert.ok(took < 1_000, `the stop took ${took} ms`);
+    assert.ok(pauses.length && pauses.every((ms) => ms === 20), `the stop paused ${pauses.join(", ")} ms`);
+    assert.equal(fs.existsSync(profile), false, profile);
+  } finally {
+    if (saved === undefined) delete process.env.CHROME_PATH;
+    else process.env.CHROME_PATH = saved;
+    setTimeLimit(120_000);
+    const starters = fs.existsSync(pids) ? fs.readFileSync(pids, "utf8").split("\n").filter(Boolean).map(Number) : [];
+    for (const pid of starters) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // Ended already.
+      }
+    }
+    if (chrome) await chrome.close();
+    if (profile) for (const pid of naming(profile)) process.kill(Number(pid), "SIGKILL");
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });
 

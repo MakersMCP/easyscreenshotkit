@@ -625,19 +625,24 @@ function abort(run) {
 // process of each, and its ffmpeg are killed, and every run that has not
 // ended takes its part folder away, so its folder is as it was. Then, once
 // the browsers' processes and helpers have ended too, their profiles go.
-// Returns the runs stopped.
+// A supervisor that stops a process with SIGTERM, as makersmcp's does,
+// kills it outright a second later, and a kill then leaves the profiles in
+// the temp folder: the browsers' processes are waited for until half a
+// second after the stop began at most. Returns the runs stopped.
 function stopAll() {
+  const until = Date.now() + 500;
   const browsers = killBrowsers();
   const children = killChildren();
   const stopped = [...live];
   for (const run of stopped) abort(run);
   if (browsers.length || children) {
-    // A browser's helpers end a moment after they are killed, and write to
-    // its profile meanwhile, which goes once they have ended (see
-    // chrome.js removeProfiles()); a write of ffmpeg's may still be on its
-    // way.
-    pause(300);
-    removeProfiles(browsers);
+    // A write of ffmpeg's may still be on its way. A browser's helpers end
+    // a moment after they are killed, and write to its profile meanwhile,
+    // which goes once they have ended, as removeProfiles() waits for (see
+    // chrome.js endAll()): with a fixed 300 ms before that as well, a demo
+    // stopped on a busy machine ended 1025 ms after its SIGTERM.
+    if (children) pause(300);
+    removeProfiles(browsers, until);
     for (const run of stopped) {
       if (fs.existsSync(run.part)) remove(run.part);
       removeMade(run.made);
