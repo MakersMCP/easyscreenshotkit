@@ -4630,6 +4630,56 @@ test("the #route links a run lists for --page are ones its rule opens: one it re
   }
 }));
 
+// A page can link any number of addresses, and each list of them is added to
+// another one by one: spread into the arguments of push(), which Node.js
+// holds to its stack, a home page's 140,000 #route links to views of an app
+// on another port, which the run's rule refuses, stopped the run with
+// "Maximum call stack size exceeded" once every page was taken, and nothing
+// was saved; as many links left out, as posts of a blog, or as many links on
+// a --page, in the screenshots and in a demo's tour, did the same. Here the
+// home page and a --page each link 200,000 posts at another program of this
+// machine by a #route, in a footer that does not show.
+test("a run and a demo's tour whose pages link 200,000 addresses, each left out, take their pages and list 40 of them, and the tour notes them", { skip: noBrowser, timeout: 900_000 }, async () => {
+  const other = await serve((req, res) => res.writeHead(404).end());
+  const otherPort = new URL(other.origin).port;
+  const html = { "Content-Type": "text/html; charset=utf-8" };
+  const footer = `<footer style="display:none"></footer><script>document.querySelector("footer").innerHTML = Array.from({ length: 200000 }, (_, i) => '<a href="http://127.0.0.1:${otherPort}/blog/2024/p' + i + '#/v">Post</a>').join("");</script>`;
+  const { server, origin } = await serve((req, res) => {
+    if (req.url === "/") return res.writeHead(200, html).end(page("Acme | Tools for teams", `<h1>Acme</h1>${footer}`));
+    if (req.url === "/many") return res.writeHead(200, html).end(page("Many | Acme", `<h1>Many</h1>${footer}`));
+    res.writeHead(404).end("not found");
+  });
+  const root = tempDir();
+  const NOT_GIVEN = "not on the public internet, and not on the host and port given";
+  try {
+    const { manifest } = await takeShots(origin, { dir: path.join(root, "shots"), pages: 2, extra: ["/many"], sizes: "desktop", timeLimit: 400_000 });
+    assert.deepEqual(manifest.pages.map((p) => p.slug), ["home", "many"]);
+    // The counts first: told apart from the few expected, a list of 200,000
+    // would take the assertion's diff more memory than a machine has.
+    assert.equal(manifest.skipped.length, 40);
+    assert.deepEqual(manifest.skipped.map((skip) => [skip.url, skip.reason]), Array.from({ length: 40 }, (_, i) => [`http://127.0.0.1:${otherPort}/blog/2024/p${i}`, "a single post"]));
+    setTimeLimit(400_000);
+    const chrome = await launch({ guard: await guardFor(origin) });
+    try {
+      const tour = await pickPages(chrome, origin, { pages: 2, extra: ["/many"] });
+      assert.deepEqual(tour.pages.map((p) => new URL(p.url).pathname), ["/", "/many"]);
+      assert.equal(tour.refused.length, 200_000);
+      const first = tour.refused.slice(0, 12).map((route) => route.url);
+      assert.deepEqual(first, Array.from({ length: 12 }, (_, i) => `http://127.0.0.1:${otherPort}/blog/2024/p${i}#/v`));
+      const notes = tourNotes(tour);
+      assert.equal(notes.length, 1);
+      assert.deepEqual(notes, [`Left out ${first.join(", ")} and 199988 more: ${NOT_GIVEN}.`]);
+    } finally {
+      await chrome.close();
+    }
+  } finally {
+    setTimeLimit(120_000);
+    server.close();
+    other.server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // An address written without a scheme, as localhost:3000, is read as
 // https://, and a site on this machine that serves plain http failed it in
 // the browser's words alone, net::ERR_SSL_PROTOCOL_ERROR: the run says to

@@ -225,7 +225,9 @@ async function pickPages(chrome, asked, { pages: wanted = 4, extra = [], lang = 
     } else {
       keep(url, (kindOf(new URL(url), "") || { kind: "other" }).kind, why, got, { asked: true, given: why === "the address given" });
       shown = true;
-      namedLinks.push(...got.links);
+      // One by one: a page can link more addresses than a call takes
+      // arguments (see shots.js takeShots()).
+      for (const link of got.links) namedLinks.push(link);
     }
   }
   if (!shown) throw new Error(`${missed.map(({ url, reason }) => `${url} was asked for but not taken: ${reason}.`).join(" ")} No demo was recorded.`);

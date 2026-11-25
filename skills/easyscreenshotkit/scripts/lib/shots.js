@@ -1599,7 +1599,9 @@ async function takeShots(rawUrl, options = {}) {
       } else {
         keep(page, got);
         tookNamed = true;
-        namedLinks.push(...(got.links || []));
+        // One by one, as below: a page can link more addresses than a call
+        // takes arguments.
+        for (const link of got.links || []) namedLinks.push(link);
       }
     }
     if (!tookNamed) throw new Error(`${missed.map(({ url, reason }) => `${url} was asked for but not taken: ${reason}.`).join(" ")} No screenshots were saved.`);
@@ -1621,7 +1623,7 @@ async function takeShots(rawUrl, options = {}) {
         // A home page left out is not opened again from a link to it.
         keys: [...kept.flatMap((page) => [...page.keys]), ...(homeLost ? [pageKey(home)] : [])],
       });
-      skipped.push(...ranked.skipped);
+      for (const skip of ranked.skipped) skipped.push(skip);
       const queue = visitOrder(ranked.candidates);
       let visits = 0;
       // A page is opened only when there is time to take it: as long as the
@@ -1682,11 +1684,14 @@ async function takeShots(rawUrl, options = {}) {
       // site's host, is listed with the links left out, with the reason
       // (see pick.js routeLinks()). A page the user named is not one of
       // them, taken or not: one left out for want of time was listed so,
-      // with the words to give it with --page.
+      // with the words to give it with --page. Each goes into its list one
+      // by one: spread into the arguments of push(), which Node.js holds to
+      // its stack, a home page's 140,000 links to views the rule refuses
+      // stopped the run with "Maximum call stack size exceeded" once every
+      // page was taken.
       const listed = (index.urls || []).map((href) => ({ href }));
       const views = await routeLinks([...(result.links || []), ...namedLinks, ...listed], { home: kept[0].url, keys: [...kept.flatMap((page) => [...page.keys]), ...named.map(([url]) => viewKey(url))], refuses: (url) => chrome.guard.refuses(url) });
-      routes = views.filter((view) => view.reason === ROUTE_LINK);
-      skipped.push(...views.filter((view) => view.reason !== ROUTE_LINK));
+      for (const view of views) (view.reason === ROUTE_LINK ? routes : skipped).push(view);
     }
 
     await pool.drain();
