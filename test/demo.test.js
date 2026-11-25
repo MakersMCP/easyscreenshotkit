@@ -14,6 +14,7 @@ const { spawn, spawnSync } = require("node:child_process");
 const test = require("node:test");
 const { parseDemo, prepareDemoDir, openDemo, makeDemo, routesNote, tourNotes, what, frameAt, stepEntries, pageEntries } = require("../skills/easyscreenshotkit/scripts/lib/demo");
 const { pickPages, tourSteps, SECTIONS } = require("../skills/easyscreenshotkit/scripts/lib/tour");
+const { routeLinks } = require("../skills/easyscreenshotkit/scripts/lib/pick");
 const { setTimeLimit } = require("../skills/easyscreenshotkit/scripts/lib/time");
 const { readSteps } = require("../skills/easyscreenshotkit/scripts/lib/steps");
 const { findChrome, launch, openTab, closeTab, navigate } = require("../skills/easyscreenshotkit/scripts/lib/chrome");
@@ -1454,6 +1455,24 @@ test("a tour's notes take time in step with the #route links the run refuses, ho
   const ms = Math.round((spent.user + spent.system) / 1000);
   assert.deepEqual(notes, [`Left out ${refused.slice(0, 12).map((route) => route.url).join(", ")} and 99988 more: ${PORT}.`]);
   assert.ok(ms < 5_000, `the notes took ${ms} ms of the main thread for 100,000 links`);
+});
+
+// The run's rule names the port of a #route link it refuses for its port,
+// so a tour's notes name those of the first 5 reasons and count the links
+// of the rest: with a note for each reason, a home page that linked its
+// views on 3,000 ports of its public host had 3,000 notes, 376,889
+// characters in steps.json and in the summary.
+test("a tour's notes name the #route links the run refuses for the first 5 reasons and count the rest", async () => {
+  const home = "http://93.184.215.14/";
+  const guard = await guardFor(home);
+  const links = Array.from({ length: 3_000 }, (_, i) => ({ href: `http://93.184.215.14:${10_000 + i}/app/#/view${i}` }));
+  const refused = await routeLinks(links, { home, refuses: (url) => guard.refuses(url) });
+  assert.equal(refused.length, 3_000);
+  const tour = { pages: [{ url: home }], skipped: [], notes: [], refused, routes: [], home, short: false };
+  const port = (i) => `on port ${10_000 + i}, not 80 or 443, and not on the scheme, host and port given`;
+  assert.deepEqual(tourNotes(tour), [...[0, 1, 2, 3, 4].map((i) => `Left out http://93.184.215.14:${10_000 + i}/app/#/view${i}: ${port(i)}.`), "Left out 2995 more #route links the run does not open."]);
+  assert.deepEqual(tourNotes({ ...tour, refused: refused.slice(0, 6) }).slice(4), [`Left out http://93.184.215.14:10004/app/#/view4: ${port(4)}.`, "Left out 1 more #route link the run does not open."]);
+  assert.equal(tourNotes({ ...tour, refused: refused.slice(0, 5) }).length, 5);
 });
 
 // A --page the browser cannot open, here one that answers with nothing, is

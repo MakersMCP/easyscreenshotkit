@@ -476,10 +476,13 @@ function routesNote(routes, { home = "" } = {}) {
 
 // The notes a tour adds to steps.json (see tour.js pickPages()): the pages
 // it left out with why, what else it noted, the #route links the run's
-// rule refuses, in a note for each reason, as a site can link many views
-// of its app on another port of its host and a note for each link would
-// fill steps.json and the summary, the #route links it does not follow,
-// and whether time ran short. Each link goes into its reason's list as it
+// rule refuses, in a note for each reason, NOTED at most, and one that
+// counts the links of the rest, as a site can link many views of its app
+// on another port of its host and a note for each link would fill
+// steps.json and the summary, the #route links it does not follow, and
+// whether time ran short. The port of a link is in its reason, so with a
+// note for every reason, a home page that linked its views on 3,000 ports
+// of its host had 3,000. Each link goes into its reason's list as it
 // comes: with the list copied for each link, 40,000 links refused for one
 // reason held the run's only thread 17 s.
 function tourNotes(tour) {
@@ -490,7 +493,13 @@ function tourNotes(tour) {
     if (!refused.has(route.reason)) refused.set(route.reason, []);
     refused.get(route.reason).push(route.url);
   }
-  for (const [reason, urls] of refused) notes.push(`Left out ${listOf(urls)}: ${reason}.`);
+  let shown = 0;
+  let past = 0;
+  for (const [reason, urls] of refused) {
+    if (shown++ < NOTED) notes.push(`Left out ${listOf(urls)}: ${reason}.`);
+    else past += urls.length;
+  }
+  if (past) notes.push(`Left out ${past === 1 ? "1 more #route link" : `${past} more #route links`} the run does not open.`);
   if (tour.routes.length) notes.push(routesNote(tour.routes, { home: tour.home }));
   if (tour.short) notes.push(`Time ran out after ${tour.pages.length === 1 ? "1 page" : `${tour.pages.length} pages`}: a tour looks for more only while 4 minutes of the run are left; give more with --timeout.`);
   return notes;
