@@ -453,17 +453,24 @@ const placeOf = (url) => `${new URL(url).pathname}${routeOf(url)}`;
 
 const clock = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
 
-// The first 12 of names, as a sentence lists them, and how many more.
-function listOf(names) {
-  const shown = names.slice(0, 12);
-  const more = names.length - shown.length;
+// How many names a note lists at most.
+const NAMED = 12;
+
+// The first NAMED of names, as a sentence lists them, and how many more of
+// count, the names there are where it is not given.
+function listOf(names, count = names.length) {
+  const shown = names.slice(0, NAMED);
+  const more = count - shown.length;
   return more ? `${shown.join(", ")} and ${more} more` : shown.length > 1 ? `${shown.slice(0, -1).join(", ")} and ${shown[shown.length - 1]}` : shown[0];
 }
 
-// The #route links a tour left out, in a note: the first 12 of them, and
-// how many more. Each is named by its path and route where it is on the
-// scheme, host and port of the home page as the tour opened it (home), as
-// --page reads a path against the address given, which went there. Any
+// A user name and a password before an address's host.
+const USER = /^(\w+:\/\/)[^/@]*@/;
+
+// The #route links a tour left out, in a note: the first NAMED of them,
+// and how many more. Each is named by its path and route where it is on
+// the scheme, host and port of the home page as the tour opened it (home),
+// as --page reads a path against the address given, which went there. Any
 // other, as one at the site's www name, or on port 443 of a site given on
 // another port, by its whole address: named by its path, it had an agent
 // give --page that path, which opens it at the host and port given,
@@ -471,18 +478,34 @@ function listOf(names) {
 // one given, as a site given at an alias whose pages all move on to another
 // site has at that site's www name, is no address --page takes (see pick.js
 // ROUTE_ELSEWHERE): such links are in a note of their own, without the
-// words to give one with --page. Returns the notes, none for no link.
+// words to give one with --page. A link's address is the URL parser's own
+// (see pick.js routeLinks()), so one on the home page's scheme, host and
+// port starts with its origin and a slash, once a user name and a password
+// before its host are taken out: each link's note is told so, with no
+// address made for it, and only the links a note lists are named. With
+// addresses made for each link to tell its note, and every link named, a
+// home page that linked 200,000 views held the run's only thread 0.5 s in
+// one pass, and one of a site given at an alias 1.1 s, where a stop was
+// heard only after it. Returns the notes, none for no link.
 function routesNote(routes, { home = "" } = {}) {
-  const atHome = (url) => !home || new URL(url).origin === new URL(home).origin;
-  const note = (list, offered) => {
-    const names = listOf(list.map((route) => (atHome(route.url) ? pathOf(route.url) : readable(route.url))));
-    const what = list.length === 1 ? "a #route, which the tour does not follow" : "#routes, which the tour does not follow";
-    return `Left out ${names}: ${what}${offered ? `: give ${list.length === 1 ? "it" : "one"} with --page` : ""}.`;
-  };
-  const elsewhere = (route) => route.reason === ROUTE_ELSEWHERE && !atHome(route.url);
-  const offered = routes.filter((route) => !elsewhere(route));
-  const others = routes.filter(elsewhere);
-  return [...(offered.length ? [note(offered, true)] : []), ...(others.length ? [note(others, false)] : [])];
+  const origin = home ? `${new URL(home).origin}/` : "";
+  const atHome = (url) => !origin || url.replace(USER, "$1").startsWith(origin);
+  const notes = [
+    { names: [], count: 0, offered: true },
+    { names: [], count: 0, offered: false },
+  ];
+  for (const route of routes) {
+    const here = atHome(route.url);
+    const note = notes[route.reason === ROUTE_ELSEWHERE && !here ? 1 : 0];
+    if (note.names.length < NAMED) note.names.push(here ? pathOf(route.url) : readable(route.url));
+    note.count++;
+  }
+  return notes
+    .filter((note) => note.count)
+    .map(({ names, count, offered }) => {
+      const what = count === 1 ? "a #route, which the tour does not follow" : "#routes, which the tour does not follow";
+      return `Left out ${listOf(names, count)}: ${what}${offered ? `: give ${count === 1 ? "it" : "one"} with --page` : ""}.`;
+    });
 }
 
 // The notes a tour adds to steps.json (see tour.js pickPages()): the pages

@@ -21,7 +21,7 @@ const { findChrome, launch, openTab, closeTab, navigate } = require("../skills/e
 const { guardFor } = require("../skills/easyscreenshotkit/scripts/lib/address");
 const { findFfmpeg, makeGif, startVideo, gifIsWhole, mp4Frames } = require("../skills/easyscreenshotkit/scripts/lib/ffmpeg");
 const { checkBackdrop } = require("../skills/easyscreenshotkit/scripts/lib/compose");
-const { readPng, pngOf, serve, near, descendants, relayBrowser, crashingBrowser, runUntilOver, tempProblem, sh, reachAt } = require("./helpers");
+const { readPng, pngOf, serve, near, descendants, relayBrowser, crashingBrowser, runUntilOver, tempProblem, sh, reachAt, mostParsed } = require("./helpers");
 const { noBus, privateBus, fakePortal } = require("./bus");
 
 const CLI = path.resolve(__dirname, "../skills/easyscreenshotkit/scripts/easyscreenshotkit.js");
@@ -1426,6 +1426,9 @@ test("a demo's notes name a #route the tour does not follow by its path at its h
     "Left out https://www.main.example/garden/#/water and https://www.main.example/garden/#/soil: #routes, which the tour does not follow.",
   ]);
   assert.deepEqual(routesNote(moved.slice(1, 2), { home: "https://main.example/" }), ["Left out https://www.main.example/garden/#/water: a #route, which the tour does not follow."]);
+  // One with a user name and a password before its host is on the home
+  // page's scheme, host and port all the same, and named by its path.
+  assert.deepEqual(routesNote([{ url: "https://ada:x@main.example/garden/#/moss", reason: ELSEWHERE }], { home: "https://main.example/" }), ["Left out /garden/#/moss: a #route, which the tour does not follow: give it with --page."]);
   // A tour's notes: the pages left out, what else it noted, the #route
   // links the run refuses, in a note for each reason, the first 12 of them
   // and how many more, then the #route links to give with --page, named
@@ -1469,6 +1472,31 @@ test("a tour's notes take time in step with the #route links the run refuses, ho
   const ms = Math.round((spent.user + spent.system) / 1000);
   assert.deepEqual(notes, [`Left out ${refused.slice(0, 12).map((route) => route.url).join(", ")} and 99988 more: ${PORT}.`]);
   assert.ok(ms < 5_000, `the notes took ${ms} ms of the main thread for 100,000 links`);
+});
+
+// A tour's note of the #route links it does not follow names the first 12
+// and counts the rest, and each link's note is told by its reason and how
+// its address starts, with no address made for it: with addresses made for
+// each link to tell its note, and every link named, a home page that
+// linked 200,000 views held the run's only thread 0.5 s in one pass, and
+// one of a site given at an alias 1.1 s, where a stop was heard only after
+// it. Judged by the addresses parsed (see helpers.js mostParsed()): 600,000
+// and more for these links, as it was.
+test("a tour's notes on the #route links it does not follow parse a few addresses, however many links there are", async () => {
+  const ROUTE = "a #route, which the tour does not follow: give it with --page";
+  const ELSEWHERE = "a #route, which the tour does not follow";
+  const views = (at, reason) => Array.from({ length: 200_000 }, (_, i) => ({ url: `${at}app/#/item/${i}`, reason }));
+  const first = (at) => Array.from({ length: 12 }, (_, i) => `${at}/app/#/item/${i}`).join(", ");
+  const cases = [
+    ["http://127.0.0.1:4000/", views("http://127.0.0.1:4000/", ROUTE), `Left out ${first("")} and 199988 more: #routes, which the tour does not follow: give one with --page.`],
+    ["https://main.example/", views("https://main.example/", ELSEWHERE), `Left out ${first("")} and 199988 more: #routes, which the tour does not follow: give one with --page.`],
+    ["https://main.example/", views("https://www.main.example/", ELSEWHERE), `Left out ${first("https://www.main.example")} and 199988 more: #routes, which the tour does not follow.`],
+  ];
+  for (const [home, routes, note] of cases) {
+    const notes = await mostParsed(() => tourNotes({ pages: [{ url: home }], skipped: [], notes: [], refused: [], routes, home, short: false }));
+    assert.deepEqual(notes.result, [note]);
+    assert.ok(notes.most < 100, `the notes parsed ${notes.most} addresses for 200,000 links`);
+  }
 });
 
 // The run's rule names the port of a #route link it refuses for its port,
