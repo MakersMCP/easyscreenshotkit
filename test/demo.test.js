@@ -2036,7 +2036,10 @@ test("a demo whose browser ends or whose tab crashes in the middle of it fails, 
     // with SIGSEGV after the tab had crashed in two, and the demo said the
     // browser ended, which was true, where the case took the tab's words
     // alone.
-    { args: ["--steps", steps], line: /^Drawing \d+ frames/m, ready: (all, before) => renderers(all).length > before, delay: 300, kill: renderers, told: tabOrBrowser },
+    // The kill comes at once: on GitHub's runners 180 frames that differ
+    // little were drawn within the 300 ms the case once waited, and the demo
+    // that killed them after was made.
+    { args: ["--steps", steps], line: /^Drawing \d+ frames/m, ready: (all, before) => renderers(all).length > before, delay: 0, kill: renderers, told: tabOrBrowser },
   ];
   try {
     await makeDemo(origin, { dir, steps, gif: false, timeLimit: 200_000 });
