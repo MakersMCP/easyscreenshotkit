@@ -796,6 +796,9 @@ async function fixture({ sitemap = null, home = null } = {}) {
     if (url.pathname === "/features") return html(plain("Features", "rgb(0,200,200)"));
     if (url.pathname === "/pricing") return html(plain("Pricing", "rgb(0,120,255)"));
     if (url.pathname === "/login") return html(plain("Log in", "#eee"));
+    // A page whose box moves on every frame, so a demo of it has as many
+    // different frames to draw as it has frames.
+    if (url.pathname === "/moving") return html(page("Moving | Acme", '<h1>Acme</h1><div class="box" style="width:160px;height:160px;background:rgb(255,80,0)"></div>', "@keyframes slide{from{transform:translateX(0)}to{transform:translateX(640px)}}.box{animation:slide 1s linear infinite}"));
     if (url.pathname === "/nothing") return res.writeHead(204).end();
     if (url.pathname === "/thanks") return html(page("Thanks | Acme", `<h1>Thanks, ${String(url.searchParams.get("email")).replace(/[<>&]/g, "")}</h1><div style="height:1400px"></div>`, "body{background:rgb(250,220,0)}"));
     if (url.pathname === "/app/") return html(APP);
@@ -2000,6 +2003,8 @@ test("a demo whose browser ends or whose tab crashes in the middle of it fails, 
   const dir = path.join(root, "demo");
   const steps = path.join(root, "wait.yaml");
   fs.writeFileSync(steps, "steps:\n  - visit: /\n  - wait: 6\n");
+  const moving = path.join(root, "moving.yaml");
+  fs.writeFileSync(moving, "steps:\n  - visit: /moving\n  - wait: 6\n");
   const browser = /The browser ended in the middle of the demo \(it crashed, or was killed\), so no demo was saved\./;
   const tab = /The browser's tab crashed in the middle of the demo, so no demo was saved\./;
   const tabOrBrowser = new RegExp(`(?:${tab.source})|(?:${browser.source})`);
@@ -2036,10 +2041,11 @@ test("a demo whose browser ends or whose tab crashes in the middle of it fails, 
     // with SIGSEGV after the tab had crashed in two, and the demo said the
     // browser ended, which was true, where the case took the tab's words
     // alone.
-    // The kill comes at once: on GitHub's runners 180 frames that differ
-    // little were drawn within the 300 ms the case once waited, and the demo
-    // that killed them after was made.
-    { args: ["--steps", steps], line: /^Drawing \d+ frames/m, ready: (all, before) => renderers(all).length > before, delay: 0, kill: renderers, told: tabOrBrowser },
+    // The page moves on every frame, so the drawing lasts seconds and the
+    // kill 300 ms in lands inside it: of a still page, GitHub's runners drew
+    // the 180 frames before it and made the demo, and a kill at once could
+    // land as the tab opened its window.
+    { args: ["--steps", moving], line: /^Drawing \d+ frames/m, ready: (all, before) => renderers(all).length > before, delay: 300, kill: renderers, told: tabOrBrowser },
   ];
   try {
     await makeDemo(origin, { dir, steps, gif: false, timeLimit: 200_000 });
